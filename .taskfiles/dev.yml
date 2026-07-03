@@ -1,0 +1,108 @@
+version: "3"
+
+vars:
+  BIN: '{{.BIN | default "kref"}}'
+  BIN_DIR: '{{.BIN_DIR | default (printf "%s/bin" .ROOT_DIR)}}'
+  TEST_DIR: '{{.TEST_DIR | default (printf "%s/.test-output" .ROOT_DIR)}}'
+  BETTERLEAKS_VERSION: '{{.BETTERLEAKS_VERSION | default "v1.6.1"}}'
+  GINKGOLEAF_VERSION: '{{.GINKGOLEAF_VERSION | default "v0.1.1"}}'
+  GOLANGCI_LINT_VERSION: '{{.GOLANGCI_LINT_VERSION | default "v2.12.2"}}'
+
+# Every `go` invocation checks the go.mod toolchain directive; provision it.
+env:
+  GOTOOLCHAIN: auto
+
+tasks:
+  default:
+    silent: true
+    cmd: task dev --list
+
+  tools:
+    desc: Install pinned project tools (betterleaks, ginkgoleaf, golangci-lint) into ./bin
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      # betterleaks is the secret scanner (a drop-in successor to gitleaks by the
+      # same author): it reuses the gitleaks v8 report schema and CLI flags. The
+      # release pages do not advertise `go install`, but the module's main is at
+      # the repo root, so installing the pinned tag works and stays reproducible.
+      - GOBIN={{.BIN_DIR}} go install github.com/betterleaks/betterleaks@{{.BETTERLEAKS_VERSION}}
+      # ginkgoleaf renders Ginkgo's JSON report into a chosen format (tree for
+      # humans, github for CI annotations). Pinned to a tagged release so every
+      # run renders identically; the binary stays out of go.mod's requires.
+      - GOBIN={{.BIN_DIR}} go install github.com/trevor-vaughan/ginkgoleaf/cmd/ginkgoleaf@{{.GINKGOLEAF_VERSION}}
+      # golangci-lint ships as a release binary (upstream does not support
+      # `go install` builds); the install script is fetched at the same pinned
+      # tag it installs. CI runs the same version via golangci-lint-action.
+      - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/{{.GOLANGCI_LINT_VERSION}}/install.sh | sh -s -- -b {{.BIN_DIR}} {{.GOLANGCI_LINT_VERSION}}
+    status:
+      - test -x {{.BIN_DIR}}/betterleaks
+      - test -x {{.BIN_DIR}}/ginkgoleaf
+      - test -x {{.BIN_DIR}}/golangci-lint
+
+  build:
+    desc: Build the kref binary into ./bin
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+    cmds:
+      - go build -ldflags "-X main.Version={{.VERSION}}" -o {{.BIN_DIR}}/{{.BIN}} ./cmd/kref
+
+  # FORMAT selects the ginkgoleaf renderer (tree for humans, github for CI
+  # annotations). EXTRA passes through extra `go test` flags (e.g. CI's
+  # -race -shuffle=on -coverprofile). MODE=llm drops -v for errors-only output.
+  test:
+    desc: Run the Ginkgo suites and render with ginkgoleaf (MODE=llm errors-only, FORMAT=github for CI)
+    deps: [tools]
+    env:
+      KREF_BETTERLEAKS: "{{.BIN_DIR}}/betterleaks"
+      GINKGOLEAF: "{{.BIN_DIR}}/ginkgoleaf"
+      FORMAT: '{{.FORMAT | default "tree"}}'
+      OUT_DIR: "{{.TEST_DIR}}"
+    vars:
+      FLAGS: '{{if eq .MODE "llm"}}-count=1{{else}}-v -count=1{{end}}'
+      EXTRA: '{{.EXTRA | default ""}}'
+    cmds:
+      - bash "{{.ROOT_DIR}}/.taskfiles/scripts/run-ginkgo.sh" {{.FLAGS}} {{.EXTRA}} ./...
+
+  test:e2e:
+    desc: Run unit + end-to-end suites with ginkgoleaf rendering (builds the binary; slower)
+    deps: [tools]
+    env:
+      KREF_BETTERLEAKS: "{{.BIN_DIR}}/betterleaks"
+      GINKGOLEAF: "{{.BIN_DIR}}/ginkgoleaf"
+      FORMAT: '{{.FORMAT | default "tree"}}'
+      OUT_DIR: "{{.TEST_DIR}}"
+    vars:
+      FLAGS: '{{if eq .MODE "llm"}}-count=1{{else}}-v -count=1{{end}}'
+      EXTRA: '{{.EXTRA | default ""}}'
+    cmds:
+      - bash "{{.ROOT_DIR}}/.taskfiles/scripts/run-ginkgo.sh" -tags e2e {{.FLAGS}} {{.EXTRA}} ./...
+
+  # Renders the VHS demo tapes in .taskfiles/demo/ into docs/demo/*.gif. Each tape
+  # records against a throwaway git repo (see .taskfiles/scripts/demo.sh), so it
+  # never touches the working tree. Needs vhs, ttyd, and ffmpeg on PATH (install
+  # vhs with `go install github.com/charmbracelet/vhs@latest`, or drop it in ./bin);
+  # ttyd and ffmpeg come from your package manager.
+  demo:
+    desc: Render the VHS demo GIFs into docs/demo (needs vhs, ttyd, ffmpeg on PATH)
+    deps: [tools]
+    vars:
+      DEMO_DIR: "{{.ROOT_DIR}}/docs/demo"
+      TAPE_DIR: "{{.ROOT_DIR}}/.taskfiles/demo"
+      SCRIPT: "{{.ROOT_DIR}}/.taskfiles/scripts/demo.sh"
+    cmds:
+      - bash "{{.SCRIPT}}" "{{.ROOT_DIR}}" tour    "{{.TAPE_DIR}}/tour.tape"    "{{.DEMO_DIR}}/tour.gif"
+      - bash "{{.SCRIPT}}" "{{.ROOT_DIR}}" secrets "{{.TAPE_DIR}}/secrets.tape" "{{.DEMO_DIR}}/secrets.gif"
+
+  lint:
+    desc: Vet, format-check, and golangci-lint
+    deps: [tools]
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l .)"
+      - "{{.BIN_DIR}}/golangci-lint run"
+
+  fmt:
+    desc: Format
+    cmds:
+      - gofmt -w .

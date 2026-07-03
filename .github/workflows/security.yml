@@ -1,0 +1,119 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on branches/PRs; never cancel a run on main (a push
+# or the weekly schedule) so the Security tab always reflects the tip.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      # Pinned for reproducible scans. Dependabot can't bump a version embedded
+      # in a run step, so bump this by hand (releases: https://pkg.go.dev/golang.org/x/vuln).
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
+
+      # `-format sarif` always exits 0 (findings live in the report), so the
+      # SARIF pass feeds the Security tab and the plain pass gates the build.
+      - name: govulncheck (SARIF for code scanning)
+        run: govulncheck -format sarif ./... > govulncheck.sarif
+
+      - name: Upload govulncheck SARIF
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck
+
+      - name: govulncheck (gate)
+        run: govulncheck ./...
+
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          languages: go
+          build-mode: autobuild
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          category: codeql
+
+  # Dogfood: scan this repo's full history with the same pinned betterleaks
+  # kref ships with at runtime (version pinned in Taskfile.yml, provisioned
+  # into ./bin by `task dev:tools`).
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Provision pinned betterleaks
+        run: task dev:tools
+
+      - name: betterleaks (git history scan)
+        run: >-
+          ./bin/betterleaks git .
+          --no-banner
+          --report-format sarif
+          --report-path betterleaks.sarif
+
+      - name: Upload betterleaks SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: betterleaks.sarif
+          category: betterleaks

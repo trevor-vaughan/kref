@@ -1,0 +1,9 @@
+{
+  "threshold": 5,
+  "gitignore": true,
+  "ignore": [
+    "**/*_test.go",
+    "**/testdata/**",
+    "README.md"
+  ]
+}

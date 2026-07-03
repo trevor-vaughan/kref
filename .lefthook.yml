@@ -1,0 +1,19 @@
+# Managed by `kref hooks install`. Run by lefthook (https://lefthook.dev).
+post-merge:
+  commands:
+    kref-sync-pull:
+      run: /home/tvaughan/Projects/LLM_Git_Artifacts/bin/kref sync pull
+post-checkout:
+  commands:
+    kref-sync-pull:
+      run: /home/tvaughan/Projects/LLM_Git_Artifacts/bin/kref sync pull
+pre-push:
+  commands:
+    kref-sync-push:
+      run: /home/tvaughan/Projects/LLM_Git_Artifacts/bin/kref sync push
+post-commit:
+  commands:
+    kref-ingest:
+      files: git diff-tree --no-commit-id --name-only -r HEAD -- docs/superpowers/plans specs .specify openspec
+      glob: "*.md"
+      run: /home/tvaughan/Projects/LLM_Git_Artifacts/bin/kref ingest --skip-missing {files}

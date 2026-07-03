@@ -1,0 +1,20 @@
+/kref
+/bin/
+/.kref/
+/.test-output/
+# GoReleaser build output (snapshot and release artifacts).
+/dist/
+# MegaLinter run output. The "updated_sources" report drops partial copies of
+# the tree here; leaving it tracked would poison `go vet ./...`, gofmt, and
+# golangci-lint, which compile every non-dot directory under the module root.
+/megalinter-reports/
+/mega-linter.log
+# Per-package Ginkgo JSON reports; the test wrapper archives and removes these,
+# but an interrupted run can leave them scattered beside packages.
+ginkgo-report.json
+/.claude/handoff/
+docs/superpowers/
+# Planning material lives in kref's knowledge base, not the git tree. Any specs
+# or plans regenerated under these paths stay local; ingest them with `kref`.
+docs/dev/plans/
+docs/dev/specs/

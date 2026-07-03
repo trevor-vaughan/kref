@@ -1,0 +1,25 @@
+version: "3"
+
+# Every `go` invocation checks the go.mod toolchain directive; provision it.
+env:
+  GOTOOLCHAIN: auto
+
+tasks:
+  default:
+    silent: true
+    cmd: task deps --list
+
+  tidy:
+    desc: Add missing and drop unused modules, syncing go.mod and go.sum
+    cmd: go mod tidy
+
+  verify:
+    desc: Check that downloaded module sources match go.sum hashes
+    cmd: go mod verify
+
+  upgrade:
+    desc: Bump every module dependency to its latest minor/patch, then tidy and verify
+    cmds:
+      - go get -u ./...
+      - task: tidy
+      - task: verify
