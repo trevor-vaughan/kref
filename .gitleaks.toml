@@ -1,0 +1,39 @@
+# betterleaks config for scanning THIS repository (CI `security` workflow and
+# any ad-hoc `betterleaks git .`). It is NOT used by kref's runtime scans,
+# which run against user content in their own directories.
+#
+# Named `.gitleaks.toml` (not `.betterleaks.toml`): betterleaks auto-selects
+# either filename at the target path, and the gitleaks-compatible name keeps the
+# config portable across gitleaks/betterleaks and recognizable to other tooling.
+#
+# Extends the default ruleset; the allowlist admits only the two deliberate
+# test fixtures committed in the suite.
+
+title = "kref repository scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberate test fixtures"
+regexes = [
+  # The single fake GitHub PAT shared by every suite (chosen because
+  # betterleaks filters synthetic AWS keys, so tests need a value that
+  # genuinely trips the scanner). MegaLinter's secretlint linter allowlists
+  # this same value in the comment-free .secretlintrc.json — keep the two
+  # in sync when the fixture changes.
+  '''ghp_012345678901234567890123456789abcdef''',
+]
+paths = [
+  # The scanner's own test file — everything in it is synthetic by design.
+  '''internal/scan/scan_test\.go''',
+  # Content that is NOT tracked in git (mirrors .gitignore): planning docs,
+  # specs, and the local kref store live outside the git tree. betterleaks'
+  # filesystem scan (e.g. MegaLinter) should skip them the way this repo's
+  # authoritative gate — `betterleaks git .` in security.yml — already does by
+  # only reading git history. Keep in sync with .gitignore.
+  '''^docs/superpowers/''',
+  '''^docs/dev/plans/''',
+  '''^docs/dev/specs/''',
+  '''^\.kref/''',
+]

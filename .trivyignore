@@ -1,0 +1,8 @@
+# trivy vulnerability ignore list for this repo (auto-loaded by trivy from CWD).
+# Accepted-risk findings that cannot be fixed at this layer — mirror .grype.yaml.
+
+# bleve query-string DoS. bleve v1.0.14 is a TRANSITIVE dependency of git-bug
+# (kref/internal/entry -> git-bug/repository -> bleve); no fixed v1 release exists
+# and v2 is a breaking module-path change, so kref cannot upgrade it on its own.
+# Revisit when git-bug moves to a patched bleve.
+CVE-2022-31022

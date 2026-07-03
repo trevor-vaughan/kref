@@ -1,0 +1,17 @@
+# golangci-lint v2 config. Default linter set (errcheck, govet, ineffassign,
+# staticcheck, unused); run locally with `task lint`, in CI via lint.yml.
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # CLI rendering to cmd.OutOrStdout()/tabwriter — a failed print to a
+        # terminal is not actionable, and every write-path writer in this
+        # codebase is closed with a checked Close instead.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # Store.Close only releases the underlying repo handle; operations
+        # commit to git refs at write time, so there is nothing to flush.
+        - (*github.com/trevor-vaughan/kref/internal/store.Store).Close

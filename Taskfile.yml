@@ -1,0 +1,68 @@
+version: "3"
+
+includes:
+  dev:
+    taskfile: .taskfiles/dev.yml
+    vars:
+      BIN: "{{.BIN}}"
+      BIN_DIR: "{{.BIN_DIR}}"
+      BETTERLEAKS_VERSION: "{{.BETTERLEAKS_VERSION}}"
+      GINKGOLEAF_VERSION: "{{.GINKGOLEAF_VERSION}}"
+      GOLANGCI_LINT_VERSION: "{{.GOLANGCI_LINT_VERSION}}"
+  deps:
+    taskfile: .taskfiles/deps.yml
+
+vars:
+  BIN: kref
+  BIN_DIR: "{{.ROOT_DIR}}/bin"
+  TEST_DIR: "{{.ROOT_DIR}}/.test-output"
+  BETTERLEAKS_VERSION: v1.6.1
+  GINKGOLEAF_VERSION: v0.1.1
+  GOLANGCI_LINT_VERSION: v2.12.2
+
+# go.mod requires Go >= 1.26.4 (for the stdlib security fixes). Let Go provision
+# that toolchain automatically so a slightly older local Go still works. Set in
+# every file that shells out to `go` — root env does not cross include boundaries.
+env:
+  GOTOOLCHAIN: auto
+
+tasks:
+  default:
+    silent: true
+    cmd: |
+      task --list 2>/dev/null
+
+  build:
+    desc: "Alias for dev:build"
+    cmds:
+      - task: dev:build
+
+  test:
+    desc: "Alias for dev:test"
+    cmds:
+      - task: dev:test
+
+  lint:
+    desc: "Alias for dev:lint"
+    cmds:
+      - task: dev:lint
+
+  fmt:
+    desc: "Alias for dev:fmt"
+    cmds:
+      - task: dev:fmt
+
+  check:
+    desc: Format, vet, and run all suites (incl. e2e)
+    cmds:
+      - task: dev:fmt
+      - task: dev:lint
+      - task: dev:test:e2e
+
+  clean:
+    desc: Remove built binaries, installed tools, and test output
+    cmds:
+      - rm -rf {{.BIN_DIR}}
+      - rm -f {{.ROOT_DIR}}/{{.BIN}}
+      - rm -rf {{.TEST_DIR}}
+      - go clean

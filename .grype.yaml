@@ -1,0 +1,27 @@
+# grype config for MegaLinter's REPOSITORY_GRYPE scan of THIS repo.
+#
+# grype scans the working directory, not the git index, so without these
+# excludes it reports vulnerabilities that live inside build artifacts which
+# are NOT tracked in git: the provisioned dev-tool binaries under bin/ (gitleaks,
+# golangci-lint, vhs, …), the compiled kref binary, and GoReleaser output. None
+# of those are this repo's source — go.mod is the authority for our dependency
+# surface, and it is gated by `govulncheck ./...` (security.yml) and trivy.
+#
+# The globs below mirror .gitignore's build-output entries so that nothing
+# outside git is scanned. Keep them in sync with .gitignore.
+exclude:
+  - "./bin/**"
+  - "./kref"
+  - "./dist/**"
+  - "./.test-output/**"
+  - "./.kref/**"
+
+# Accepted-risk vulnerabilities that cannot be fixed at this layer. Each needs a
+# reason and, ideally, a revisit trigger.
+ignore:
+  # bleve query-string DoS (CVE-2022-31022). bleve v1.0.14 is a TRANSITIVE dep of
+  # git-bug (kref/internal/entry -> git-bug/repository -> bleve); there is no
+  # fixed v1 release and v2 is a breaking module-path change, so kref cannot move
+  # it independently. Revisit when git-bug upgrades bleve. Mirror in .trivyignore.
+  - vulnerability: GHSA-9w9f-6mg8-jp7w
+  - vulnerability: CVE-2022-31022

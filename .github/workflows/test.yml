@@ -1,0 +1,67 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26.4", "stable"]
+    steps:
+      # Floating tags kept intentionally so this internal CI tracks the latest
+      # toolchain/test images; unpinned-uses suppressed per that decision.
+      - uses: actions/checkout@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6 # zizmor: ignore[unpinned-uses]
+        with:
+          go-version: ${{ matrix.go }}
+
+      - uses: arduino/setup-task@v3 # zizmor: ignore[unpinned-uses]
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Provision pinned tools (betterleaks, ginkgoleaf, golangci-lint)
+        run: task dev:tools
+
+      # Tidiness is Go-version-sensitive; run it only in the go.mod-pinned leg so
+      # the floating `stable` toolchain can't turn PRs red on tidy-output drift.
+      - name: Verify go.mod is tidy
+        if: matrix.go == '1.26.4'
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      # FORMAT=github makes ginkgoleaf emit GitHub Actions annotations
+      # (::group::/::error::) for the suite results; EXTRA carries the CI-only
+      # race/shuffle/coverage flags through to `go test`.
+      - name: Test (unit + e2e, race, shuffle, coverage; ginkgoleaf GitHub annotations)
+        run: task dev:test:e2e FORMAT=github MODE=llm EXTRA="-race -shuffle=on -coverprofile=coverage.out"
+
+      # Merged coverage profile plus the per-package ginkgoleaf JSON reports;
+      # uploaded even when suites fail so failures stay inspectable.
+      - name: Upload coverage and suite reports
+        if: always()
+        uses: actions/upload-artifact@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          name: test-results-go-${{ matrix.go }}
+          path: |
+            coverage.out
+            .test-output/reports/
+          if-no-files-found: ignore
+          retention-days: 14
