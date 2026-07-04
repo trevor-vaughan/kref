@@ -35,7 +35,7 @@ jobs:
         run: echo "week=$(date -u '+%Y-W%V')" >> "$GITHUB_OUTPUT"
 
       - name: Restore vuln-db cache
-        uses: actions/cache@v5 # zizmor: ignore[unpinned-uses]
+        uses: actions/cache@v6 # zizmor: ignore[unpinned-uses]
         with:
           path: ~/.cache/megalint/vuln-db
           key: vuln-db-${{ runner.os }}-${{ steps.week.outputs.week }}
