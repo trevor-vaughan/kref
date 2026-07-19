@@ -1,8 +1,112 @@
-# golangci-lint v2 config. Default linter set (errcheck, govet, ineffassign,
-# staticcheck, unused); run locally with `task lint`, in CI via lint.yml.
+# golangci-lint v2 config. Run locally with `task lint`, in CI via lint.yml
+# (golangci-lint-action, same pinned version as `task dev:tools`).
+#
+# Scope note: kref is a pure CLI over git refs — no HTTP, SQL, slog, protobuf,
+# OpenTelemetry, or testify surface. A few resource-safety linters for those
+# ecosystems (bodyclose, sqlclosecheck, ...) are kept enabled as dormant
+# guards so they light up automatically if such code ever lands; the rest are
+# listed under `disable` with a reason. Tests use Ginkgo/Gomega. The enabled
+# set favours correctness, security, and modernization over opinionated
+# complexity/whitespace rules that would force refactors on the existing tree.
 version: "2"
 
+run:
+  # go.mod pins go >= 1.26.4; the package load must run under that toolchain or
+  # it fails with "go.mod requires go >= 1.26.4". `task lint` exports
+  # GOTOOLCHAIN=auto; a bare `golangci-lint run` needs it set too.
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
 linters:
+  # Default set (errcheck, govet, ineffassign, staticcheck, unused) stays on.
+  enable:
+    # correctness
+    - errorlint        # correct errors.Is/As and %w wrapping
+    - nilerr           # returning nil when err is non-nil
+    - forcetypeassert  # type assertions without comma-ok
+    - copyloopvar      # loop-variable copy issues (Go 1.22+)
+    - durationcheck    # time.Duration multiplication bugs
+    - reassign         # reassigning package-level variables
+    - bidichk          # dangerous bidirectional Unicode (trojan source)
+    - asciicheck       # non-ASCII identifiers (homoglyph attacks)
+    - predeclared      # shadowing built-ins (len, cap, error)
+    - errname          # error type/var naming (ErrFoo, FooError)
+    # style
+    - gocritic         # opinionated correctness/style diagnostics
+    - revive           # naming and exported-symbol conventions
+    - whitespace       # leading/trailing blank-line hygiene
+    - godot            # exported-symbol comments end with a period
+    - misspell         # common English misspellings
+    # performance
+    - perfsprint       # faster alternatives to fmt.Sprintf
+    - unconvert        # unnecessary type conversions
+    # security
+    - gosec            # weak crypto, path traversal, unsafe permissions, ...
+    # resource-safety — dormant today (kref has no HTTP/SQL and stores no
+    # context), so they report nothing now, but stay enabled so they activate
+    # automatically the moment such code lands. Verified to produce zero
+    # findings on the current tree.
+    - bodyclose        # unclosed HTTP response bodies
+    - sqlclosecheck    # unclosed sql.Rows/Stmt
+    - rowserrcheck     # unchecked sql.Rows.Err()
+    - containedctx     # context.Context stored in a struct field
+    - fatcontext       # context accumulated across a loop
+    # modernization
+    - modernize        # patterns replaceable with newer Go features
+    - usestdlibvars    # stdlib constants instead of magic strings
+    - intrange         # range-over-int instead of C-style loops (Go 1.22+)
+    # testing
+    - thelper          # test helpers missing t.Helper()
+    - usetesting       # t.Setenv/t.TempDir over os equivalents in tests
+    # meta
+    - nolintlint       # proper //nolint directive usage
+
+  # Deliberately NOT enabled. Listed explicitly (even though most are off by
+  # default) so a reviewer can see each was evaluated and rejected for a reason
+  # rather than overlooked — and so a future golangci-lint that promotes one
+  # into its default set keeps it off here until reconsidered.
+  disable:
+    # noctx is NOT dormant here (unlike the resource-safety guards enabled
+    # above): beyond HTTP, it flags every os/exec.Command that lacks a context,
+    # which fires on kref's core editor/git subprocess launches — the same
+    # inherent-to-a-CLI-wrapper pattern already excluded from gosec (G204).
+    # Enabling it would force exec.CommandContext plumbing or an exclusion, so
+    # it stays off deliberately.
+    - noctx            # os/exec.Command without context — kref runs git/editor
+    # dupword removes the second of any repeated word, but every repetition in
+    # this tree is intentional: table-test bodies ("auth auth"), format docs
+    # ("hex:count hex:count ..."), and the embedded SKILL.md manual ("Driving
+    # kref\n\nkref stores ..."). Its autofix corrupted all six; net-negative.
+    - dupword          # duplicate-word detector — false positives on test/doc data
+    # performance — evaluated against this tree and judged net-negative.
+    - goconst          # 140 hits, almost all flag names / one-word enum values
+                       # ("status", "shared") that read fine inline; extracting
+                       # constants would be churn, not clarity.
+    - prealloc         # slice preallocation — high false-positive rate; only
+                       # worth it behind a profile that shows a real hot path.
+    # correctness/modernization — real wins already come from staticcheck,
+    # govet, and modernize; these only add noise here.
+    - exhaustive       # enum-switch coverage — kref's switches intentionally
+                       # handle a subset with a default clause, so every hit is
+                       # a false positive.
+    # complexity / whitespace — would demand refactoring working, reviewed code.
+    # Can be dialled in later against new code via issues.new-from-rev.
+    - gocyclo          # cyclomatic complexity threshold
+    - gocognit         # cognitive complexity (overlaps gocyclo)
+    - cyclop           # cyclomatic complexity (overlaps gocyclo)
+    - nestif           # nested-if depth
+    - funlen           # function length
+    - dupl             # token duplication — noisy across table-driven tests
+    - wsl_v5           # blank-line placement — pure style churn
+    - lll              # line length — gofmt already governs layout
+    # testing — kref uses Ginkgo/Gomega, not testify or plain t.Parallel().
+    - testifylint      # testify assertion style — testify is not a dependency
+    - paralleltest     # missing t.Parallel() — Ginkgo owns spec parallelism
+
   settings:
     errcheck:
       exclude-functions:
@@ -15,3 +119,70 @@ linters:
         # Store.Close only releases the underlying repo handle; operations
         # commit to git refs at write time, so there is nothing to flush.
         - (*github.com/trevor-vaughan/kref/internal/store.Store).Close
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    gocritic:
+      disabled-checks:
+        # ifElseChain (rewrite if/else to switch) is a stylistic preference,
+        # not a correctness gain; forcing it would churn unrelated functions.
+        - ifElseChain
+    gosec:
+      # Rule IDs that are inherent to what kref *is* — a CLI that shells out to
+      # git and reads/writes files by user-supplied path. These fire on the
+      # tool's core operations, not on vulnerabilities:
+      #   G204/G702 subprocess / command injection via variable args
+      #                                         — kref runs git/editor/pager
+      #   G304 file inclusion via variable path — kref reads entries/config by path
+      #   G703 path traversal via taint         — same file-by-path nature as G304
+      #   G122 WalkDir TOCTOU on a race-prone path
+      #                                         — kref walks the user's own repo,
+      #                                           not an attacker-shared tree
+      # And file-mode policy checks, deferred as a separate hardening decision
+      # (some writes, e.g. shell completion scripts, are conventionally 0644):
+      #   G301/G302/G306 directory/file permission tightening
+      excludes:
+        - G122
+        - G204
+        - G301
+        - G302
+        - G304
+        - G306
+        - G702
+        - G703
+
+  exclusions:
+    rules:
+      # Ginkgo/Gomega mandate dot-imports in spec files; that is idiomatic, not
+      # a smell. Non-test code has none, so keep the rule active there.
+      - path: _test\.go
+        linters: [revive]
+        text: "^dot-imports:"
+      # Test scaffolding legitimately does "insecure" things: spawns the built
+      # binary, writes 0755 fixtures, reads temp files by computed path.
+      - path: _test\.go
+        linters: [gosec]
+      # Panicking on a failed type assertion is an acceptable failure in a test.
+      - path: _test\.go
+        linters: [forcetypeassert]
+      # Test error fixtures deliberately wrap with %w + %v to exercise the
+      # error-classification code under test; forcing %w would change what the
+      # classifier's errors.Is walk can see.
+      - path: _test\.go
+        linters: [errorlint]
+      # The operation types implement git-bug's dag.Operation interface, which
+      # declares `Id() entity.Id` — the method name is fixed by the external
+      # contract and cannot be renamed to the Go-idiomatic ID().
+      - path: internal/entry/operations\.go
+        linters: [revive]
+        text: "^var-naming: method Id should be ID"
+      # kref is an application (cmd/ + internal/), not a public library: no
+      # package imports it from outside, so exported-symbol and package-comment
+      # documentation enforcement is churn without an external-API payoff.
+      # unused-parameter fires mostly on cobra RunE / interface signatures.
+      - linters: [revive]
+        text: "^(exported|package-comments|unused-parameter):"
+
+formatters:
+  enable:
+    - gofmt

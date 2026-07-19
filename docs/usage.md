@@ -72,7 +72,10 @@ repo you are in: like git, it walks up from the current directory to the
 enclosing repository, so commands work from any subdirectory; outside any repo
 it errors cleanly (`.git not found`). If you drive a repo elsewhere via `--dir`,
 give path arguments as absolute paths (or `cd` into that repo) so a relative
-path is not read — or, for `ingest`, written — under the wrong tree.
+path is not read — or, for `ingest`, written — under the wrong tree. The repo
+directory resolves in the order `--dir` flag > `KREF_DIR` environment variable >
+the current directory, so a host that sets `KREF_DIR` per project (an MCP host
+config, for instance) can run `kref` with no `--dir` and no shell wrapper.
 
 **Color.** Auto-detected: on for an interactive terminal, off for pipes and
 under `NO_COLOR`. `KREF_COLOR=1` forces it on and `KREF_COLOR=0` forces it off,
@@ -156,6 +159,16 @@ and structured text is syntax-highlighted, everything else prints verbatim (see
 ______________________________________________________________________
 
 ## `list`: output modes, columns, sorting, paging
+
+On a terminal, `kref list` opens an **interactive cockpit**: arrow (`↑`/`↓` or
+`j`/`k`) through the entries — the quarantine review queue is grouped on top —
+and act on the selected row without leaving the view. `Enter` opens it (the
+`kref todo` cockpit for a todo, the `kref show` pager otherwise) and returns you
+to where you were; `e` edits it in `$EDITOR`; `a`/`r` approve/reject a quarantine
+row; `x`/`u` archive/restore; `s` sets status; `f` sets or clears an alias
+(favorite name); `/` (with `n`/`N`) searches; `?` shows the keys; `q` quits.
+`--no-pager`, `--plain`, and `--json` keep the static, scriptable output shown
+below (with the review-queue banner).
 
 `kref list` prints a header and a color-coded visibility-tier column:
 
@@ -302,12 +315,13 @@ line-number gutter:
 `r` is handy when an agent or a sync is updating the entry you are reading. When
 output is piped or redirected, paging is skipped.
 
-Three flags control the output:
+Four flags control the output:
 
 | Flag               | Effect                                                                                                         |
 |--------------------|----------------------------------------------------------------------------------------------------------------|
 | `--plain` (global) | emit the stored body verbatim, no header (the redirect/byte-fidelity form): `kref show --plain <id> > note.md` |
 | `--no-header`      | omit the metadata block                                                                                        |
+| `--header`         | print *only* the metadata block — no body, no pager (a cheap metadata peek); mutually exclusive with `--no-header` |
 | `--no-pager`       | never page, even on an interactive terminal                                                                    |
 
 ______________________________________________________________________
@@ -464,9 +478,9 @@ Archiving retires an entry without deleting it: `kref archive <id>` hides it fro
 the normal list (its status is preserved, so an `obsolete` entry stays
 `obsolete`), `kref list --archived` shows only the archived ones (tagged
 `(archived)`), and `kref unarchive <id>` brings it back. `kref archive
---obsolete` archives every obsolete entry in one go, after a confirmation
-(`-y`/`--yes` skips it). Unlike `rm`/tombstone, archiving is a pure visibility
-flag, not a deletion.
+--obsolete` (or `--accepted`) archives every entry in that status in one go,
+after a confirmation (`-y`/`--yes` skips it). Unlike `rm`/tombstone, archiving
+is a pure visibility flag, not a deletion.
 
 ### tidy, links, supersede
 
@@ -627,6 +641,11 @@ ______________________________________________________________________
 
 Tiers map to git remotes via local git config (`kref.remote.<tier>`). The
 private tier can never be given a remote.
+
+`kref init` gives you a head start: if the repository already has an `origin`
+remote, `init` binds the `shared` tier to it automatically (and says so). When
+there is no remote at all, `init` warns that sync is impossible until you set
+one. Either way you can override the binding later with `kref remote set`.
 
 ```bash
 kref remote set shared origin git@github.com:you/team-kref.git
@@ -823,6 +842,78 @@ reversible document lifecycle (set_status, delete/restore via tombstones,
 archive/unarchive); `purge` (irreversible) and `retier` (a disclosure-sensitive
 move) are deliberately not exposed to agents.
 
+The read tools return enough to triage without a second call. `kref_recall`
+reports each hit's kind, version, updated date, and labels, plus — when a
+`search` term is given — how many times it matched (results are relevance-
+ordered); pass `limit` to cap the hit count and it tells you how many were held
+back. `kref_get` returns the entry's kind, content-type, updated date, labels,
+and links alongside the body.
+
+The write tools scan bodies for secrets before they land. `kref_remember`,
+`kref_update`, `kref_patch`, and `kref_comment` (and the CLI `kref new`,
+`kref update`, `kref comment`) run the text through betterleaks; if it trips the
+scanner on a syncable tier the write is **held for human review** rather than
+applied. Instead of writing to the target tier, the content is diverted into a
+reserved, private-typed `quarantine` namespace (a new entry becomes a draft
+there; an update or comment is parked as an intent-item), a review question-
+comment naming the finding (rule and line, never the secret value) opens on the
+entry, and the live target is left untouched. Nothing is lost and nothing leaves
+the machine unreviewed: the `quarantine` namespace is non-syncable, so a held
+secret can never be pushed. A private target is written normally (it cannot push
+anyway).
+
+A human then reviews and decides. The natural path is interactive: in `kref list`
+on a terminal, the review queue is grouped on top — press **Enter** on a review
+row to open its review view (the findings and the proposed change as a
+current→proposed diff), then `a`/`r` to approve/reject or `o` to open the target
+entry, all in place. `kref quarantine show <id>` opens the same review view for one
+item (static/`--json` off a terminal). The explicit commands remain for scripts:
+
+- `kref quarantine approve <id> [-m note]` applies the held write **through the
+  normal write path**, so it inherits the write-lock, todo compare-and-swap, and
+  DAG merge exactly like a fresh write. A parked draft is promoted to its intended
+  tier (the shared-promotion secret gate still applies — approving a secret to a
+  `shared`-typed tier requires the finding to be allowlisted in `.betterleaks.toml`,
+  otherwise the promotion is refused). A parked update/comment is replayed onto the
+  live entry; the held-op item is then archived with a `q-status:approved` label as
+  an audit record. If the target moved since the write was parked (a todo whose
+  version advanced), approval is refused as a stale re-review conflict — re-read
+  and re-apply.
+- `kref quarantine reject <id> [-m reason]` discards the write without touching the
+  target, preserves the proposed text to the recovery dir (so no work is lost), and
+  tombstones the item with `q-status:rejected` for audit.
+
+A rejection is reversible until you purge it. `kref quarantine list --rejected`
+browses the tombstoned rejections; `kref quarantine recover <id>` returns one to
+the pending queue to reconsider; and `kref quarantine purge [<id>]` hard-deletes
+rejected items — removing the ref, pruning the history so a held secret is
+excised (not just hidden), and deleting the recovery files (with an id, one item;
+with none, all rejected — confirm unless `-y`). Only rejected items are
+purgeable, so a pending review is never lost.
+
+Either way the review question-comment is resolved with the optional note.
+
+Approving a false positive is a **human** decision: the MCP tools have no `force`
+(an agent offered one would use it to be "helpful" and push the secret through —
+exactly what the scan prevents), so an agent's flagged write always parks for
+review. At the CLI, `--force` on `kref new`, `kref update`, and `kref comment` is
+the human's one-step escape: instead of skipping the scan, it parks the write and
+immediately approves it, so the audit trail (a resolved review thread, and a
+`q-status:approved` item for a held op) is preserved.
+
+A held write that lingers surfaces its wait. Each pending item reports its age,
+and one that has awaited review for over 7 days is flagged **STALE** — in the
+`kref list` review banner, in `kref quarantine list` and `kref quarantine show`,
+and in the todo cockpit badge (`⚠ N awaiting review (M stale)`). When at least
+one held write is stale, a mutating command also prints a throttled reminder to
+stderr (at most once per 24h) pointing you at `kref quarantine`. Bare `kref
+quarantine` on a terminal opens the review queue interactively: it walks the
+pending items with `n`/`p` (next/prev), `a`/`r` approve/reject the current item
+with an optional note, `o` opens its target entry, and `q` backs out; deciding an
+item advances to the next. Off a terminal (a pipe, `--plain`, or `--json`) it
+prints the static queue instead, and a cleared queue prints a "review queue is
+clear" line.
+
 `kref_patch` is the agent editor, and it is deliberately MCP-only (no CLI
 equivalent; a human edits with `kref edit`): it applies a standard unified diff
 to the entry body, the format LLMs emit natively. The applier is lenient where
@@ -838,6 +929,50 @@ Point an agent host at it per repo:
 ```json
 { "mcpServers": { "kref": { "command": "kref", "args": ["--dir", "/path/to/repo", "mcp"] } } }
 ```
+
+A host that sets a per-project environment variable can instead point kref via
+`KREF_DIR` (repo precedence: `--dir` > `KREF_DIR` > the current directory), with
+no `--dir` argument:
+
+```json
+{ "mcpServers": { "kref": { "command": "kref", "args": ["mcp"], "env": { "KREF_DIR": "/path/to/repo" } } } }
+```
+
+A single server can serve several repositories: `kref mcp --allow <root>`
+(repeatable) enables **global mode**, where each tool call passes an absolute
+`dir` that must resolve inside an allowed root (canonicalized, so `/x/a` never
+authorizes `/x/ab`). With exactly one allowed root, `dir` may be omitted. Without
+`--allow` the server stays **locked** to its `--dir`/`KREF_DIR` repo, and a
+per-call `dir` naming any other repository is refused — an unbounded per-call
+`dir` would let a prompt-injected agent reach the private tier of any repo the
+user owns, so cross-repo access requires this explicit boundary.
+
+`kref mcp --client-roots` derives that boundary from the client instead of the
+operator: each call is confined to the directories the host advertises through
+the protocol's `roots` capability, fetched per call. Use it when the host
+already scopes a workspace (an editor exposing its open folders, say); use
+`--allow <root>` instead when the operator wants to pin a fixed set of roots
+regardless of the client. The two are mutually exclusive. If the client
+advertises no `file://` roots, every call is refused (fail closed).
+
+In both global mode (`--allow`) and client-roots mode, the server serves only
+**syncable** (non-private-typed) tiers of an addressed repo — the one exception
+is a client that advertises a single root and addresses exactly it, which is
+treated as its own workspace and gets full access. So a multi-repo server never
+exposes another repo's `private`/`agent` tier or its quarantine review queue,
+which is the cross-repo exfiltration boundary. Locked mode (a pinned `--dir`)
+serves all tiers of its one repo as before.
+
+Full-body writes to a `kind:todo` entry are guarded against the lost-update
+problem with an optimistic version check (compare-and-swap). Every read surfaces
+the entry's current body version — the `vN` that `kref log` numbers, returned by
+`kref_get` (`version: N`) and `kref_recall` (`vN` per line) — and `kref_update`
+**requires** `if_version` for a todo: pass the version you read, and the write is
+refused as stale if the entry has since moved on, so a concurrent edit is never
+silently clobbered. A refused write loses nothing — the rejected body is written
+to `$XDG_STATE_HOME/kref/rejected/` and named in the error. `kref_patch` needs no
+version token (its hunks already fail loudly on stale context), which is the
+other reason to prefer it for small edits.
 
 Shell-capable agents mostly don't need it (they already have `--json` on every
 command), but `kref_patch` is the exception worth wiring in: fine-grained edits

@@ -44,7 +44,15 @@ tasks:
     vars:
       VERSION:
         sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+    env:
+      # Build through a repo-local temp dir so the linked binary inherits the
+      # repo's SELinux label (container_file_t). Go's default temp is /tmp, which
+      # on the dev container is fusefs and yields a user_tmp_t binary that the
+      # container's policy blocks from executing. Lives under the git-ignored
+      # ./bin so it needs no .gitignore entry.
+      GOTMPDIR: '{{.BIN_DIR}}/.gotmp'
     cmds:
+      - mkdir -p '{{.BIN_DIR}}/.gotmp'
       - go build -ldflags "-X main.Version={{.VERSION}}" -o {{.BIN_DIR}}/{{.BIN}} ./cmd/kref
 
   # FORMAT selects the ginkgoleaf renderer (tree for humans, github for CI
