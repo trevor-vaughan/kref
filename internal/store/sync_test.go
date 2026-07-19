@@ -42,6 +42,40 @@ var _ = Describe("Sync", func() {
 		DeferCleanup(func() { _ = s.Close() })
 		Expect(s.Push(entry.TierPrivate)).To(MatchError(ContainSubstring("private")))
 	})
+
+	It("never pushes the reserved quarantine tier (private-typed)", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "A", "a@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		// quarantine is private-typed and not a user-facing tier, so it can never
+		// be pushed: held (secret-bearing) content never leaves the machine.
+		Expect(s.TierType(entry.TierQuarantine)).To(Equal(entry.TierPrivate))
+		Expect(s.Push(entry.TierQuarantine)).To(HaveOccurred())
+	})
+
+	It("GitRemotes surfaces the repository's raw git remotes by name", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "A", "a@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+
+		// A fresh repo has no remotes.
+		before, err := s.GitRemotes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(before).NotTo(HaveKey("origin"))
+
+		// SetRemote with a URL creates the underlying git remote, which
+		// GitRemotes then reports.
+		hub := GinkgoT().TempDir()
+		_, err = repository.InitBareGoGitRepo(hub, "kref")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.SetRemote(entry.TierShared, "origin", hub)).To(Succeed())
+
+		after, err := s.GitRemotes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(after).To(HaveKey("origin"))
+	})
 })
 
 var _ = Describe("Hub sync", func() {

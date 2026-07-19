@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/git-bug/git-bug/entities/identity"
 	"github.com/git-bug/git-bug/entity"
@@ -35,6 +36,10 @@ type Store struct {
 	// report where a name came from. Either may be nil (layer absent).
 	userFavs    map[string]string
 	projectFavs map[string]string
+
+	excerpts *excerptCache // per-tier lean-read cache; initialized in Init/Open
+
+	lockNotify io.Writer // where write-lock wait notices go; nil => os.Stderr (tests override)
 }
 
 // clockLoaders registers the lamport clocks for the built-in tiers at open
@@ -87,6 +92,7 @@ func Init(dir, name, email string) (*Store, error) {
 	if err := st.loadConfig(); err != nil {
 		return nil, err
 	}
+	st.excerpts = newExcerptCache(st)
 	return st, nil
 }
 
@@ -142,6 +148,7 @@ func Open(dir string) (*Store, error) {
 	if err := st.loadConfig(); err != nil {
 		return nil, err
 	}
+	st.excerpts = newExcerptCache(st)
 	return st, nil
 }
 
@@ -172,7 +179,7 @@ func authorOverride(repo repository.ClockedRepo) (name, email, source string, er
 	ee := strings.TrimSpace(os.Getenv("KREF_AUTHOR_EMAIL"))
 	if en != "" || ee != "" {
 		if en == "" || ee == "" {
-			return "", "", "", fmt.Errorf("set both KREF_AUTHOR_NAME and KREF_AUTHOR_EMAIL, or neither")
+			return "", "", "", errors.New("set both KREF_AUTHOR_NAME and KREF_AUTHOR_EMAIL, or neither")
 		}
 		return en, ee, "env", nil
 	}
@@ -180,7 +187,7 @@ func authorOverride(repo repository.ClockedRepo) (name, email, source string, er
 	ce := configString(repo, "kref.author.email")
 	if cn != "" || ce != "" {
 		if cn == "" || ce == "" {
-			return "", "", "", fmt.Errorf("set both kref.author.name and kref.author.email in git config, or neither")
+			return "", "", "", errors.New("set both kref.author.name and kref.author.email in git config, or neither")
 		}
 		return cn, ce, "gitconfig", nil
 	}
@@ -229,54 +236,66 @@ func (s *Store) Add(t entry.Tier, kind, title, body string) (entity.Id, error) {
 // AddWithContentType creates a new entry, recording its content type (empty
 // means the entry-layer default, text/markdown).
 func (s *Store) AddWithContentType(t entry.Tier, kind, title, body, contentType string) (entity.Id, error) {
-	e := entry.New(t)
-	c := entry.NewCreate(s.author, kind, title)
-	c.ContentType = contentType
-	e.Append(c)
-	if body != "" {
-		e.Append(entry.NewSetBody(s.author, body))
-	}
-	if err := e.Commit(s.repo); err != nil {
-		return "", err
-	}
-	return e.Id(), nil
+	var id entity.Id
+	err := s.withWriteLock(func() error {
+		e := entry.New(t)
+		c := entry.NewCreate(s.author, kind, title)
+		c.ContentType = contentType
+		e.Append(c)
+		if body != "" {
+			e.Append(entry.NewSetBody(s.author, body))
+		}
+		if err := e.Commit(s.repo); err != nil {
+			return err
+		}
+		id = e.Id()
+		return nil
+	})
+	return id, err
 }
 
-// Get loads and compiles an entry, searching all tiers.
+// compileSnapshot folds an entry and applies the store-side enrichment that
+// List and Get both need (Tier + resolved TierType). Every path that turns an
+// entry into a Snapshot MUST go through here so the excerpt cache stays
+// byte-identical to the DAG read.
+func (s *Store) compileSnapshot(t entry.Tier, e *entry.Entry) *entry.Snapshot {
+	snap := e.Compile()
+	snap.Tier = string(t)
+	snap.TierType = string(s.TierType(t))
+	return snap
+}
+
+// Get loads and compiles an entry, searching all tiers (including hidden system
+// tiers, so a quarantine item is resolvable by id).
 func (s *Store) Get(id entity.Id) (*entry.Snapshot, error) {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
-		snap := e.Compile()
-		snap.Tier = string(t)
-		snap.TierType = string(s.TierType(t))
-		return snap, nil
+	t, e, err := s.locate(id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("entry %s not found", id)
+	return s.compileSnapshot(t, e), nil
 }
 
 // ListFilter narrows a List query.
 type ListFilter struct {
-	Kind            string
-	Status          string
-	Tier            entry.Tier
-	Search          string
-	Labels          []string
-	IncludeDelete   bool
-	IncludeArchived bool // include archived entries alongside the rest
-	ArchivedOnly    bool // restrict to archived entries (a dedicated archive view)
+	Kind              string
+	Status            string
+	Tier              entry.Tier
+	Search            string
+	Labels            []string
+	IncludeDelete     bool
+	IncludeArchived   bool // include archived entries alongside the rest
+	ArchivedOnly      bool // restrict to archived entries (a dedicated archive view)
+	OpenQuestionsOnly bool // keep only entries with >=1 unresolved question comment
 }
 
 // List returns compiled snapshots across tiers, applying the filter.
 func (s *Store) List(f ListFilter) ([]*entry.Snapshot, error) {
 	var out []*entry.Snapshot
 	needle := strings.ToLower(f.Search)
-	for _, t := range s.TierNames() {
+	for _, t := range s.searchTierNames() {
+		if f.Tier == "" && entry.IsSystemTier(t) {
+			continue // hidden system tiers (quarantine) appear only when targeted
+		}
 		if f.Tier != "" && f.Tier != t {
 			continue
 		}
@@ -284,9 +303,7 @@ func (s *Store) List(f ListFilter) ([]*entry.Snapshot, error) {
 			if streamed.Err != nil {
 				return nil, streamed.Err
 			}
-			snap := streamed.Entity.Compile()
-			snap.Tier = string(t)
-			snap.TierType = string(s.TierType(t))
+			snap := s.compileSnapshot(t, streamed.Entity)
 			if snap.Deleted && !f.IncludeDelete {
 				continue
 			}
@@ -323,10 +340,114 @@ func (s *Store) List(f ListFilter) ([]*entry.Snapshot, error) {
 					continue
 				}
 			}
+			if f.OpenQuestionsOnly && !hasOpenQuestion(snap) {
+				continue
+			}
 			out = append(out, snap)
 		}
 	}
 	return out, nil
+}
+
+// hasOpenQuestion reports whether a snapshot has at least one question comment
+// that has not yet been resolved.
+func hasOpenQuestion(s *entry.Snapshot) bool {
+	for _, c := range s.Comments {
+		if c.Question && !c.Resolved {
+			return true
+		}
+	}
+	return false
+}
+
+// ListExcerpts returns the lean, cache-backed metadata view used by the list
+// table/--plain renderer and tab-completion. Full snapshots (with bodies) still
+// come from List. Search filters over body text, so a non-empty Search falls
+// back to the DAG List projected to excerpts.
+func (s *Store) ListExcerpts(f ListFilter) ([]Excerpt, error) {
+	if f.Search != "" {
+		snaps, err := s.List(f)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]Excerpt, len(snaps))
+		for i, sn := range snaps {
+			out[i] = toExcerpt(sn)
+		}
+		return out, nil
+	}
+	return s.excerpts.listExcerpts(f)
+}
+
+// listForCompletion is the completion read path: it serves from the excerpt
+// cache when every relevant tier is fresh, and otherwise falls back to the DAG
+// (today's behavior) WITHOUT building, then spawns a detached background
+// refresh so the next completion is fast. It never errors out of a slow path —
+// completion latency is never worse than before this cache existed.
+func (s *Store) listForCompletion(f ListFilter) ([]Excerpt, error) {
+	if f.Search != "" {
+		return s.ListExcerpts(f)
+	}
+	var out []Excerpt
+	stale := false
+	for _, t := range s.TierNames() {
+		if f.Tier != "" && f.Tier != t {
+			continue
+		}
+		dc, ok, _ := s.excerpts.readCached(t)
+		if !ok {
+			stale = true
+			break
+		}
+		for _, e := range dc.Excerpts {
+			if matches(e, f) {
+				out = append(out, e)
+			}
+		}
+	}
+	if !stale {
+		return out, nil
+	}
+	snaps, err := s.List(f)
+	if err != nil {
+		return nil, err
+	}
+	out = out[:0]
+	for _, sn := range snaps {
+		out = append(out, toExcerpt(sn))
+	}
+	s.spawnBackgroundRefresh()
+	return out, nil
+}
+
+// ListForCompletion is the exported completion read (never builds; DAG fallback).
+func (s *Store) ListForCompletion(f ListFilter) ([]Excerpt, error) { return s.listForCompletion(f) }
+
+// RefreshAll brings every tier's excerpt cache up to date. Used by the detached
+// background refresh subprocess.
+func (s *Store) RefreshAll() error { return s.excerpts.refreshAll() }
+
+// spawnBackgroundRefresh fires a fully detached `kref __cache-refresh` so the
+// NEXT completion reads a fresh cache. It must not block the completion helper:
+// the child is setsid'd with closed stdio and never Wait'd on. Failure to spawn
+// is silent — the cache stays cold and completion keeps falling back to the DAG.
+//
+// Guard: under `go test`, commands run in-process and os.Executable() is the
+// compiled test binary (path ends in ".test"). Re-execing that would spawn
+// detached test-binary copies, so we skip. Only the real kref binary self-execs.
+func (s *Store) spawnBackgroundRefresh() {
+	exe, err := os.Executable()
+	if err != nil || strings.HasSuffix(exe, ".test") {
+		return
+	}
+	cmd := exec.Command(exe, "__cache-refresh")
+	cmd.Dir = s.dir
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	_ = cmd.Process.Release() // never Wait: the shell must not block on us
 }
 
 // SearchResult pairs a snapshot with how many times the query occurs in its
@@ -342,7 +463,7 @@ type SearchResult struct {
 // (stable order within equal counts).
 func (s *Store) Search(f ListFilter) ([]SearchResult, error) {
 	if strings.TrimSpace(f.Search) == "" {
-		return nil, fmt.Errorf("search query is empty")
+		return nil, errors.New("search query is empty")
 	}
 	items, err := s.List(f)
 	if err != nil {
@@ -386,209 +507,111 @@ func (s *Store) MostRecent() (*entry.Snapshot, error) {
 
 // Tombstone soft-deletes an entry by appending a tombstone op in its tier.
 func (s *Store) Tombstone(id entity.Id) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewTombstone(s.author))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // SetStatus appends a status change to an entry, searching all tiers.
 func (s *Store) SetStatus(id entity.Id, status string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewSetStatus(s.author, status))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // SetKind appends a kind change to an entry, searching all tiers.
 func (s *Store) SetKind(id entity.Id, kind string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewSetKind(s.author, kind))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // SetContentType replaces an entry's content type.
 func (s *Store) SetContentType(id entity.Id, contentType string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewSetContentType(s.author, contentType))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Reattribute appends a displayed-author change to an entry, searching all tiers.
 func (s *Store) Reattribute(id entity.Id, name, email string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewReattribute(s.author, name, email))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Archive hides an entry from the normal list, searching all tiers. Status is
 // preserved; reverse with Unarchive.
 func (s *Store) Archive(id entity.Id) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewArchive(s.author))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Unarchive reverses Archive, returning an entry to the normal list.
 func (s *Store) Unarchive(id entity.Id) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewUnarchive(s.author))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Track marks an entry as synced with a local file at a repo-relative path,
 // searching all tiers. Re-tracking an already-tracked entry re-points the path.
 func (s *Store) Track(id entity.Id, path string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewTrack(s.author, path))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Untrack clears an entry's local-file tracking, searching all tiers. The file
 // on disk is left untouched.
 func (s *Store) Untrack(id entity.Id) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewUntrack(s.author))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
-// AddLabel adds a label to an entry, searching all tiers.
+// AddLabel adds a label to an entry, searching all tiers (system tiers
+// included, so a quarantine draft can be labelled with its destination).
 func (s *Store) AddLabel(id entity.Id, label string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewAddLabel(s.author, label))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // RemoveLabel removes a label from an entry, searching all tiers.
 func (s *Store) RemoveLabel(id entity.Id, label string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewRemoveLabel(s.author, label))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Restore reverses a Tombstone, making the entry live again.
 func (s *Store) Restore(id entity.Id) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewRestore(s.author))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Update appends a body (and, if changed, title) op to an existing entry,
 // searching every tier. It is the mutating half of marker-based re-ingest.
 func (s *Store) Update(id entity.Id, body, title string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
+	return s.withWriteLock(func() error {
+		_, e, err := s.locate(id)
 		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s: %w", id, err)
+			return err
 		}
 		snap := e.Compile()
 		changed := false
@@ -604,62 +627,52 @@ func (s *Store) Update(id entity.Id, body, title string) error {
 			return nil
 		}
 		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+	})
 }
 
 // Purge hard-deletes an entry: optionally deletes its ref on the tier's remote
 // (push), removes the local ref, and (gc) excises the now-unreferenced objects.
 // Irreversible.
 func (s *Store) Purge(id entity.Id, gc, push bool) error {
-	var found entry.Tier
-	ok := false
-	for _, t := range s.TierNames() {
-		if _, err := entry.Read(s.repo, t, id); err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
-		found, ok = t, true
-		break
-	}
-	if !ok {
-		return fmt.Errorf("entry %s not found", id)
-	}
-
-	if push {
-		if found == entry.TierPrivate {
-			return fmt.Errorf("the private tier has no remote to purge from")
-		}
-		remote, err := s.RemoteFor(found)
+	return s.withWriteLock(func() error {
+		found, _, err := s.locate(id)
 		if err != nil {
 			return err
 		}
-		if remote == "" {
-			return fmt.Errorf("no remote configured for tier %s", found)
-		}
-		ref := fmt.Sprintf("refs/%s/%s", found.Namespace(), id)
-		cmd := exec.Command("git", "-C", s.dir, "push", remote, "--delete", ref)
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("delete %s on remote %s: %w", ref, remote, err)
-		}
-	}
 
-	if err := dag.Remove(entry.Definition(found), s.repo, id); err != nil {
-		return fmt.Errorf("remove %s in tier %s: %w", id, found, err)
-	}
-	if gc {
-		cmd := exec.Command("git", "-C", s.dir, "gc", "--prune=now", "--quiet")
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("git gc: %w", err)
+		if push {
+			if found == entry.TierPrivate {
+				return errors.New("the private tier has no remote to purge from")
+			}
+			remote, err := s.RemoteFor(found)
+			if err != nil {
+				return err
+			}
+			if remote == "" {
+				return fmt.Errorf("no remote configured for tier %s", found)
+			}
+			ref := fmt.Sprintf("refs/%s/%s", found.Namespace(), id)
+			cmd := exec.Command("git", "-C", s.dir, "push", remote, "--delete", ref)
+			cmd.Stdout = io.Discard
+			cmd.Stderr = io.Discard
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("delete %s on remote %s: %w", ref, remote, err)
+			}
 		}
-	}
-	return nil
+
+		if err := dag.Remove(entry.Definition(found), s.repo, id); err != nil {
+			return fmt.Errorf("remove %s in tier %s: %w", id, found, err)
+		}
+		if gc {
+			cmd := exec.Command("git", "-C", s.dir, "gc", "--prune=now", "--quiet")
+			cmd.Stdout = io.Discard
+			cmd.Stderr = io.Discard
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("git gc: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // Resolve expands a full id or an unambiguous hex prefix to a stored entry id,
@@ -667,7 +680,7 @@ func (s *Store) Purge(id entity.Id, gc, push bool) error {
 // callers see one entry space, not kref's internal per-tier loop.
 func (s *Store) Resolve(prefix string) (entity.Id, error) {
 	if prefix == "" {
-		return "", fmt.Errorf("empty id")
+		return "", errors.New("empty id")
 	}
 	// A favorite name is disjoint from any hex id-prefix (config.ValidFavoriteName
 	// forbids pure-hex names), so this never shadows an id: only non-hex tokens
@@ -684,7 +697,7 @@ func (s *Store) Resolve(prefix string) (entity.Id, error) {
 	}
 	var matches []entity.Id
 	seen := map[entity.Id]bool{}
-	for _, t := range s.TierNames() {
+	for _, t := range s.searchTierNames() {
 		ids, err := dag.ListLocalIds(entry.Definition(t), s.repo)
 		if err != nil {
 			return "", err
@@ -706,77 +719,105 @@ func (s *Store) Resolve(prefix string) (entity.Id, error) {
 	}
 }
 
+// AddComment appends a comment to an entry, searching all tiers. It returns the
+// new comment's id (the AddComment op id).
+func (s *Store) AddComment(id entity.Id, actorKind, body string, question bool, replyTo string) (string, error) {
+	var cid string
+	err := s.mutate(id, func(e *entry.Entry) error {
+		op := entry.NewAddComment(s.author, actorKind, body, question, replyTo)
+		e.Append(op)
+		cid = op.Id().String()
+		return nil
+	})
+	return cid, err
+}
+
+// ResolveComment resolves a question comment on an entry, searching all tiers.
+func (s *Store) ResolveComment(id entity.Id, target string) error {
+	return s.mutate(id, func(e *entry.Entry) error {
+		e.Append(entry.NewResolveComment(s.author, target))
+		return nil
+	})
+}
+
+// EditComment replaces a comment's body on an entry, searching all tiers.
+func (s *Store) EditComment(id entity.Id, target, body string) error {
+	return s.mutate(id, func(e *entry.Entry) error {
+		e.Append(entry.NewEditComment(s.author, target, body))
+		return nil
+	})
+}
+
+// DeleteComment tombstones a comment on an entry, searching all tiers.
+func (s *Store) DeleteComment(id entity.Id, target string) error {
+	return s.mutate(id, func(e *entry.Entry) error {
+		e.Append(entry.NewDeleteComment(s.author, target))
+		return nil
+	})
+}
+
 // RecordOrigin appends a provenance event to an entry, searching all tiers.
 func (s *Store) RecordOrigin(id entity.Id, actor, actorKind, sourcePath, trigger string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewRecordOrigin(s.author, actor, actorKind, sourcePath, trigger))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // Log returns the operation history of an entry, searching all tiers.
 func (s *Store) Log(id entity.Id) ([]entry.LogEntry, error) {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
-		return e.Log(), nil
+	_, e, err := s.locate(id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("entry %s not found", id)
+	return e.Log(), nil
 }
 
 // BodyVersions returns each historical body of an entry, searching all tiers.
 func (s *Store) BodyVersions(id entity.Id) ([]entry.BodyVersion, error) {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
-		return e.BodyVersions(), nil
+	_, e, err := s.locate(id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("entry %s not found", id)
+	return e.BodyVersions(), nil
+}
+
+// commentBodies returns the body of every AddComment/EditComment op in the
+// entry's history (including comments later deleted or edited away, whose op
+// still ships in the pushed DAG). Used by the push-time secret scan.
+func (s *Store) commentBodies(id entity.Id) ([]string, error) {
+	_, e, err := s.locate(id)
+	if err != nil {
+		return nil, err
+	}
+	return e.CommentBodies(), nil
 }
 
 // mergeCommits returns the hashes of merge commits (>1 parent) in the entry's
 // ref history across whichever tier holds it.
 func (s *Store) mergeCommits(id entity.Id) ([]string, error) {
-	for _, t := range s.TierNames() {
-		ref := "refs/" + t.Namespace() + "/" + id.String()
-		hashes, err := s.repo.ListCommits(ref)
-		if err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
-				continue // not in this tier
-			}
-			return nil, fmt.Errorf("list commits for %s/%s: %w", t, id, err)
-		}
-		var merges []string
-		for _, h := range hashes {
-			c, err := s.repo.ReadCommit(h)
-			if err != nil {
-				return nil, fmt.Errorf("read commit %s: %w", h, err)
-			}
-			if len(c.Parents) > 1 {
-				merges = append(merges, string(h))
-			}
-		}
-		return merges, nil
+	t, _, err := s.locate(id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("entry %s not found", id)
+	// locate already confirmed the entry (hence its ref) exists in t, so a
+	// not-found from ListCommits here is a real error, not a next-tier skip.
+	ref := "refs/" + t.Namespace() + "/" + id.String()
+	hashes, err := s.repo.ListCommits(ref)
+	if err != nil {
+		return nil, fmt.Errorf("list commits for %s/%s: %w", t, id, err)
+	}
+	var merges []string
+	for _, h := range hashes {
+		c, err := s.repo.ReadCommit(h)
+		if err != nil {
+			return nil, fmt.Errorf("read commit %s: %w", h, err)
+		}
+		if len(c.Parents) > 1 {
+			merges = append(merges, string(h))
+		}
+	}
+	return merges, nil
 }
 
 // UnacknowledgedMerge reports whether the entry has a merge commit not yet
@@ -815,42 +856,41 @@ func (s *Store) Merged(id entity.Id) (bool, error) {
 // hashes so the ◆ merged flag clears. Returns the count newly acknowledged (0
 // when there was nothing to resolve).
 func (s *Store) AcknowledgeMerge(id entity.Id) (int, error) {
-	snap, err := s.Get(id)
-	if err != nil {
-		return 0, err
-	}
-	hashes, err := s.mergeCommits(id)
-	if err != nil {
-		return 0, err
-	}
-	acked := make(map[string]bool, len(snap.AckedMerges))
-	for _, h := range snap.AckedMerges {
-		acked[h] = true
-	}
-	var fresh []string
-	for _, h := range hashes {
-		if !acked[h] {
-			fresh = append(fresh, h)
-		}
-	}
-	if len(fresh) == 0 {
-		return 0, nil
-	}
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
+	var n int
+	err := s.withWriteLock(func() error {
+		snap, err := s.Get(id)
 		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
+			return err
+		}
+		hashes, err := s.mergeCommits(id)
+		if err != nil {
+			return err
+		}
+		acked := make(map[string]bool, len(snap.AckedMerges))
+		for _, h := range snap.AckedMerges {
+			acked[h] = true
+		}
+		var fresh []string
+		for _, h := range hashes {
+			if !acked[h] {
+				fresh = append(fresh, h)
 			}
-			return 0, fmt.Errorf("read %s in tier %s: %w", id, t, err)
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		_, e, err := s.locate(id)
+		if err != nil {
+			return err
 		}
 		e.Append(entry.NewAckMerge(s.author, fresh))
 		if err := e.Commit(s.repo); err != nil {
-			return 0, err
+			return err
 		}
-		return len(fresh), nil
-	}
-	return 0, fmt.Errorf("entry %s not found", id)
+		n = len(fresh)
+		return nil
+	})
+	return n, err
 }
 
 // RepoRelative renders path relative to the repository root. A path outside the

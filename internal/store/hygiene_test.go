@@ -98,6 +98,29 @@ var _ = Describe("Hygiene", func() {
 		Expect(v.Incoming).To(BeEmpty())
 	})
 
+	It("resolves links from the excerpt cache without a full DAG scan", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		a, err := s.Add(entry.TierPersonal, "note", "A", "a")
+		Expect(err).NotTo(HaveOccurred())
+		b, err := s.Add(entry.TierPersonal, "note", "B", "b")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.AddLink(a, b.String(), "relates")).To(Succeed())
+
+		_, err = s.ListExcerpts(ListFilter{})
+		Expect(err).NotTo(HaveOccurred())
+
+		va, err := s.Links(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(va.Outgoing).To(HaveLen(1))
+		Expect(va.Outgoing[0].Title).To(Equal("B"))
+		vb, err := s.Links(b)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vb.Incoming).To(ConsistOf(entry.LinkRef{ID: a, Type: "relates", Title: "A"}))
+	})
+
 	It("Tree descends into entries that name a node as parent", func() {
 		dir := gitRepo()
 		s, err := Init(dir, "T", "t@e.com")

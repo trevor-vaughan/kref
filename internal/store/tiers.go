@@ -42,6 +42,14 @@ func resolveTiers(repo repository.ClockedRepo) ([]entry.TierDef, error) {
 	for _, k := range keys {
 		name := strings.TrimPrefix(k, tierConfigPrefix)
 		typ := entry.Tier(declared[k])
+		if name == string(entry.TierQuarantine) {
+			return nil, fmt.Errorf(
+				"config %s declares a custom tier named %q, which is now a reserved "+
+					"system tier for held (quarantined) writes. Remove the collision: "+
+					"`git config --unset %s` (entries under refs/kref-quarantine/ are now "+
+					"the reserved system tier; move them to another tier first if you need "+
+					"them back)", k, name, k)
+		}
 		if err := entry.ValidateTierName(name); err != nil {
 			return nil, fmt.Errorf("config %s: %w", k, err)
 		}
@@ -163,14 +171,33 @@ func (s *Store) DeclaredTier(name string) (entry.TierDef, error) {
 }
 
 // TierType returns the resolved type of a tier name, defaulting to shared for
-// unknown names (the safe display default for foreign namespaces).
+// unknown names (the safe display default for foreign namespaces). Reserved
+// system tiers (quarantine) are resolved even though they are not enumerated in
+// the user tier list.
 func (s *Store) TierType(t entry.Tier) entry.Tier {
 	for _, d := range s.tiers {
 		if d.Name == t {
 			return d.Type
 		}
 	}
+	for _, d := range entry.SystemTierDefs() {
+		if d.Name == t {
+			return d.Type
+		}
+	}
 	return entry.TierShared
+}
+
+// searchTierNames returns every namespace a by-id lookup must search: the user
+// tiers plus the hidden system tiers (quarantine). Kept separate from
+// TierNames so system tiers are resolvable by id without leaking into user
+// enumerations (tier list, default List, excerpt/completion caches).
+func (s *Store) searchTierNames() []entry.Tier {
+	names := s.TierNames()
+	for _, d := range entry.SystemTierDefs() {
+		names = append(names, d.Name)
+	}
+	return names
 }
 
 // TierAdd declares a custom tier and optionally wires its remote in one step.

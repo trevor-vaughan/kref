@@ -622,6 +622,74 @@ var _ = Describe("content type persistence", func() {
 	})
 })
 
+var _ = Describe("Store.AddComment / ResolveComment", func() {
+	It("add + resolve round-trip: comment appears then resolves", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "Tester", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		id, err := s.Add(entry.TierShared, "spec", "T", "b")
+		Expect(err).NotTo(HaveOccurred())
+
+		cid, err := s.AddComment(id, "human", "why?", true, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cid).NotTo(BeEmpty())
+
+		snap, err := s.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Comments).To(HaveLen(1))
+		Expect(snap.Comments[0].Question).To(BeTrue())
+		Expect(snap.Comments[0].Resolved).To(BeFalse())
+
+		Expect(s.ResolveComment(id, cid)).To(Succeed())
+
+		snap, err = s.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Comments).To(HaveLen(1))
+		Expect(snap.Comments[0].Resolved).To(BeTrue())
+	})
+
+	It("errors when AddComment targets an unknown entry id", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "Tester", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		_, err = s.AddComment(entity.Id("deadbeef"), "human", "x", false, "")
+		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("Store.List OpenQuestionsOnly filter", func() {
+	It("returns only entries with an unresolved question comment", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "Tester", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+
+		// Entry with an open question comment — must appear.
+		idOpen, err := s.Add(entry.TierShared, "spec", "OpenQuestion", "b")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.AddComment(idOpen, "human", "why?", true, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Entry with a question that is then resolved — must NOT appear.
+		idResolved, err := s.Add(entry.TierShared, "spec", "ResolvedQuestion", "b")
+		Expect(err).NotTo(HaveOccurred())
+		cid, err := s.AddComment(idResolved, "human", "resolved?", true, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.ResolveComment(idResolved, cid)).To(Succeed())
+
+		// Entry with no comments at all — must NOT appear.
+		_, err = s.Add(entry.TierShared, "spec", "NoComments", "b")
+		Expect(err).NotTo(HaveOccurred())
+
+		items, err := s.List(ListFilter{OpenQuestionsOnly: true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(items).To(HaveLen(1))
+		Expect(items[0].Title).To(Equal("OpenQuestion"))
+	})
+})
+
 var _ = Describe("Store.Track / Untrack", func() {
 	It("marks an entry tracked with a repo-relative path and clears it on untrack", func() {
 		dir := gitRepo()

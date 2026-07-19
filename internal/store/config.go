@@ -62,7 +62,7 @@ func (s *Store) FavoriteOrigin(name string) string {
 func (s *Store) loadUserConfig() (*config.Config, error) {
 	path, err := config.UserPath(os.Getenv)
 	if err != nil {
-		return nil, nil // no HOME/XDG => treat as no user config
+		return nil, nil //nolint:nilerr // no HOME/XDG => treat as no user config
 	}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

@@ -28,6 +28,25 @@ var _ = Describe("scan-on-push", func() {
 		Expect(off[0].ID).To(Equal(id))
 	})
 
+	It("scanForPush flags a secret in a comment body, even one later deleted", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		id, err := s.Add(entry.TierShared, "spec", "Clean body", "no secrets in the body itself")
+		Expect(err).NotTo(HaveOccurred())
+		cid, err := s.AddComment(id, "human", "psst: ghp_012345678901234567890123456789abcdef", false, "")
+		Expect(err).NotTo(HaveOccurred())
+		// Delete it — the AddComment op still ships in the pushed DAG, so the
+		// secret must still be caught.
+		Expect(s.DeleteComment(id, cid)).To(Succeed())
+
+		off, err := s.scanForPush([]entity.Id{id})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(off).To(HaveLen(1))
+		Expect(off[0].ID).To(Equal(id))
+	})
+
 	It("scanForPush passes clean entries", func() {
 		dir := gitRepo()
 		s, err := Init(dir, "T", "t@e.com")

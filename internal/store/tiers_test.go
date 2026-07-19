@@ -29,6 +29,60 @@ var _ = Describe("tier resolution", func() {
 		Expect(s.TierNames()).To(Equal([]entry.Tier{"private", "personal", "shared"}))
 	})
 
+	It("resolves a quarantine entry but keeps quarantine out of the user tier list", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		// quarantine is a hidden system tier: not enumerated with user tiers.
+		Expect(s.TierNames()).NotTo(ContainElement(entry.TierQuarantine))
+		// but an entry written there is resolvable by id and typed private.
+		id, err := s.Add(entry.TierQuarantine, "quarantine", "held", "{}")
+		Expect(err).NotTo(HaveOccurred())
+		snap, err := s.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Tier).To(Equal(string(entry.TierQuarantine)))
+		Expect(snap.TierType).To(Equal(string(entry.TierPrivate)))
+		// by-id writes reach it too (park sets a q-dest label + a review comment).
+		Expect(s.AddLabel(id, "q-dest:shared")).To(Succeed())
+		snap, err = s.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Labels).To(ContainElement("q-dest:shared"))
+	})
+
+	It("omits quarantine from a default List but includes it when targeted", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		_, err = s.Add(entry.TierQuarantine, "quarantine", "held", "{}")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.Add(entry.TierPersonal, "doc", "Visible", "body")
+		Expect(err).NotTo(HaveOccurred())
+
+		all, err := s.List(ListFilter{})
+		Expect(err).NotTo(HaveOccurred())
+		for _, it := range all {
+			Expect(it.Tier).NotTo(Equal(string(entry.TierQuarantine)))
+		}
+
+		held, err := s.List(ListFilter{Tier: entry.TierQuarantine})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(held).To(HaveLen(1))
+		Expect(held[0].Title).To(Equal("held"))
+	})
+
+	It("fails to open with a clear message when a custom quarantine tier collides", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.repo.LocalConfig().StoreString("kref.tier.quarantine", "personal")).To(Succeed())
+		Expect(s.Close()).To(Succeed())
+
+		_, err = Open(dir)
+		Expect(err).To(MatchError(ContainSubstring("git config --unset kref.tier.quarantine")))
+	})
+
 	It("resolves config-declared custom tiers in display order", func() {
 		dir := gitRepo()
 		s, err := Init(dir, "T", "t@e.com")

@@ -64,9 +64,10 @@ type pushOffender struct {
 	Desc  string
 }
 
-// scanForPush runs betterleaks over every body version of each given entry (the DAG
-// ships full history, so a secret edited away still leaves). It returns the
-// offending entries; it never returns or logs the secret value.
+// scanForPush runs betterleaks over every body version AND every comment body of
+// each given entry (the DAG ships full history, so a secret edited away — or in a
+// deleted comment — still leaves). It returns the offending entries; it never
+// returns or logs the secret value.
 func (s *Store) scanForPush(ids []entity.Id) ([]pushOffender, error) {
 	var offenders []pushOffender
 	for _, id := range ids {
@@ -77,6 +78,17 @@ func (s *Store) scanForPush(ids []entity.Id) ([]pushOffender, error) {
 		var buf []byte
 		for _, v := range versions {
 			buf = append(buf, v.Body...)
+			buf = append(buf, '\n')
+		}
+		// Comment bodies push too, and are not covered by BodyVersions — scan the
+		// full comment op-history so a secret in a deleted or edited-away comment
+		// is still caught before it leaves the machine.
+		comments, err := s.commentBodies(id)
+		if err != nil {
+			return nil, err
+		}
+		for _, cb := range comments {
+			buf = append(buf, cb...)
 			buf = append(buf, '\n')
 		}
 		if len(buf) == 0 {

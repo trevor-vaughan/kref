@@ -32,7 +32,7 @@ func (s *Store) SetRemote(t entry.Tier, name, url string) error {
 		return err
 	}
 	if d.Type == entry.TierPrivate {
-		return fmt.Errorf("the private tier cannot have a remote")
+		return errors.New("the private tier cannot have a remote")
 	}
 	if url != "" {
 		remotes, err := s.repo.GetRemotes()
@@ -42,7 +42,7 @@ func (s *Store) SetRemote(t entry.Tier, name, url string) error {
 		if _, exists := remotes[name]; !exists {
 			adder, ok := s.repo.(remoteAdder)
 			if !ok {
-				return fmt.Errorf("repository does not support AddRemote")
+				return errors.New("repository does not support AddRemote")
 			}
 			if err := adder.AddRemote(name, url); err != nil {
 				return err
@@ -50,6 +50,13 @@ func (s *Store) SetRemote(t entry.Tier, name, url string) error {
 		}
 	}
 	return s.repo.LocalConfig().StoreString(remoteConfigPrefix+string(t), name)
+}
+
+// GitRemotes returns the repository's configured git remotes as a name→URL map.
+// It surfaces the raw git remote set (not the per-tier kref bindings) so callers
+// such as `kref init` can discover a conventional "origin" to adopt.
+func (s *Store) GitRemotes() (map[string]string, error) {
+	return s.repo.GetRemotes()
 }
 
 // RemoteFor returns the configured remote name for a tier, or "" if none/private.
@@ -95,7 +102,7 @@ func (s *Store) push(t entry.Tier, allowUnscanned bool) (bool, error) {
 		return false, err
 	}
 	if d.Type == entry.TierPrivate {
-		return false, fmt.Errorf("refusing to push the private tier")
+		return false, errors.New("refusing to push the private tier")
 	}
 	remote, err := s.RemoteFor(t)
 	if err != nil {
@@ -137,40 +144,45 @@ func (s *Store) push(t entry.Tier, allowUnscanned bool) (bool, error) {
 // Pull fetches and merges a tier's entries from its configured remote.
 // It syncs the remote's identity refs first so that operation authors can be resolved.
 func (s *Store) Pull(t entry.Tier) error {
-	d, err := s.DeclaredTier(string(t))
-	if err != nil {
-		return err
-	}
-	if d.Type == entry.TierPrivate {
-		return fmt.Errorf("the private tier has no remote")
-	}
-	remote, err := s.RemoteFor(t)
-	if err != nil {
-		return err
-	}
-	if remote == "" {
-		return fmt.Errorf("no remote configured for tier %s", t)
-	}
-	// Identity refs must arrive before entry refs so resolvers can find authors.
-	if err := identity.Pull(s.repo, remote); err != nil {
-		return fmt.Errorf("pulling identities from %s: %w", remote, err)
-	}
-	if _, err := dag.Fetch(entry.Definition(t), s.repo, remote); err != nil {
-		return err
-	}
-	var incoming []entity.Id
-	for m := range dag.MergeAll(entry.Definition(t), entry.WrapForRead(), s.repo, resolvers(s.repo), remote, s.author) {
-		if m.Err != nil {
-			return m.Err
+	// Pull mutates local entity refs via dag.MergeAll (not through the per-entity
+	// leaf writers), so it holds the write lock for the whole merge. Push stays
+	// unlocked — it only uploads, never touching local refs.
+	return s.withWriteLock(func() error {
+		d, err := s.DeclaredTier(string(t))
+		if err != nil {
+			return err
 		}
-		if m.Status == entity.MergeStatusInvalid {
-			return fmt.Errorf("merge failure: %s", m.Reason)
+		if d.Type == entry.TierPrivate {
+			return errors.New("the private tier has no remote")
 		}
-		if m.Status == entity.MergeStatusNew || m.Status == entity.MergeStatusUpdated {
-			incoming = append(incoming, m.Id)
+		remote, err := s.RemoteFor(t)
+		if err != nil {
+			return err
 		}
-	}
-	return s.recordIncoming(t, incoming)
+		if remote == "" {
+			return fmt.Errorf("no remote configured for tier %s", t)
+		}
+		// Identity refs must arrive before entry refs so resolvers can find authors.
+		if err := identity.Pull(s.repo, remote); err != nil {
+			return fmt.Errorf("pulling identities from %s: %w", remote, err)
+		}
+		if _, err := dag.Fetch(entry.Definition(t), s.repo, remote); err != nil {
+			return err
+		}
+		var incoming []entity.Id
+		for m := range dag.MergeAll(entry.Definition(t), entry.WrapForRead(), s.repo, resolvers(s.repo), remote, s.author) {
+			if m.Err != nil {
+				return m.Err
+			}
+			if m.Status == entity.MergeStatusInvalid {
+				return fmt.Errorf("merge failure: %s", m.Reason)
+			}
+			if m.Status == entity.MergeStatusNew || m.Status == entity.MergeStatusUpdated {
+				incoming = append(incoming, m.Id)
+			}
+		}
+		return s.recordIncoming(t, incoming)
+	})
 }
 
 func incomingKey(t entry.Tier) string { return "kref.incoming." + string(t) }
@@ -196,7 +208,7 @@ func (s *Store) incomingEntries(t entry.Tier) map[string]int {
 		return map[string]int{}
 	}
 	out := map[string]int{}
-	for _, p := range strings.Fields(raw) {
+	for p := range strings.FieldsSeq(raw) {
 		hex, cnt, ok := strings.Cut(p, ":")
 		if !ok {
 			continue
@@ -275,23 +287,35 @@ func (s *Store) WarnNoRemoteDue(now time.Time, interval time.Duration) (bool, er
 	if !syncable {
 		return false, nil
 	}
-	raw, err := s.repo.LocalConfig().ReadString(noRemoteWarnKey)
+	return s.warnDue(noRemoteWarnKey, now, interval)
+}
+
+// MarkNoRemoteWarned records now as the last time the no-remote warning fired.
+func (s *Store) MarkNoRemoteWarned(now time.Time) error {
+	return s.markWarned(noRemoteWarnKey, now)
+}
+
+// warnDue reports whether a throttled warning keyed at key is due: the last
+// recorded unix-seconds marker is at least interval old, or absent/unparseable
+// (warn, and let markWarned rewrite it).
+func (s *Store) warnDue(key string, now time.Time, interval time.Duration) (bool, error) {
+	raw, err := s.repo.LocalConfig().ReadString(key)
 	if errors.Is(err, repository.ErrNoConfigEntry) {
-		return true, nil // never warned
+		return true, nil
 	}
 	if err != nil {
 		return false, err
 	}
 	last, convErr := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if convErr != nil {
-		return true, nil // unreadable marker — warn and let Mark rewrite it
+		return true, nil //nolint:nilerr // unreadable marker — warn and let markWarned rewrite it
 	}
 	return now.Sub(time.Unix(last, 0)) >= interval, nil
 }
 
-// MarkNoRemoteWarned records now as the last time the no-remote warning fired.
-func (s *Store) MarkNoRemoteWarned(now time.Time) error {
-	return s.repo.LocalConfig().StoreString(noRemoteWarnKey, strconv.FormatInt(now.Unix(), 10))
+// markWarned records now as the last time the warning keyed at key fired.
+func (s *Store) markWarned(key string, now time.Time) error {
+	return s.repo.LocalConfig().StoreString(key, strconv.FormatInt(now.Unix(), 10))
 }
 
 // SyncableTiers returns declared, non-private-typed tiers that have a

@@ -1,7 +1,7 @@
 package store
 
 import (
-	"fmt"
+	"errors"
 	"sort"
 
 	"github.com/git-bug/git-bug/entity"
@@ -11,34 +11,18 @@ import (
 
 // AddLink appends a typed link from an entry to another, searching all tiers.
 func (s *Store) AddLink(id entity.Id, to, linkType string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewAddLink(s.author, to, linkType))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // RemoveLink removes every link to `to` on an entry, searching all tiers.
 func (s *Store) RemoveLink(id entity.Id, to string) error {
-	for _, t := range s.TierNames() {
-		e, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
-		}
+	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewRemoveLink(s.author, to))
-		return e.Commit(s.repo)
-	}
-	return fmt.Errorf("entry %s not found", id)
+		return nil
+	})
 }
 
 // LinkWouldLeak reports whether a link from->to stores a more-private id on a
@@ -63,7 +47,7 @@ func (s *Store) LinkWouldLeak(from, to entity.Id) (bool, error) {
 // so the directional convention lives here, not in the adapters.
 func (s *Store) Supersede(oldID, newID entity.Id) error {
 	if oldID == newID {
-		return fmt.Errorf("cannot supersede an entry with itself")
+		return errors.New("cannot supersede an entry with itself")
 	}
 	if err := s.AddLink(newID, oldID.String(), "supersedes"); err != nil {
 		return err
@@ -72,44 +56,46 @@ func (s *Store) Supersede(oldID, newID entity.Id) error {
 }
 
 // Links returns an entry's outgoing and incoming typed edges. Outgoing edges
-// come from the entry's own snapshot; incoming edges are found by scanning every
-// live entry for links targeting id. Titles are resolved where the other end is
-// a live (non-deleted) entry.
+// come from the entry's own snapshot; incoming edges are found by walking the
+// cached excerpts for links targeting id. Titles are resolved where the other
+// end is a live (non-deleted) entry.
 func (s *Store) Links(id entity.Id) (entry.LinkView, error) {
-	all, err := s.List(ListFilter{})
+	all, err := s.ListExcerpts(ListFilter{})
 	if err != nil {
 		return entry.LinkView{}, err
 	}
-	byID := make(map[string]*entry.Snapshot, len(all))
-	var self *entry.Snapshot
-	for _, snap := range all {
-		byID[snap.ID.String()] = snap
-		if snap.ID == id {
-			self = snap
+	titleByID := make(map[string]string, len(all))
+	var selfLinks []entry.Link
+	found := false
+	for _, e := range all {
+		titleByID[e.ID.String()] = e.Title
+		if e.ID == id {
+			selfLinks = e.Links
+			found = true
 		}
 	}
-	if self == nil {
-		if self, err = s.Get(id); err != nil {
-			return entry.LinkView{}, err
+	if !found {
+		// self may be archived/deleted (excluded by the default filter); its
+		// outgoing edges still come from its own snapshot.
+		snap, gErr := s.Get(id)
+		if gErr != nil {
+			return entry.LinkView{}, gErr
 		}
+		selfLinks = snap.Links
 	}
-	// Initialize as empty (non-nil) slices so the JSON shape is [] not null,
-	// consistent with the empty-slice convention established in slice 4.
 	view := entry.LinkView{Outgoing: []entry.LinkRef{}, Incoming: []entry.LinkRef{}}
-	for _, l := range self.Links {
-		ref := entry.LinkRef{ID: entity.Id(l.To), Type: l.Type}
-		if snap, ok := byID[l.To]; ok {
-			ref.Title = snap.Title
-		}
-		view.Outgoing = append(view.Outgoing, ref)
+	for _, l := range selfLinks {
+		view.Outgoing = append(view.Outgoing, entry.LinkRef{
+			ID: entity.Id(l.To), Type: l.Type, Title: titleByID[l.To],
+		})
 	}
-	for _, snap := range all {
-		if snap.ID == id {
+	for _, e := range all {
+		if e.ID == id {
 			continue
 		}
-		for _, l := range snap.Links {
+		for _, l := range e.Links {
 			if l.To == id.String() {
-				view.Incoming = append(view.Incoming, entry.LinkRef{ID: snap.ID, Type: l.Type, Title: snap.Title})
+				view.Incoming = append(view.Incoming, entry.LinkRef{ID: e.ID, Type: l.Type, Title: e.Title})
 			}
 		}
 	}

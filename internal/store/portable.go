@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,7 +25,7 @@ func (s *Store) Export(w io.Writer, tiers []entry.Tier) error {
 		return err
 	}
 	if len(entryRefs) == 0 {
-		return fmt.Errorf("nothing to export for the selected tier(s)")
+		return errors.New("nothing to export for the selected tier(s)")
 	}
 	idRefs, err := s.refsMatching("refs/identities/")
 	if err != nil {
@@ -146,7 +147,7 @@ func (s *Store) refsMatching(patterns ...string) ([]string, error) {
 		return nil, fmt.Errorf("git for-each-ref: %w", err)
 	}
 	var refs []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line != "" {
 			refs = append(refs, line)
 		}

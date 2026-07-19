@@ -16,51 +16,41 @@ import (
 // exclude the Lamport clock, so the id is stable; the target tier re-clocks via
 // the normal write path. Promoting to shared rescans for secrets, fail-closed.
 func (s *Store) Retier(id entity.Id, target entry.Tier, actor, actorKind string) error {
-	if _, err := s.DeclaredTier(string(target)); err != nil {
-		return err
-	}
-	var cur entry.Tier
-	var e *entry.Entry
-	for _, t := range s.TierNames() {
-		ent, err := entry.Read(s.repo, t, id)
-		if err != nil {
-			if entity.IsErrNotFound(err) {
-				continue
-			}
-			return fmt.Errorf("read %s in tier %s: %w", id, t, err)
+	return s.withWriteLock(func() error {
+		if _, err := s.DeclaredTier(string(target)); err != nil {
+			return err
 		}
-		cur, e = t, ent
-		break
-	}
-	if e == nil {
-		return fmt.Errorf("entry %s not found", id)
-	}
-	if cur == target {
-		return nil // already in the target tier
-	}
-	// Promote-to-shared-TYPED secret gate (security; unskippable by callers).
-	if s.TierType(target) == entry.TierShared {
-		offenders, err := s.scanForPush([]entity.Id{id})
+		cur, e, err := s.locate(id)
 		if err != nil {
 			return err
 		}
-		if len(offenders) > 0 {
-			return &RetierBlockedError{Offenders: offenders}
+		if cur == target {
+			return nil // already in the target tier
 		}
-	}
-	// Rebuild in the target tier: same ops (id preserved) + a retier event.
-	nw := entry.New(target)
-	for _, op := range e.Operations() {
-		nw.Append(op)
-	}
-	nw.Append(entry.NewRecordOrigin(s.author, actor, actorKind, "", "retier"))
-	if err := nw.Commit(s.repo); err != nil {
-		return fmt.Errorf("commit %s in tier %s: %w", id, target, err)
-	}
-	if err := dag.Remove(entry.Definition(cur), s.repo, id); err != nil {
-		return fmt.Errorf("entry %s is now in both %s and %s; rerun retier to finish (remove old: %w)", id, cur, target, err)
-	}
-	return nil
+		// Promote-to-shared-TYPED secret gate (security; unskippable by callers).
+		if s.TierType(target) == entry.TierShared {
+			offenders, err := s.scanForPush([]entity.Id{id})
+			if err != nil {
+				return err
+			}
+			if len(offenders) > 0 {
+				return &RetierBlockedError{Offenders: offenders}
+			}
+		}
+		// Rebuild in the target tier: same ops (id preserved) + a retier event.
+		nw := entry.New(target)
+		for _, op := range e.Operations() {
+			nw.Append(op)
+		}
+		nw.Append(entry.NewRecordOrigin(s.author, actor, actorKind, "", "retier"))
+		if err := nw.Commit(s.repo); err != nil {
+			return fmt.Errorf("commit %s in tier %s: %w", id, target, err)
+		}
+		if err := dag.Remove(entry.Definition(cur), s.repo, id); err != nil {
+			return fmt.Errorf("entry %s is now in both %s and %s; rerun retier to finish (remove old: %w)", id, cur, target, err)
+		}
+		return nil
+	})
 }
 
 func tierRank(t entry.Tier) int {
