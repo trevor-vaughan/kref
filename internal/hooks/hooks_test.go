@@ -11,6 +11,8 @@ var _ = Describe("Render", func() {
 		Expect(out).To(ContainSubstring("run: /abs/bin/kref sync pull"))
 		Expect(out).To(ContainSubstring("run: /abs/bin/kref sync push"))
 		Expect(out).To(ContainSubstring("post-commit:"))
+		Expect(out).To(ContainSubstring("pre-commit:"))
+		Expect(out).To(ContainSubstring("todo lint"))
 		Expect(out).To(ContainSubstring("ingest --skip-missing {files}"))
 		Expect(out).To(ContainSubstring("docs/superpowers/plans"))
 		Expect(out).To(ContainSubstring("openspec"))

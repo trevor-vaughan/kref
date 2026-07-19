@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,6 +28,10 @@ func Render(krefPath string, ingestPaths []string) string {
 		ingestPaths = DefaultIngestPaths
 	}
 	return fmt.Sprintf(`# Managed by `+"`kref hooks install`"+`. Run by lefthook (https://lefthook.dev).
+pre-commit:
+  commands:
+    kref-todo-lint:
+      run: %[1]s todo lint
 post-merge:
   commands:
     kref-sync-pull:
@@ -67,7 +72,7 @@ func Merge(existing []byte, generated string) ([]byte, error) {
 	}
 	curRoot, genRoot := mappingRoot(&curDoc), mappingRoot(&genDoc)
 	if curRoot == nil || genRoot == nil {
-		return nil, fmt.Errorf("lefthook config is not a YAML mapping")
+		return nil, errors.New("lefthook config is not a YAML mapping")
 	}
 	for i := 0; i+1 < len(genRoot.Content); i += 2 {
 		hookKey, hookVal := genRoot.Content[i], genRoot.Content[i+1]
