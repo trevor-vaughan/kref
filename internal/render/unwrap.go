@@ -80,7 +80,7 @@ func UnwrapMarkdown(src string) string {
 			return ast.WalkContinue, nil
 		}
 		segs := make([]text.Segment, lines.Len())
-		for i := 0; i < lines.Len(); i++ {
+		for i := range lines.Len() {
 			segs[i] = lines.At(i)
 		}
 		joinStart[lineOf(segs[0].Start)] = segs
@@ -92,7 +92,7 @@ func UnwrapMarkdown(src string) string {
 
 	var out strings.Builder
 	out.Grow(len(source))
-	for i := 0; i < len(lineStarts); i++ {
+	for i := range lineStarts {
 		if consumed[i] {
 			continue
 		}

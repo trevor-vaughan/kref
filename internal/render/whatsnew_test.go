@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/git-bug/git-bug/entity"
+
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/render"
 )

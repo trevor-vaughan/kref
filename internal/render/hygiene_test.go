@@ -27,26 +27,6 @@ var _ = Describe("Tree rendering", func() {
 	})
 })
 
-var _ = Describe("Links rendering", func() {
-	It("prints outgoing and incoming sections", func() {
-		var b bytes.Buffer
-		render.Links(&b, entry.LinkView{
-			Outgoing: []entry.LinkRef{{ID: "bbb2", Type: "relates", Title: "B"}},
-			Incoming: []entry.LinkRef{{ID: "ccc3", Type: "parent-child", Title: "C"}},
-		})
-		out := b.String()
-		Expect(out).To(ContainSubstring("Outgoing:"))
-		Expect(out).To(ContainSubstring("relates"))
-		Expect(out).To(ContainSubstring("Incoming:"))
-		Expect(out).To(ContainSubstring("parent-child"))
-	})
-	It("reports when there are no links", func() {
-		var b bytes.Buffer
-		render.Links(&b, entry.LinkView{})
-		Expect(b.String()).To(ContainSubstring("no links"))
-	})
-})
-
 var _ = Describe("Tidy rendering", func() {
 	It("renders duplicate and superseded sections", func() {
 		var b bytes.Buffer

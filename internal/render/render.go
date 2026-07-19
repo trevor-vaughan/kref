@@ -8,8 +8,10 @@ package render
 import (
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"charm.land/glamour/v2"
@@ -289,13 +291,7 @@ func SortBareDesc(key string) bool { return sortDefaultsDesc(Column(key)) }
 func ParseSort(s string) (*SortSpec, error) {
 	key, dir, hasDir := strings.Cut(strings.TrimSpace(s), ":")
 	spec := &SortSpec{Key: Column(key)}
-	valid := false
-	for _, c := range sortableColumns {
-		if c == spec.Key {
-			valid = true
-			break
-		}
-	}
+	valid := slices.Contains(sortableColumns, spec.Key)
 	if !valid {
 		return nil, fmt.Errorf("unknown sort key %q (valid: %s; append :desc to reverse)", key, strings.Join(SortKeys(), " "))
 	}
@@ -501,6 +497,42 @@ func renderTable(w io.Writer, items []*entry.Snapshot, cols []Column, color, sho
 		fmt.Fprintln(w, "no entries")
 		return
 	}
+	sortListRows(rows, sortSpec, favs)
+	widths := columnWidths(rows, cols)
+	fmt.Fprintln(w, strings.Join(headerCells(cols, widths), "  "))
+	for _, r := range rows {
+		fmt.Fprintln(w, strings.Join(rowCells(r, cols, widths, color), "  "))
+	}
+	noun := "entries"
+	if len(rows) == 1 {
+		noun = "entry"
+	}
+	fmt.Fprintf(w, "\n%d %s\n", len(rows), noun)
+}
+
+// ListLines renders the collapsed, sorted entry table as a header row and one
+// line per entry, returning the entry ids in the same display order. RenderList
+// and the interactive list cockpit share it so a row's rendered form is defined
+// once. The plain/machine format stays in RenderList; opts.Plain is ignored here.
+func ListLines(items []*entry.Snapshot, opts ListOptions) (header string, lines []string, ids []entity.Id) {
+	cols := opts.Columns
+	if len(cols) == 0 {
+		cols = DefaultColumns
+	}
+	rows := listRows(items, opts.ShowAll)
+	sortListRows(rows, opts.Sort, opts.Favorites)
+	widths := columnWidths(rows, cols)
+	header = strings.Join(headerCells(cols, widths), "  ")
+	for _, r := range rows {
+		lines = append(lines, strings.Join(rowCells(r, cols, widths, opts.Color), "  "))
+		ids = append(ids, r.snap.ID)
+	}
+	return header, lines, ids
+}
+
+// sortListRows orders rows in place: favorited ids pin to the top, then sortSpec
+// (if any), else the default tier→kind→title→id order.
+func sortListRows(rows []listRow, sortSpec *SortSpec, favs map[string]bool) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i].snap, rows[j].snap
 		if less, ok := favFirst(favs, a, b); ok {
@@ -523,7 +555,11 @@ func renderTable(w io.Writer, items []*entry.Snapshot, cols []Column, color, sho
 		}
 		return a.ID.String() < b.ID.String()
 	})
+}
 
+// columnWidths returns the display width of each column: the header width grown
+// to fit the widest cell in that column.
+func columnWidths(rows []listRow, cols []Column) []int {
 	widths := make([]int, len(cols))
 	for i, c := range cols {
 		widths[i] = utf8.RuneCountInString(columnHeaders[c])
@@ -535,7 +571,11 @@ func renderTable(w io.Writer, items []*entry.Snapshot, cols []Column, color, sho
 			}
 		}
 	}
+	return widths
+}
 
+// headerCells returns the padded column-header cells (the last column is not padded).
+func headerCells(cols []Column, widths []int) []string {
 	hdr := make([]string, len(cols))
 	for i, c := range cols {
 		if i == len(cols)-1 {
@@ -544,32 +584,28 @@ func renderTable(w io.Writer, items []*entry.Snapshot, cols []Column, color, sho
 			hdr[i] = pad(columnHeaders[c], widths[i])
 		}
 	}
-	fmt.Fprintln(w, strings.Join(hdr, "  "))
+	return hdr
+}
 
-	for _, r := range rows {
-		cells := make([]string, len(cols))
-		for i, c := range cols {
-			last := i == len(cols)-1
-			if c == ColTier {
-				wdt := widths[i]
-				if last {
-					wdt = 0
-				}
-				cells[i] = tierCell(r.snap.Tier, r.snap.TierType, wdt, color)
-			} else if last {
-				cells[i] = tableCell(c, r)
-			} else {
-				cells[i] = pad(tableCell(c, r), widths[i])
+// rowCells returns the padded cells for one row (tier cell is colorized; the last
+// column is not padded).
+func rowCells(r listRow, cols []Column, widths []int, color bool) []string {
+	cells := make([]string, len(cols))
+	for i, c := range cols {
+		last := i == len(cols)-1
+		if c == ColTier {
+			wdt := widths[i]
+			if last {
+				wdt = 0
 			}
+			cells[i] = tierCell(r.snap.Tier, r.snap.TierType, wdt, color)
+		} else if last {
+			cells[i] = tableCell(c, r)
+		} else {
+			cells[i] = pad(tableCell(c, r), widths[i])
 		}
-		fmt.Fprintln(w, strings.Join(cells, "  "))
 	}
-
-	noun := "entries"
-	if len(rows) == 1 {
-		noun = "entry"
-	}
-	fmt.Fprintf(w, "\n%d %s\n", len(rows), noun)
+	return cells
 }
 
 // listRows applies the clean-view transforms. With showAll, every item is its
@@ -713,6 +749,7 @@ func tierCell(tier, typ string, w int, color bool) string {
 type ShowOptions struct {
 	Raw         bool     // emit the stored body verbatim instead of rendering it
 	NoHeader    bool     // omit the metadata header block
+	HeaderOnly  bool     // render only the metadata header block (no body)
 	Color       bool     // ANSI color (human + interactive only; resolved by cmd/kref)
 	Width       int      // markdown wrap width; 0 = no hard wrap (pipe-safe default)
 	TrackedNote string   // preformatted "<path> [<drift>]"; empty = no Tracked row
@@ -724,20 +761,17 @@ type ShowOptions struct {
 var plainMarkdownStyle = ansi.StyleConfig{
 	Document: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{},
-		Margin:         ptrUint(0),
+		Margin:         new(uint),
 	},
 	Heading: ansi.StyleBlock{
-		StylePrimitive: ansi.StylePrimitive{Bold: ptrBool(false)},
-		Margin:         ptrUint(0),
+		StylePrimitive: ansi.StylePrimitive{Bold: new(false)},
+		Margin:         new(uint),
 	},
 	Paragraph: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{},
 	},
 	Text: ansi.StylePrimitive{},
 }
-
-func ptrUint(u uint) *uint { return &u }
-func ptrBool(b bool) *bool { return &b }
 
 // RenderBody writes body rendered according to contentType: markdown through
 // glamour, recognized code/structured text through chroma (color only), and
@@ -775,26 +809,26 @@ func RenderBody(w io.Writer, body, contentType string, color bool, width int) {
 // tier/status, title, author, labels, merged note, provenance, and (when set)
 // the tracked-file note. trackedNote is preformatted "<path> [<drift>]"; the
 // command layer computes drift so render keeps no dependency on bridge.
-func ShowHeader(w io.Writer, snap *entry.Snapshot, color bool, trackedNote string, favorites []string) {
-	type row struct {
-		label, value string
-		vw           int // visible width of value (runes, ANSI-free) for the rule
-	}
+// hdrRow is one label/value line of a show header. vw is the value's visible
+// width (runes, ANSI-free) used to size the closing rule.
+type hdrRow struct {
+	label, value string
+	vw           int
+}
+
+// baseHeaderRows builds the standard metadata rows (ID … Tracked).
+func baseHeaderRows(snap *entry.Snapshot, color bool, trackedNote string, favorites []string) []hdrRow {
 	rc := utf8.RuneCountInString
-	var rows []row
-	add := func(label, value string, vw int) { rows = append(rows, row{label, value, vw}) }
+	var rows []hdrRow
+	add := func(label, value string, vw int) { rows = append(rows, hdrRow{label, value, vw}) }
 
 	id := snap.ID.String()
 	add("ID", id, rc(id))
-
 	statusPlain := tierPlain(snap.Tier, snap.TierType) + " / " + snap.Status
 	add("Status", Tier(snap.Tier, snap.TierType, color)+" / "+snap.Status, rc(statusPlain))
-
 	add("Title", snap.Title, rc(snap.Title))
-
 	author := fmt.Sprintf("%s <%s>", snap.CreatedBy, snap.CreatedByEmail)
 	add("Author", author, rc(author))
-
 	if len(snap.Labels) > 0 {
 		v := strings.Join(snap.Labels, ", ")
 		add("Labels", v, rc(v))
@@ -817,7 +851,13 @@ func ShowHeader(w io.Writer, snap *entry.Snapshot, color bool, trackedNote strin
 	if trackedNote != "" {
 		add("Tracked", trackedNote, rc(trackedNote))
 	}
+	return rows
+}
 
+// writeHeaderRows renders label-padded rows followed by a rule sized to the
+// widest rendered row.
+func writeHeaderRows(w io.Writer, rows []hdrRow) {
+	rc := utf8.RuneCountInString
 	labelW := 0
 	for _, r := range rows {
 		if n := rc(r.label); n > labelW {
@@ -834,18 +874,211 @@ func ShowHeader(w io.Writer, snap *entry.Snapshot, color bool, trackedNote strin
 	fmt.Fprintln(w, strings.Repeat("─", ruleW))
 }
 
+func ShowHeader(w io.Writer, snap *entry.Snapshot, color bool, trackedNote string, favorites []string) {
+	writeHeaderRows(w, baseHeaderRows(snap, color, trackedNote, favorites))
+}
+
 // Show renders the full detail view of one entry per opts. The full id is
 // intentional: Show is the canonical reference surface.
 func Show(w io.Writer, snap *entry.Snapshot, opts ShowOptions) {
 	if !opts.NoHeader {
 		ShowHeader(w, snap, opts.Color, opts.TrackedNote, opts.Favorites)
+		if opts.HeaderOnly {
+			return
+		}
 		fmt.Fprintln(w)
 	}
 	if opts.Raw {
 		fmt.Fprintln(w, snap.Body)
-		return
+	} else {
+		RenderBody(w, snap.Body, snap.ContentType, opts.Color, opts.Width)
 	}
-	RenderBody(w, snap.Body, snap.ContentType, opts.Color, opts.Width)
+	if len(snap.Comments) > 0 {
+		fmt.Fprintln(w)
+		RenderComments(w, snap.Comments, opts.Color, opts.Width)
+	}
+}
+
+// CommentNode is one comment within a thread: its own rendered lines plus its
+// id and depth, so callers can address/select individual nodes.
+type CommentNode struct {
+	ID    string
+	Depth int
+	Lines []string
+}
+
+// CommentThread is one top-level thread's rendered lines: the root plus, unless
+// the root is collapsed, its nested replies (depth-first).
+type CommentThread struct {
+	RootID string
+	Lines  []string
+	Nodes  []CommentNode
+}
+
+// RenderCommentThreads renders each top-level comment thread to its own line
+// group. Any node whose id is in collapsed keeps its head+body but hides its
+// replies (a one-line "▸ N replies" hint takes their place); collapsed==nil
+// expands everything. width>0 word-wraps comment bodies to that column count.
+// This is the shared tree-walk behind RenderComments/RenderCommentsCollapsed
+// (the flat show forms) and the todo cockpit (which needs per-node groups to
+// place the cursor).
+// wrapText greedily word-wraps s to width columns, hard-breaking any word longer
+// than width. width <= 0 returns s unwrapped; a whitespace-only line is preserved.
+func wrapText(s string, width int) []string {
+	words := strings.Fields(s)
+	if width <= 0 || len(words) == 0 {
+		return []string{s}
+	}
+	var out []string
+	cur := ""
+	for _, w := range words {
+		for len([]rune(w)) > width {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+			rw := []rune(w)
+			out = append(out, string(rw[:width]))
+			w = string(rw[width:])
+		}
+		switch {
+		case cur == "":
+			cur = w
+		case len([]rune(cur))+1+len([]rune(w)) <= width:
+			cur += " " + w
+		default:
+			out = append(out, cur)
+			cur = w
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func RenderCommentThreads(comments []entry.Comment, color bool, collapsed map[string]bool, width int) []CommentThread {
+	paint := func(code, s string) string {
+		if !color {
+			return s
+		}
+		return code + s + ansiReset
+	}
+
+	present := make(map[string]bool, len(comments))
+	for _, c := range comments {
+		present[c.ID] = true
+	}
+	children := make(map[string][]entry.Comment)
+	var roots []entry.Comment
+	for _, c := range comments {
+		if c.ReplyTo != "" && present[c.ReplyTo] {
+			children[c.ReplyTo] = append(children[c.ReplyTo], c)
+		} else {
+			roots = append(roots, c)
+		}
+	}
+
+	now := time.Now()
+	headLine := func(c entry.Comment, depth int) string {
+		indent := strings.Repeat("  ", depth)
+		glyph := "·"
+		if c.Question {
+			if c.Resolved {
+				glyph = paint(ansiGreen, "✓")
+			} else {
+				glyph = paint(ansiRed, "◉")
+			}
+		}
+		head := fmt.Sprintf("%s%s %s  %s", indent, glyph, c.Author, RelTime(now, c.Time))
+		if c.Resolved && c.ResolvedBy != "" {
+			head += " · resolved by " + c.ResolvedBy
+		}
+		if c.Edited {
+			head += " · edited"
+		}
+		return head
+	}
+	bodyLines := func(c entry.Comment, depth int) []string {
+		prefix := strings.Repeat("  ", depth) + "  "
+		if c.Deleted {
+			return []string{prefix + "[deleted]"}
+		}
+		avail := 0
+		if width > 0 {
+			avail = max(width-len([]rune(prefix)), 8)
+		}
+		var out []string
+		for line := range strings.SplitSeq(c.Body, "\n") {
+			for _, wl := range wrapText(line, avail) {
+				out = append(out, prefix+wl)
+			}
+		}
+		return out
+	}
+
+	// countDescendants returns how many comments sit below id (all replies,
+	// recursively) — shown in a collapsed node's hint line.
+	var countDescendants func(id string) int
+	countDescendants = func(id string) int {
+		n := 0
+		for _, ch := range children[id] {
+			n += 1 + countDescendants(ch.ID)
+		}
+		return n
+	}
+
+	var threads []CommentThread
+	for _, r := range roots {
+		var lines []string
+		var nodes []CommentNode
+		var walk func(c entry.Comment, depth int)
+		walk = func(c entry.Comment, depth int) {
+			nodeLines := append([]string{headLine(c, depth)}, bodyLines(c, depth)...)
+			// A collapsed node keeps its head+body but hides its replies, with a
+			// one-line hint. This works at any depth, so a deep sub-thread can be
+			// folded from the node it hangs off.
+			if collapsed[c.ID] && len(children[c.ID]) > 0 {
+				n := countDescendants(c.ID)
+				noun := "replies"
+				if n == 1 {
+					noun = "reply"
+				}
+				nodeLines = append(nodeLines, fmt.Sprintf("%s  ▸ %d %s", strings.Repeat("  ", depth), n, noun))
+			}
+			lines = append(lines, nodeLines...)
+			nodes = append(nodes, CommentNode{ID: c.ID, Depth: depth, Lines: nodeLines})
+			if collapsed[c.ID] {
+				return
+			}
+			for _, child := range children[c.ID] {
+				walk(child, depth+1)
+			}
+		}
+		walk(r, 0)
+		threads = append(threads, CommentThread{RootID: r.ID, Lines: lines, Nodes: nodes})
+	}
+	return threads
+}
+
+// RenderCommentsCollapsed writes the threaded comments, collapsing any root whose
+// id is in collapsed to a single preview line. collapsed==nil expands all.
+// width>0 word-wraps comment bodies to that column count (0 leaves them verbatim).
+func RenderCommentsCollapsed(w io.Writer, comments []entry.Comment, color bool, collapsed map[string]bool, width int) {
+	fmt.Fprintf(w, "Comments (%d)\n", len(comments))
+	fmt.Fprintln(w, strings.Repeat("─", 13))
+	for _, t := range RenderCommentThreads(comments, color, collapsed, width) {
+		for _, ln := range t.Lines {
+			fmt.Fprintln(w, ln)
+		}
+	}
+}
+
+// RenderComments writes the full threaded comments (no collapse). Top-level
+// comments (and any whose ReplyTo target is absent) render at depth 0; replies
+// indent under their parent. width>0 word-wraps comment bodies to that width.
+func RenderComments(w io.Writer, comments []entry.Comment, color bool, width int) {
+	RenderCommentsCollapsed(w, comments, color, nil, width)
 }
 
 // Action renders a one-line confirmation, e.g.

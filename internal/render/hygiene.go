@@ -48,23 +48,3 @@ func Tidy(w io.Writer, report entry.TidyReport) {
 		}
 	}
 }
-
-// Links renders an entry's outgoing and incoming typed edges.
-func Links(w io.Writer, view entry.LinkView) {
-	if len(view.Outgoing) == 0 && len(view.Incoming) == 0 {
-		fmt.Fprintln(w, "no links")
-		return
-	}
-	if len(view.Outgoing) > 0 {
-		fmt.Fprintln(w, "Outgoing:")
-		for _, l := range view.Outgoing {
-			fmt.Fprintf(w, "  %-12s %s  %s\n", l.Type, ShortID(l.ID), l.Title)
-		}
-	}
-	if len(view.Incoming) > 0 {
-		fmt.Fprintln(w, "Incoming:")
-		for _, l := range view.Incoming {
-			fmt.Fprintf(w, "  %-12s %s  %s\n", l.Type, ShortID(l.ID), l.Title)
-		}
-	}
-}

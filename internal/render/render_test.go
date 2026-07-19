@@ -11,9 +11,47 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/git-bug/git-bug/entity"
+
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/render"
 )
+
+var _ = Describe("RenderComments wrapping", func() {
+	It("word-wraps a long comment body to the given width (like the todo cockpit)", func() {
+		body := strings.TrimSpace(strings.Repeat("word ", 40))
+		comments := []entry.Comment{{ID: "c1", Author: "A", Body: body, Time: time.Now()}}
+		var b bytes.Buffer
+		render.RenderComments(&b, comments, false, 40)
+		lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+		for _, ln := range lines {
+			Expect(utf8.RuneCountInString(ln)).To(BeNumerically("<=", 40))
+		}
+		Expect(len(lines)).To(BeNumerically(">", 4)) // header + several wrapped body lines
+	})
+
+	It("leaves the body verbatim when width is 0 (back-compat)", func() {
+		body := strings.TrimSpace(strings.Repeat("word ", 40))
+		comments := []entry.Comment{{ID: "c1", Author: "A", Body: body, Time: time.Now()}}
+		var b bytes.Buffer
+		render.RenderComments(&b, comments, false, 0)
+		Expect(b.String()).To(ContainSubstring(body)) // one long line, unwrapped
+	})
+})
+
+var _ = Describe("ListLines", func() {
+	It("returns one line per entry with a parallel id slice in display order", func() {
+		a := &entry.Snapshot{ID: "aaaa", Tier: "personal", TierType: "personal", Kind: "document", Status: "open", Title: "Alpha"}
+		b := &entry.Snapshot{ID: "bbbb", Tier: "personal", TierType: "personal", Kind: "todo", Status: "open", Title: "Beta"}
+		header, lines, ids := render.ListLines([]*entry.Snapshot{b, a}, render.ListOptions{Columns: render.DefaultColumns})
+		Expect(header).To(ContainSubstring("TITLE"))
+		Expect(lines).To(HaveLen(2))
+		Expect(ids).To(HaveLen(2))
+		// default order is tier→kind→title: document "Alpha" before todo "Beta"
+		Expect(ids[0]).To(Equal(entity.Id("aaaa")))
+		Expect(lines[0]).To(ContainSubstring("Alpha"))
+		Expect(ids[1]).To(Equal(entity.Id("bbbb")))
+	})
+})
 
 var _ = Describe("ColumnHelp", func() {
 	It("lists every column with a non-empty description (guards description drift)", func() {
@@ -136,6 +174,15 @@ var _ = Describe("Show header table", func() {
 		Expect(out).To(ContainSubstring("─"))
 	})
 
+	It("with HeaderOnly renders the header and rule but omits the body", func() {
+		var b bytes.Buffer
+		render.Show(&b, base(), render.ShowOptions{HeaderOnly: true})
+		out := b.String()
+		Expect(out).To(ContainSubstring("Tester <t@t.io>")) // header present
+		Expect(out).To(ContainSubstring("─"))               // rule present
+		Expect(out).NotTo(ContainSubstring("body text"))    // body omitted
+	})
+
 	It("shows a Labels row when labels exist and omits it otherwise", func() {
 		s := base()
 		s.Labels = []string{"area:auth", "spec"}
@@ -187,6 +234,26 @@ var _ = Describe("Show header table", func() {
 		var without bytes.Buffer
 		render.Show(&without, base(), render.ShowOptions{Raw: true})
 		Expect(without.String()).NotTo(ContainSubstring("Tracked"))
+	})
+})
+
+var _ = Describe("Show with Raw (--plain) and comments", func() {
+	It("renders comments even when Raw is true (regression: --plain was skipping them)", func() {
+		s := &entry.Snapshot{
+			ID:   entity.Id("fdd23cc786c4ff4b732b38773a69a55cbc70aab1"), // DevSkim: ignore DS173237
+			Tier: "private", Status: "open", Title: "T",
+			CreatedBy: "Tester", CreatedByEmail: "t@t.io",
+			Body: "notevisible",
+			Comments: []entry.Comment{
+				{ID: "c1", Author: "alice", Body: "comment body here", Question: true},
+			},
+		}
+		var b bytes.Buffer
+		render.Show(&b, s, render.ShowOptions{NoHeader: true, Raw: true, Color: false})
+		out := b.String()
+		Expect(out).To(ContainSubstring("notevisible"), "body must appear")
+		Expect(out).To(ContainSubstring("Comments (1)"), "comment header must appear in --plain mode")
+		Expect(out).To(ContainSubstring("comment body here"), "comment text must appear in --plain mode")
 	})
 })
 
@@ -679,5 +746,190 @@ var _ = Describe("favorites pinned to top", func() {
 		out := b.String()
 		Expect(strings.Index(out, "Zebra")).To(BeNumerically("<", strings.Index(out, "Apple")),
 			"favorite Zebra pins above Apple despite the title sort")
+	})
+})
+
+// showNoHeader renders snap via Show with NoHeader:true, Color:false, Width:80
+// and returns the output string.
+func showNoHeader(snap *entry.Snapshot) string {
+	var b bytes.Buffer
+	render.Show(&b, snap, render.ShowOptions{NoHeader: true, Color: false, Width: 80})
+	return b.String()
+}
+
+var _ = Describe("Show comments section", func() {
+	baseSnap := func(comments []entry.Comment) *entry.Snapshot {
+		return &entry.Snapshot{
+			ID:          "abc",
+			Kind:        "spec",
+			Title:       "T",
+			Status:      "open",
+			Tier:        "shared",
+			TierType:    "shared",
+			Body:        "body",
+			ContentType: "text/plain",
+			Comments:    comments,
+		}
+	}
+	t0 := time.Unix(1_700_000_000, 0)
+
+	It("omits the Comments section when there are no comments", func() {
+		out := showNoHeader(baseSnap(nil))
+		Expect(out).NotTo(ContainSubstring("Comments"))
+	})
+
+	It("renders a threaded block with open question, reply, and resolved question", func() {
+		comments := []entry.Comment{
+			{
+				ID:       "aaaa1111",
+				Author:   "Alice",
+				Body:     "is this correct?",
+				Time:     t0,
+				Question: true,
+			},
+			{
+				ID:      "bbbb2222",
+				Author:  "Bob",
+				Body:    "because the spec says so",
+				Time:    t0,
+				ReplyTo: "aaaa1111",
+			},
+			{
+				ID:         "cccc3333",
+				Author:     "Carol",
+				Body:       "resolved question",
+				Time:       t0,
+				Question:   true,
+				Resolved:   true,
+				ResolvedBy: "Trevor",
+			},
+		}
+		out := showNoHeader(baseSnap(comments))
+		Expect(out).To(ContainSubstring("Comments (3)"))
+		Expect(out).To(ContainSubstring("◉"))
+		Expect(out).To(ContainSubstring("✓"))
+		Expect(out).To(ContainSubstring("because"))
+		Expect(out).To(ContainSubstring("resolved by Trevor"))
+	})
+
+	It("renders a dangling reply-to at top level", func() {
+		comments := []entry.Comment{
+			{
+				ID:      "dddd4444",
+				Author:  "Dave",
+				Body:    "dangling reply body",
+				Time:    t0,
+				ReplyTo: "nonexistent",
+			},
+		}
+		out := showNoHeader(baseSnap(comments))
+		Expect(out).To(ContainSubstring("dangling reply body"))
+	})
+})
+
+var _ = Describe("RenderComments edited/deleted", func() {
+	It("renders deleted and edited comments", func() {
+		var buf bytes.Buffer
+		comments := []entry.Comment{
+			{ID: "a", Author: "ada", Body: "gone", Deleted: true},
+			{ID: "b", Author: "bob", Body: "fixed", Edited: true},
+		}
+		render.RenderComments(&buf, comments, false, 0)
+		out := buf.String()
+		Expect(out).To(ContainSubstring("[deleted]"))
+		Expect(out).NotTo(ContainSubstring("gone"))
+		Expect(out).To(ContainSubstring("edited"))
+		Expect(out).To(ContainSubstring("fixed"))
+	})
+})
+
+var _ = Describe("RenderCommentThreads", func() {
+	It("returns one group per root and nests replies under it", func() {
+		comments := []entry.Comment{
+			{ID: "a", Author: "ada", Body: "root one"},
+			{ID: "b", Author: "bob", Body: "reply", ReplyTo: "a"},
+			{ID: "c", Author: "cid", Body: "root two"},
+		}
+		ts := render.RenderCommentThreads(comments, false, nil, 0)
+		Expect(ts).To(HaveLen(2))
+		Expect(ts[0].RootID).To(Equal("a"))
+		Expect(strings.Join(ts[0].Lines, "\n")).To(ContainSubstring("root one"))
+		Expect(strings.Join(ts[0].Lines, "\n")).To(ContainSubstring("reply"))
+		Expect(ts[1].RootID).To(Equal("c"))
+	})
+
+	It("collapses a node: keeps its head+body, hides replies behind a hint", func() {
+		comments := []entry.Comment{
+			{ID: "q", Author: "ada", Body: "MCP tiers?", Question: true, Resolved: true, ResolvedBy: "bob"},
+			{ID: "r", Author: "cid", Body: "the answer", ReplyTo: "q"},
+		}
+		ts := render.RenderCommentThreads(comments, false, map[string]bool{"q": true}, 0)
+		Expect(ts).To(HaveLen(1))
+		joined := strings.Join(ts[0].Lines, "\n")
+		Expect(joined).To(ContainSubstring("✓"))             // resolved glyph on the head
+		Expect(joined).To(ContainSubstring("MCP tiers?"))    // body kept
+		Expect(joined).To(ContainSubstring("▸ 1 reply"))     // collapsed hint
+		Expect(joined).NotTo(ContainSubstring("the answer")) // reply hidden
+		Expect(ts[0].Nodes).To(HaveLen(1))                   // only the collapsed node
+	})
+})
+
+var _ = Describe("RenderComments wrapper equivalence", func() {
+	It("RenderComments equals RenderCommentsCollapsed with a nil set", func() {
+		comments := []entry.Comment{
+			{ID: "a", Author: "ada", Body: "one\ntwo"},
+			{ID: "b", Author: "bob", Body: "reply", ReplyTo: "a"},
+			{ID: "d", Author: "eve", Body: "gone", Deleted: true},
+		}
+		var plain, collapsed bytes.Buffer
+		render.RenderComments(&plain, comments, false, 0)
+		render.RenderCommentsCollapsed(&collapsed, comments, false, nil, 0)
+		Expect(collapsed.String()).To(Equal(plain.String()))
+	})
+})
+
+var _ = Describe("RenderCommentThreads nodes", func() {
+	It("exposes root then replies as nodes with depth and ids", func() {
+		comments := []entry.Comment{
+			{ID: "a", Author: "ada", Body: "root"},
+			{ID: "b", Author: "bob", Body: "reply", ReplyTo: "a"},
+		}
+		ts := render.RenderCommentThreads(comments, false, nil, 0)
+		Expect(ts).To(HaveLen(1))
+		Expect(ts[0].Nodes).To(HaveLen(2))
+		Expect(ts[0].Nodes[0].ID).To(Equal("a"))
+		Expect(ts[0].Nodes[0].Depth).To(Equal(0))
+		Expect(ts[0].Nodes[1].ID).To(Equal("b"))
+		Expect(ts[0].Nodes[1].Depth).To(Equal(1))
+		var joined []string
+		for _, n := range ts[0].Nodes {
+			joined = append(joined, n.Lines...)
+		}
+		Expect(ts[0].Lines).To(Equal(joined))
+	})
+
+	It("yields a single node for a collapsed root, hiding its replies", func() {
+		comments := []entry.Comment{
+			{ID: "q", Author: "ada", Body: "q?", Question: true, Resolved: true},
+			{ID: "r", Author: "bob", Body: "hidden-child-body", ReplyTo: "q"},
+		}
+		ts := render.RenderCommentThreads(comments, false, map[string]bool{"q": true}, 0)
+		Expect(ts[0].Nodes).To(HaveLen(1))
+		Expect(ts[0].Nodes[0].ID).To(Equal("q"))
+		Expect(strings.Join(ts[0].Nodes[0].Lines, "\n")).NotTo(ContainSubstring("hidden-child-body"))
+	})
+
+	It("word-wraps a long comment body to the given width, preserving the words", func() {
+		long := "the quick brown fox jumps over the lazy dog again and again and again"
+		comments := []entry.Comment{{ID: "a", Author: "ada", Body: long}}
+		ts := render.RenderCommentThreads(comments, false, nil, 24)
+		bodyLines := ts[0].Nodes[0].Lines[1:] // skip the head line
+		Expect(len(bodyLines)).To(BeNumerically(">", 1))
+		var words []string
+		for _, ln := range bodyLines {
+			Expect(len([]rune(ln))).To(BeNumerically("<=", 24)) // fits the width
+			words = append(words, strings.Fields(ln)...)
+		}
+		Expect(words).To(Equal(strings.Fields(long))) // no words lost or reordered
 	})
 })
