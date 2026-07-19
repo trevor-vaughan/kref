@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -9,7 +10,7 @@ import (
 // errClosing stands in for the go-sdk's internal jsonrpc2.ErrServerClosing,
 // which is not importable. The benign end-of-session error is composed exactly
 // like the SDK does it: the closing sentinel via %w, the io.EOF cause via %v.
-var errClosing = fmt.Errorf("server is closing")
+var errClosing = errors.New("server is closing")
 
 func TestGracefulClose(t *testing.T) {
 	cases := []struct {
@@ -20,7 +21,7 @@ func TestGracefulClose(t *testing.T) {
 		{"nil", nil, false},
 		{"raw io.EOF", io.EOF, true},
 		{"sdk closing on EOF", fmt.Errorf("%w: %v", errClosing, io.EOF), true},
-		{"malformed input is not swallowed", fmt.Errorf("invalid character 'o' in literal null"), false},
+		{"malformed input is not swallowed", errors.New("invalid character 'o' in literal null"), false},
 		{"closing on a write error is not an EOF", fmt.Errorf("%w: %v", errClosing, io.ErrClosedPipe), false},
 	}
 	for _, tc := range cases {
