@@ -96,7 +96,7 @@ func Scan(content []byte) ([]Finding, error) {
 		// Binary not found gets the typed error so callers can choose their
 		// policy (ingest warns and proceeds unscanned; push stays fail-closed).
 		if errors.Is(runErr, exec.ErrNotFound) || errors.Is(runErr, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w (looked for %q): %v", ErrMissing, betterleaksBin(), runErr)
+			return nil, fmt.Errorf("%w (looked for %q): %w", ErrMissing, betterleaksBin(), runErr)
 		}
 		// Other non-exit error (e.g. I/O failure).
 		return nil, fmt.Errorf("running betterleaks: %w", runErr)
