@@ -48,3 +48,15 @@ var _ = Describe("CacheTempDir", func() {
 		Expect(CacheTempDir()).To(Equal(""))
 	})
 })
+
+var _ = Describe("StateDir", func() {
+	It("honors XDG_STATE_HOME and creates the kref subdir", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("XDG_STATE_HOME", tmp)
+		got := StateDir()
+		Expect(got).To(Equal(filepath.Join(tmp, "kref")))
+		info, err := os.Stat(got)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.IsDir()).To(BeTrue())
+	})
+})

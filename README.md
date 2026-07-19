@@ -115,7 +115,7 @@ ______________________________________________________________________
 ```bash
 cd your-project           # any git repo
 
-kref init                   # adopts your git user.name / user.email as the author
+kref init                   # adopts your git identity; auto-binds shared → origin if present
 
 # The 90% path: point kref at markdown you already have. Each file becomes an
 # entry (kept out of your working tree), with a kref-id trailer written back so
@@ -132,6 +132,7 @@ kref search auth            # recall by a title/body substring, with match count
 kref show <id>              # view one — rendered and paged; --plain for the raw body
 kref show                   # ...or omit the id to see the most-recently-touched entry
 kref edit <id>              # revise the body in your editor
+kref comment <id> -q -m "…" # thread a comment; -q marks a question, --resolve closes it
 kref status <id> accepted   # move it through open|active|accepted|superseded|obsolete
 kref rm <id>                # soft-delete (tombstone; undo with kref restore)
 ```

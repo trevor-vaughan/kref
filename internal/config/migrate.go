@@ -29,10 +29,7 @@ func Migrate(b []byte) (out []byte, changed bool, err error) {
 	if v == CurrentVersion {
 		return b, false, nil
 	}
-	start := v
-	if start < 1 {
-		start = 1
-	}
+	start := max(v, 1)
 	for i := start - 1; i < len(migrations); i++ {
 		if err := migrations[i](&doc); err != nil {
 			return nil, false, err

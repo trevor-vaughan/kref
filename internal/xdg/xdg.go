@@ -30,3 +30,23 @@ func CacheTempDir() string {
 	}
 	return dir
 }
+
+// StateDir returns kref's durable state directory — $XDG_STATE_HOME/kref,
+// defaulting to ~/.local/state/kref — created 0700 on first use. It returns ""
+// when no home directory can be resolved or the tree cannot be created, so
+// HOME-less environments keep working (callers treat "" as "state unavailable").
+func StateDir() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	dir := filepath.Join(base, "kref")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	return dir
+}

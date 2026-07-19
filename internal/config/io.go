@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +17,7 @@ func UserPath(getenv func(string) string) (string, error) {
 	if base == "" {
 		home := getenv("HOME")
 		if home == "" {
-			return "", fmt.Errorf("cannot resolve config path: neither XDG_CONFIG_HOME nor HOME is set")
+			return "", errors.New("cannot resolve config path: neither XDG_CONFIG_HOME nor HOME is set")
 		}
 		base = filepath.Join(home, ".config")
 	}

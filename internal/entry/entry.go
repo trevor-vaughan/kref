@@ -14,6 +14,10 @@ const (
 	TierPrivate  Tier = "private"
 	TierPersonal Tier = "personal"
 	TierShared   Tier = "shared"
+	// TierQuarantine is a reserved, private-typed SYSTEM tier holding writes that
+	// tripped the secret scanner and await human review. It is never a user write
+	// target and is hidden from listings.
+	TierQuarantine Tier = "quarantine"
 )
 
 func (t Tier) Namespace() string { return "kref-" + string(t) }
@@ -48,6 +52,8 @@ func WrapForRead() func(*dag.Entity) *Entry { return wrap }
 func (e *Entry) Compile() *Snapshot {
 	snap := &Snapshot{ID: e.Id()}
 	for _, op := range e.Operations() {
+		//nolint:forcetypeassert // every op in this entry's DAG is one of our
+		// Operation types by construction; a foreign op is a programmer error.
 		op.(Operation).Apply(snap)
 	}
 	if snap.EditedAt.IsZero() {

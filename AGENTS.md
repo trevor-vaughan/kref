@@ -64,6 +64,14 @@ This user keeps knowledge OUT of git worktrees using kref: entries live as
 git refs, never as files. In any repo where `kref list` succeeds, these
 rules OVERRIDE other skills' file-writing defaults:
 
+- **NEVER lose the user's work.** This is non-negotiable. Any write that can be
+  refused — a stale-write CAS, a todo lint reject, a secret block — MUST preserve
+  the exact text it rejected (to `$XDG_STATE_HOME/kref/rejected/`, or a kept
+  editor/draft buffer) and tell the user where it went. Silently dropping a long
+  comment or edit on a rejection, forcing the author to retype it from scratch, is
+  the worst possible outcome. When a check is a false positive, offer an explicit
+  override (`--force` on the CLI, `force:true` on the MCP tool) — never silent
+  data loss, and never a rejection the user can't recover from or override.
 - Specs, plans, brainstorms, design notes, evaluations, session state:
   create kref ENTRIES (`kref new --kind spec --label area:design`), never
   files under docs/ or .claude/. If a skill wants to write a plan or spec
@@ -72,9 +80,15 @@ rules OVERRIDE other skills' file-writing defaults:
   match counts, most relevant first) or `kref list --kind <kind>`; read one
   entry with `kref show --plain <id>`.
 - Parsing output? ALWAYS pass `--json`. Human output is not a stable API.
-- Full-body updates are last-write-wins. Before `kref update <id>` with a
-  rewritten body: re-read the entry AND check `kref log <id>` for versions
-  you did not write; if the tip moved since your read, re-fetch and re-apply.
+- Full-body updates are last-write-wins, EXCEPT `kind:todo` entries, which
+  enforce an optimistic version check: read the version (the `vN` in
+  `kref log`, echoed by `kref_get`/`kref_recall` and the
+  `kref todo` header) and declare it — `kref update --if-version N`,
+  MCP `kref_update` REQUIRES `if_version`, and `kref edit`
+  checks implicitly; a stale write is refused (body kept under
+  `$XDG_STATE_HOME/kref/rejected/`), not clobbered. For other kinds: before
+  a `kref update <id>` rewrite, re-read the entry AND check `kref log <id>`
+  for versions you did not write; if the tip moved, re-fetch and re-apply.
   Nothing is ever lost (`kref diff <id> --full` recovers any version), but
   recovery is not a merge strategy.
 - Prefer the MCP `kref_patch` tool (unified diff; stale or ambiguous hunks
@@ -82,10 +96,24 @@ rules OVERRIDE other skills' file-writing defaults:
 - Secrets: NEVER write them into a tier that syncs (anything but private,
   custom tiers included). kref scans and the push boundary fail-closes, but
   treat that as a backstop — secrets go to the private tier or nowhere.
-  Never use `sync push --force`.
+  Never use `sync push --force`. Comment bodies are scanned at write time
+  (`kref comment`, MCP `kref_comment`): a secret on a syncable entry is refused
+  and the text preserved to the recovery dir — rotate the secret and retry, or
+  pass `--force`/`force:true` for a genuine false positive. The push boundary
+  also scans comment op-history as a backstop, but treat the write-time gate as
+  the one to respect.
 - Attribution: pass `--actor <agent-name>` (or set KREF_ACTOR) on writes so
   provenance records an agent, not the human.
 - Questions for the human go in a "## Questions" section inside the relevant
   entry; answers come back inline — re-read before every update.
-- Link related entries (`kref link add <id> <target>`) instead of repeating
-  content; label design material `--label area:design`.
+- Link related entries as work connects them (`kref link add <id> <target>`)
+  — a plan to its spec, a spec to the brainstorm behind it — instead of
+  repeating content; label design material `--label area:design`.
+- Favorites: name an entry with `kref fav add <id> <name>` (names need a
+  non-hex char); then `kref show <name>` resolves anywhere an id does.
+  `kref config` shows effective config; keys live in
+  `~/.config/kref/config.yaml` (user) over the shared `kref.conf` entry.
+- Keep the lifecycle current: set status as an entry moves
+  (`kref status <id> open|active|accepted|superseded|obsolete`), and
+  `kref supersede <old> <new>` when one entry replaces another rather than
+  editing the old one into obsolescence.

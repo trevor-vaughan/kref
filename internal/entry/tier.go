@@ -20,6 +20,13 @@ func (d TierDef) Builtin() bool {
 	return d.Name == TierPrivate || d.Name == TierPersonal || d.Name == TierShared
 }
 
+// System reports whether the def is a reserved system tier (currently only
+// quarantine): private-typed, code-declared, hidden, never a user write target.
+func (d TierDef) System() bool { return d.Name == TierQuarantine }
+
+// IsSystemTier reports whether a tier name is a reserved system tier.
+func IsSystemTier(t Tier) bool { return TierDef{Name: t}.System() }
+
 // BuiltinTierDefs returns the three built-in tiers in display order.
 func BuiltinTierDefs() []TierDef {
 	return []TierDef{
@@ -27,6 +34,20 @@ func BuiltinTierDefs() []TierDef {
 		{Name: TierPersonal, Type: TierPersonal, Declared: true},
 		{Name: TierShared, Type: TierShared, Declared: true},
 	}
+}
+
+// SystemTierDefs returns the reserved system tiers (hidden from user listings):
+// private-typed, so they inherit the non-syncable guarantee everywhere that
+// checks TierPrivate (push, remotes).
+func SystemTierDefs() []TierDef {
+	return []TierDef{{Name: TierQuarantine, Type: TierPrivate, Declared: true}}
+}
+
+// BuiltinTierDefsWithSystem returns the three user built-ins plus the reserved
+// system tiers. resolveTiers seeds from this so the store recognises the
+// quarantine namespace on every open.
+func BuiltinTierDefsWithSystem() []TierDef {
+	return append(BuiltinTierDefs(), SystemTierDefs()...)
 }
 
 // tierNameRe is the custom-tier name shape: lowercase letter first, then
@@ -38,7 +59,7 @@ var tierNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
 // (kref.incoming.*) a custom tier's name must never collide with.
 var reservedTierNames = map[string]bool{
 	"private": true, "personal": true, "shared": true,
-	"pushed": true, "incoming": true,
+	"pushed": true, "incoming": true, "quarantine": true,
 }
 
 // ValidateTierName checks a custom tier name against the shape rule and the

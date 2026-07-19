@@ -104,3 +104,16 @@ var _ = Describe("Log set-content-type", func() {
 		Expect(last.Detail).To(Equal("application/json"))
 	})
 })
+
+var _ = Describe("Entry.CommentBodies", func() {
+	It("returns every AddComment and EditComment body in order, skipping deletes", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		e.Append(entry.NewSetBody(author, "body"))
+		e.Append(entry.NewAddComment(author, "human", "first comment", false, ""))
+		e.Append(entry.NewEditComment(author, "target", "edited comment"))
+		e.Append(entry.NewDeleteComment(author, "target")) // no body — not collected
+		Expect(e.CommentBodies()).To(Equal([]string{"first comment", "edited comment"}))
+	})
+})

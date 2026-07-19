@@ -18,3 +18,6 @@ docs/superpowers/
 # or plans regenerated under these paths stay local; ingest them with `kref`.
 docs/dev/plans/
 docs/dev/specs/
+
+# throwaway cockpit demo repo (hands-on TUI testing)
+.cockpit-demo/

@@ -12,6 +12,27 @@ type Link struct {
 	Type string `json:"type"` // relates | parent-child | supersedes | derived-from
 }
 
+// Comment is one append-only note on an entry. Question comments stay open
+// until a ResolveComment op flips them; ReplyTo builds a thread tree.
+type Comment struct {
+	ID          string    `json:"id"`
+	Author      string    `json:"author"`
+	AuthorEmail string    `json:"author_email"`
+	AuthorKind  string    `json:"author_kind"` // human | agent
+	Body        string    `json:"body"`
+	Time        time.Time `json:"time"`
+	Question    bool      `json:"question"`
+	ReplyTo     string    `json:"reply_to,omitempty"`
+	Resolved    bool      `json:"resolved"`
+	ResolvedBy  string    `json:"resolved_by,omitempty"`
+	ResolvedAt  time.Time `json:"resolved_at,omitzero"`
+	Edited      bool      `json:"edited,omitempty"`
+	EditedAt    time.Time `json:"edited_at,omitzero"`
+	Deleted     bool      `json:"deleted,omitempty"`
+	DeletedBy   string    `json:"deleted_by,omitempty"`
+	DeletedAt   time.Time `json:"deleted_at,omitzero"`
+}
+
 // OriginEvent is one entry in an entry's append-only provenance log.
 type OriginEvent struct {
 	Actor      string    `json:"actor"`
@@ -35,10 +56,12 @@ type Snapshot struct {
 	Tier           string        `json:"tier"`      // set by the store from the namespace it was read under
 	TierType       string        `json:"tier_type"` // resolved tier type (private|personal|shared); drives glyph/color
 	Body           string        `json:"body"`
+	Version        int           `json:"version"`      // head body-version count (number of SetBody ops); the vN kref log shows, and the todo CAS token
 	ContentType    string        `json:"content_type"` // text/markdown by default; selects the show renderer
 	Links          []Link        `json:"links"`
 	Labels         []string      `json:"labels"`
 	Provenance     []OriginEvent `json:"provenance"`
+	Comments       []Comment     `json:"comments,omitempty"`
 	Merged         bool          `json:"merged"` // set by the store from the commit graph; not from Compile
 	AckedMerges    []string      `json:"-"`      // merge-commit hashes acknowledged via kref resolve; drives merge detection
 	Deleted        bool          `json:"deleted"`

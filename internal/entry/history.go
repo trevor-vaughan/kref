@@ -93,3 +93,21 @@ func (e *Entry) BodyVersions() []BodyVersion {
 	}
 	return out
 }
+
+// CommentBodies returns the body of every AddComment and EditComment operation
+// in the entry's history, in operation order. Because the DAG ships full
+// history, a comment body still pushes after the comment is deleted or its text
+// edited away — so the push-time secret scan must examine all of them, not just
+// the bodies visible in the live snapshot.
+func (e *Entry) CommentBodies() []string {
+	out := make([]string, 0)
+	for _, op := range e.Operations() {
+		switch o := op.(type) {
+		case *AddComment:
+			out = append(out, o.Body)
+		case *EditComment:
+			out = append(out, o.Body)
+		}
+	}
+	return out
+}

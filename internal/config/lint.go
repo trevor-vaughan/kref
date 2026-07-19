@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,7 +20,7 @@ var hexOnly = regexp.MustCompile(`^[0-9a-f]+$`)
 func ValidFavoriteName(name string) error {
 	switch {
 	case name == "":
-		return fmt.Errorf("favorite name is empty")
+		return errors.New("favorite name is empty")
 	case reservedFavoriteNames[name]:
 		return fmt.Errorf("favorite name %q is reserved", name)
 	case strings.HasPrefix(name, "-"):

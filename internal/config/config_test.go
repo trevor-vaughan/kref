@@ -7,9 +7,6 @@ import (
 	"github.com/trevor-vaughan/kref/internal/config"
 )
 
-// bp returns a *bool for the sparse WarnUnscanned field.
-func bp(b bool) *bool { return &b }
-
 var _ = Describe("Default", func() {
 	It("compiles in the expected defaults", func() {
 		d := config.Default()
@@ -35,8 +32,8 @@ var _ = Describe("Merge", func() {
 	})
 
 	It("takes user WarnUnscanned over project when the user set it", func() {
-		project := &config.Config{WarnUnscanned: bp(true)}
-		user := &config.Config{WarnUnscanned: bp(false)}
+		project := &config.Config{WarnUnscanned: new(true)}
+		user := &config.Config{WarnUnscanned: new(false)}
 		out := config.Merge(project, user)
 		Expect(out.WarnUnscannedOn()).To(BeFalse())
 	})
@@ -44,7 +41,7 @@ var _ = Describe("Merge", func() {
 	It("does NOT clobber a project scalar the user left unset (per-key override)", func() {
 		// Regression: a present user file that only sets favorites must not reset
 		// the project entry's warn_unscanned:false back to the default true.
-		project := &config.Config{WarnUnscanned: bp(false)}
+		project := &config.Config{WarnUnscanned: new(false)}
 		user := &config.Config{Favorites: map[string]string{"todo": "aaaa1"}}
 		out := config.Merge(project, user)
 		Expect(out.WarnUnscannedOn()).To(BeFalse())
@@ -70,7 +67,7 @@ var _ = Describe("Filter", func() {
 	BeforeEach(func() {
 		c = &config.Config{
 			Version:       config.CurrentVersion,
-			WarnUnscanned: bp(false),
+			WarnUnscanned: new(false),
 			Favorites:     map[string]string{"todo": "aaaa1"},
 			TrustedKeys:   []string{"favorites", "warn_unscanned"},
 		}
@@ -100,5 +97,31 @@ var _ = Describe("Filter", func() {
 	It("keeps WarnUnscanned when 'warn_unscanned' is trusted", func() {
 		out := config.Filter(c, []string{"warn_unscanned"})
 		Expect(out.WarnUnscannedOn()).To(BeFalse())
+	})
+})
+
+var _ = Describe("todo config keys", func() {
+	It("defaults glyphs to geometric and default-todo to empty", func() {
+		c := config.Default()
+		Expect(c.GlyphTheme()).To(Equal("geometric"))
+		Expect(c.DefaultTodo()).To(Equal(""))
+	})
+
+	It("merges a user-set glyph theme over the default", func() {
+		g := "emoji"
+		merged := config.Merge(nil, &config.Config{TodoGlyphs: &g})
+		Expect(merged.GlyphTheme()).To(Equal("emoji"))
+	})
+
+	It("falls back to geometric for an unrecognized theme", func() {
+		bad := "sparkles"
+		merged := config.Merge(nil, &config.Config{TodoGlyphs: &bad})
+		Expect(merged.GlyphTheme()).To(Equal("geometric"))
+	})
+
+	It("merges todo.default", func() {
+		d := "myfav"
+		merged := config.Merge(nil, &config.Config{TodoDefault: &d})
+		Expect(merged.DefaultTodo()).To(Equal("myfav"))
 	})
 })

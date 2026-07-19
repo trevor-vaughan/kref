@@ -9,6 +9,35 @@ import (
 	"github.com/trevor-vaughan/kref/internal/entry"
 )
 
+var _ = Describe("SetBody version count", func() {
+	It("counts set-body ops into Snapshot.Version (the head vN)", func() {
+		repo := newTestRepo()
+		author := newAuthor(repo)
+
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		Expect(e.Compile().Version).To(BeZero()) // no body yet
+
+		e.Append(entry.NewSetBody(author, "first"))
+		Expect(e.Compile().Version).To(Equal(1))
+
+		e.Append(entry.NewSetBody(author, "second"))
+		Expect(e.Compile().Version).To(Equal(2))
+	})
+
+	It("does not count non-body ops", func() {
+		repo := newTestRepo()
+		author := newAuthor(repo)
+
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		e.Append(entry.NewSetBody(author, "b"))
+		e.Append(entry.NewSetTitle(author, "New"))
+		e.Append(entry.NewSetStatus(author, "accepted"))
+		Expect(e.Compile().Version).To(Equal(1))
+	})
+})
+
 var _ = Describe("SetTitle", func() {
 	It("updates the snapshot title on apply", func() {
 		repo := newTestRepo()
@@ -230,6 +259,161 @@ var _ = Describe("content type", func() {
 		author := newAuthor(newTestRepo())
 		op := entry.NewSetContentType(author, "image/png")
 		Expect(op.Validate()).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("AddComment", func() {
+	It("appends a top-level comment", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		op := entry.NewAddComment(author, "human", "first note", false, "")
+		e.Append(op)
+		snap := e.Compile()
+		Expect(snap.Comments).To(HaveLen(1))
+		c := snap.Comments[0]
+		Expect(c.ID).To(Equal(op.Id().String()))
+		Expect(c.Body).To(Equal("first note"))
+		Expect(c.AuthorKind).To(Equal("human"))
+		Expect(c.Question).To(BeFalse())
+		Expect(c.ReplyTo).To(BeEmpty())
+		Expect(c.Time).To(Equal(op.Time()))
+	})
+
+	It("marks a question and records reply-to", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		q := entry.NewAddComment(author, "human", "why?", true, "")
+		e.Append(q)
+		r := entry.NewAddComment(author, "agent", "because", false, q.Id().String())
+		e.Append(r)
+		snap := e.Compile()
+		Expect(snap.Comments).To(HaveLen(2))
+		Expect(snap.Comments[0].Question).To(BeTrue())
+		Expect(snap.Comments[1].ReplyTo).To(Equal(q.Id().String()))
+		Expect(snap.Comments[1].AuthorKind).To(Equal("agent"))
+	})
+
+	It("rejects an empty body", func() {
+		author := newAuthor(newTestRepo())
+		Expect(entry.NewAddComment(author, "human", "", false, "").Validate()).To(HaveOccurred())
+	})
+
+	It("does not change body version", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		e.Append(entry.NewSetBody(author, "content"))
+		v := e.Compile().Version
+		e.Append(entry.NewAddComment(author, "human", "a note", false, ""))
+		Expect(e.Compile().Version).To(Equal(v))
+	})
+})
+
+var _ = Describe("ResolveComment", func() {
+	It("resolves a question comment and records who and when", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		q := entry.NewAddComment(author, "human", "why?", true, "")
+		e.Append(q)
+		r := entry.NewResolveComment(author, q.Id().String())
+		e.Append(r)
+		snap := e.Compile()
+		Expect(snap.Comments).To(HaveLen(1))
+		Expect(snap.Comments[0].Resolved).To(BeTrue())
+		Expect(snap.Comments[0].ResolvedBy).To(Equal(author.Name()))
+		Expect(snap.Comments[0].ResolvedAt).To(Equal(r.Time()))
+	})
+
+	It("is a no-op for an unknown target", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		q := entry.NewAddComment(author, "human", "why?", true, "")
+		e.Append(q)
+		e.Append(entry.NewResolveComment(author, "deadbeef"))
+		snap := e.Compile()
+		Expect(snap.Comments[0].Resolved).To(BeFalse())
+	})
+
+	It("does not resolve a non-question comment", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		c := entry.NewAddComment(author, "human", "plain note", false, "")
+		e.Append(c)
+		e.Append(entry.NewResolveComment(author, c.Id().String()))
+		snap := e.Compile()
+		Expect(snap.Comments[0].Resolved).To(BeFalse())
+	})
+
+	It("is idempotent: double-resolve keeps the first ResolvedAt", func() {
+		author := newAuthor(newTestRepo())
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(author, "spec", "T"))
+		q := entry.NewAddComment(author, "human", "why?", true, "")
+		e.Append(q)
+		r1 := entry.NewResolveComment(author, q.Id().String())
+		e.Append(r1)
+		firstAt := e.Compile().Comments[0].ResolvedAt
+		r2 := entry.NewResolveComment(author, q.Id().String())
+		e.Append(r2)
+		snap := e.Compile()
+		Expect(snap.Comments[0].ResolvedAt).To(Equal(firstAt))
+	})
+
+	It("rejects an empty target", func() {
+		author := newAuthor(newTestRepo())
+		Expect(entry.NewResolveComment(author, "").Validate()).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("EditComment and DeleteComment", func() {
+	It("edits a comment's body and marks it edited", func() {
+		author := newAuthor(newTestRepo())
+		s := &entry.Snapshot{}
+		add := entry.NewAddComment(author, "human", "orig", false, "")
+		add.Apply(s)
+		id := add.Id().String()
+
+		entry.NewEditComment(author, id, "revised").Apply(s)
+
+		Expect(s.Comments).To(HaveLen(1))
+		Expect(s.Comments[0].Body).To(Equal("revised"))
+		Expect(s.Comments[0].Edited).To(BeTrue())
+		Expect(s.Comments[0].EditedAt).NotTo(BeZero())
+	})
+
+	It("ignores an edit to an unknown or deleted comment", func() {
+		author := newAuthor(newTestRepo())
+		s := &entry.Snapshot{}
+		add := entry.NewAddComment(author, "human", "orig", false, "")
+		add.Apply(s)
+		id := add.Id().String()
+
+		entry.NewEditComment(author, "deadbeef", "x").Apply(s) // unknown: no-op
+		Expect(s.Comments[0].Body).To(Equal("orig"))
+
+		entry.NewDeleteComment(author, id).Apply(s)
+		entry.NewEditComment(author, id, "y").Apply(s) // deleted: no-op
+		Expect(s.Comments[0].Deleted).To(BeTrue())
+		Expect(s.Comments[0].Body).To(Equal("orig")) // body untouched by the ignored edit
+	})
+
+	It("deletes a comment stickily, keeping it in the list", func() {
+		author := newAuthor(newTestRepo())
+		s := &entry.Snapshot{}
+		add := entry.NewAddComment(author, "human", "orig", false, "")
+		add.Apply(s)
+		id := add.Id().String()
+
+		entry.NewDeleteComment(author, id).Apply(s)
+		Expect(s.Comments).To(HaveLen(1))
+		Expect(s.Comments[0].Deleted).To(BeTrue())
+		Expect(s.Comments[0].DeletedBy).To(Equal(author.Name()))
+		Expect(s.Comments[0].DeletedAt).NotTo(BeZero())
 	})
 })
 

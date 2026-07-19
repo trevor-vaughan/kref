@@ -2,7 +2,9 @@ package entry
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +43,10 @@ const (
 	ArchiveOp
 	UnarchiveOp
 	SetContentTypeOp
+	AddCommentOp     // #20
+	ResolveCommentOp // #21 (op struct added in a later task)
+	EditCommentOp    // #22
+	DeleteCommentOp  // #23
 )
 
 // Create initializes an entry with a kind and title.
@@ -63,10 +69,10 @@ func (op *Create) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 
 func (op *Create) Validate() error {
 	if op.Kind == "" {
-		return fmt.Errorf("kind required")
+		return errors.New("kind required")
 	}
 	if op.Title == "" {
-		return fmt.Errorf("title required")
+		return errors.New("title required")
 	}
 	return op.OpBase.Validate(op, CreateOp)
 }
@@ -99,7 +105,7 @@ func NewSetStatus(author identity.Interface, status string) *SetStatus {
 func (op *SetStatus) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *SetStatus) Validate() error {
 	if op.Status == "" {
-		return fmt.Errorf("status required")
+		return errors.New("status required")
 	}
 	return op.OpBase.Validate(op, SetStatusOp)
 }
@@ -118,6 +124,7 @@ func (op *SetBody) Id() entity.Id   { return dag.IdOperation(op, &op.OpBase) }
 func (op *SetBody) Validate() error { return op.OpBase.Validate(op, SetBodyOp) }
 func (op *SetBody) Apply(s *Snapshot) {
 	s.Body = op.Body
+	s.Version++ // each SetBody is one body version; head count is the vN / CAS token
 	s.EditedAt = op.Time()
 	s.UpdatedAt = op.Time()
 }
@@ -134,7 +141,7 @@ func NewSetTitle(author identity.Interface, title string) *SetTitle {
 func (op *SetTitle) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *SetTitle) Validate() error {
 	if op.Title == "" {
-		return fmt.Errorf("title required")
+		return errors.New("title required")
 	}
 	return op.OpBase.Validate(op, SetTitleOp)
 }
@@ -152,7 +159,7 @@ func NewSetKind(author identity.Interface, kind string) *SetKind {
 func (op *SetKind) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *SetKind) Validate() error {
 	if op.Kind == "" {
-		return fmt.Errorf("kind required")
+		return errors.New("kind required")
 	}
 	return op.OpBase.Validate(op, SetKindOp)
 }
@@ -170,7 +177,7 @@ func NewSetContentType(author identity.Interface, ct string) *SetContentType {
 func (op *SetContentType) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *SetContentType) Validate() error {
 	if op.ContentType == "" {
-		return fmt.Errorf("content type required")
+		return errors.New("content type required")
 	}
 	if _, err := content.Canonical(op.ContentType); err != nil {
 		return err
@@ -191,7 +198,7 @@ func NewTrack(author identity.Interface, path string) *Track {
 func (op *Track) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *Track) Validate() error {
 	if op.Path == "" {
-		return fmt.Errorf("tracked path required")
+		return errors.New("tracked path required")
 	}
 	return op.OpBase.Validate(op, TrackOp)
 }
@@ -239,10 +246,10 @@ func (op *Reattribute) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 
 func (op *Reattribute) Validate() error {
 	if op.Name == "" {
-		return fmt.Errorf("author name required")
+		return errors.New("author name required")
 	}
 	if op.Email == "" {
-		return fmt.Errorf("author email required")
+		return errors.New("author email required")
 	}
 	return op.OpBase.Validate(op, ReattributeOp)
 }
@@ -266,19 +273,13 @@ func NewAckMerge(author identity.Interface, acked []string) *AckMerge {
 func (op *AckMerge) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *AckMerge) Validate() error {
 	if len(op.Acked) == 0 {
-		return fmt.Errorf("acked merge set required")
+		return errors.New("acked merge set required")
 	}
 	return op.OpBase.Validate(op, AckMergeOp)
 }
 func (op *AckMerge) Apply(s *Snapshot) {
 	for _, h := range op.Acked {
-		seen := false
-		for _, e := range s.AckedMerges {
-			if e == h {
-				seen = true
-				break
-			}
-		}
+		seen := slices.Contains(s.AckedMerges, h)
 		if !seen {
 			s.AckedMerges = append(s.AckedMerges, h)
 		}
@@ -299,7 +300,7 @@ func NewAddLink(author identity.Interface, to, linkType string) *AddLink {
 func (op *AddLink) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *AddLink) Validate() error {
 	if op.To == "" {
-		return fmt.Errorf("link target required")
+		return errors.New("link target required")
 	}
 	return op.OpBase.Validate(op, AddLinkOp)
 }
@@ -415,15 +416,13 @@ func NewAddLabel(author identity.Interface, label string) *AddLabel {
 func (op *AddLabel) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *AddLabel) Validate() error {
 	if op.Label == "" {
-		return fmt.Errorf("label required")
+		return errors.New("label required")
 	}
 	return op.OpBase.Validate(op, AddLabelOp)
 }
 func (op *AddLabel) Apply(s *Snapshot) {
-	for _, l := range s.Labels {
-		if l == op.Label {
-			return
-		}
+	if slices.Contains(s.Labels, op.Label) {
+		return
 	}
 	s.Labels = append(s.Labels, op.Label)
 	sort.Strings(s.Labels)
@@ -473,7 +472,7 @@ func NewRecordOrigin(author identity.Interface, actor, actorKind, sourcePath, tr
 func (op *RecordOrigin) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
 func (op *RecordOrigin) Validate() error {
 	if op.Trigger == "" {
-		return fmt.Errorf("origin trigger required")
+		return errors.New("origin trigger required")
 	}
 	return op.OpBase.Validate(op, RecordOriginOp)
 }
@@ -488,10 +487,178 @@ func (op *RecordOrigin) Apply(s *Snapshot) {
 	s.UpdatedAt = op.Time()
 }
 
+// AddComment appends a comment. Question comments track until resolved;
+// ReplyTo (a comment id) threads replies. Body-version is untouched.
+type AddComment struct {
+	dag.OpBase
+	Body      string `json:"body"`
+	Question  bool   `json:"question,omitempty"`
+	ReplyTo   string `json:"reply_to,omitempty"`
+	ActorKind string `json:"actor_kind"`
+}
+
+func NewAddComment(author identity.Interface, actorKind, body string, question bool, replyTo string) *AddComment {
+	return &AddComment{
+		OpBase:    dag.NewOpBase(AddCommentOp, author, time.Now().Unix()),
+		Body:      body,
+		Question:  question,
+		ReplyTo:   replyTo,
+		ActorKind: actorKind,
+	}
+}
+
+func (op *AddComment) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
+
+func (op *AddComment) Validate() error {
+	if strings.TrimSpace(op.Body) == "" {
+		return errors.New("comment body required")
+	}
+	return op.OpBase.Validate(op, AddCommentOp)
+}
+
+func (op *AddComment) Apply(s *Snapshot) {
+	c := Comment{
+		ID:         op.Id().String(),
+		Body:       op.Body,
+		Question:   op.Question,
+		ReplyTo:    op.ReplyTo,
+		AuthorKind: op.ActorKind,
+		Time:       op.Time(),
+	}
+	if a := op.Author(); a != nil {
+		c.Author = a.Name()
+		c.AuthorEmail = a.Email()
+	}
+	s.Comments = append(s.Comments, c)
+	s.UpdatedAt = op.Time()
+}
+
+// ResolveComment flips a question comment to resolved. Pure state transition:
+// no answer text (reply with AddComment for that). Idempotent; a no-op for an
+// unknown target or a non-question, so history applies cleanly in any order.
+type ResolveComment struct {
+	dag.OpBase
+	Target string `json:"target"`
+}
+
+func NewResolveComment(author identity.Interface, target string) *ResolveComment {
+	return &ResolveComment{
+		OpBase: dag.NewOpBase(ResolveCommentOp, author, time.Now().Unix()),
+		Target: target,
+	}
+}
+
+func (op *ResolveComment) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
+
+func (op *ResolveComment) Validate() error {
+	if op.Target == "" {
+		return errors.New("resolve target required")
+	}
+	return op.OpBase.Validate(op, ResolveCommentOp)
+}
+
+func (op *ResolveComment) Apply(s *Snapshot) {
+	for i := range s.Comments {
+		c := &s.Comments[i]
+		if c.ID != op.Target || !c.Question || c.Resolved {
+			continue
+		}
+		c.Resolved = true
+		c.ResolvedAt = op.Time()
+		if a := op.Author(); a != nil {
+			c.ResolvedBy = a.Name()
+		}
+		s.UpdatedAt = op.Time()
+		return
+	}
+}
+
+// EditComment replaces a comment's body (last-writer-wins). No-op if the target
+// is absent or already deleted, so history applies cleanly in any merge order.
+type EditComment struct {
+	dag.OpBase
+	Target string `json:"target"`
+	Body   string `json:"body"`
+}
+
+func NewEditComment(author identity.Interface, target, body string) *EditComment {
+	return &EditComment{
+		OpBase: dag.NewOpBase(EditCommentOp, author, time.Now().Unix()),
+		Target: target,
+		Body:   body,
+	}
+}
+
+func (op *EditComment) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
+
+func (op *EditComment) Validate() error {
+	if op.Target == "" {
+		return errors.New("edit target required")
+	}
+	if strings.TrimSpace(op.Body) == "" {
+		return errors.New("comment body required")
+	}
+	return op.OpBase.Validate(op, EditCommentOp)
+}
+
+func (op *EditComment) Apply(s *Snapshot) {
+	for i := range s.Comments {
+		c := &s.Comments[i]
+		if c.ID != op.Target || c.Deleted {
+			continue
+		}
+		c.Body = op.Body
+		c.Edited = true
+		c.EditedAt = op.Time()
+		s.UpdatedAt = op.Time()
+		return
+	}
+}
+
+// DeleteComment tombstones a comment. Sticky: once deleted it stays deleted, so
+// a delete dominates any concurrent edit regardless of apply order. The comment
+// stays in the list (thread structure survives); renderers show it as deleted.
+type DeleteComment struct {
+	dag.OpBase
+	Target string `json:"target"`
+}
+
+func NewDeleteComment(author identity.Interface, target string) *DeleteComment {
+	return &DeleteComment{
+		OpBase: dag.NewOpBase(DeleteCommentOp, author, time.Now().Unix()),
+		Target: target,
+	}
+}
+
+func (op *DeleteComment) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
+
+func (op *DeleteComment) Validate() error {
+	if op.Target == "" {
+		return errors.New("delete target required")
+	}
+	return op.OpBase.Validate(op, DeleteCommentOp)
+}
+
+func (op *DeleteComment) Apply(s *Snapshot) {
+	for i := range s.Comments {
+		c := &s.Comments[i]
+		if c.ID != op.Target || c.Deleted {
+			continue
+		}
+		c.Deleted = true
+		c.DeletedAt = op.Time()
+		if a := op.Author(); a != nil {
+			c.DeletedBy = a.Name()
+		}
+		s.UpdatedAt = op.Time()
+		return
+	}
+}
+
 // FirstHeading returns the text of the first markdown H1 ("# ...") line in
 // body, or "" if there is none.
 func FirstHeading(body string) string {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "# ") {
 			return strings.TrimSpace(trimmed[2:])
@@ -506,7 +673,7 @@ func DeriveTitle(body string) string {
 	if h := FirstHeading(body); h != "" {
 		return h
 	}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			return trimmed
 		}
@@ -571,6 +738,14 @@ func operationUnmarshaler(raw json.RawMessage, _ entity.Resolvers) (dag.Operatio
 		op = &Unarchive{}
 	case SetContentTypeOp:
 		op = &SetContentType{}
+	case AddCommentOp:
+		op = &AddComment{}
+	case ResolveCommentOp:
+		op = &ResolveComment{}
+	case EditCommentOp:
+		op = &EditComment{}
+	case DeleteCommentOp:
+		op = &DeleteComment{}
 	default:
 		return nil, fmt.Errorf("unknown operation type %v", t.OperationType)
 	}

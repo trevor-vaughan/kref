@@ -8,6 +8,27 @@ import (
 )
 
 var _ = Describe("TierDef", func() {
+	It("reserves quarantine as a private-typed hidden system tier", func() {
+		// Reserved: a custom tier cannot take the name.
+		Expect(entry.ValidateTierName("quarantine")).To(HaveOccurred())
+
+		// Declared as a system tier: private-typed, System(), not one of the three.
+		var q *entry.TierDef
+		for _, d := range entry.BuiltinTierDefsWithSystem() {
+			if d.Name == entry.TierQuarantine {
+				dd := d
+				q = &dd
+			}
+		}
+		Expect(q).NotTo(BeNil())
+		Expect(q.Type).To(Equal(entry.TierPrivate))
+		Expect(q.System()).To(BeTrue())
+		Expect(q.Builtin()).To(BeFalse())
+
+		// The three user built-ins are unchanged (no quarantine leaks in).
+		Expect(entry.BuiltinTierDefs()).To(HaveLen(3))
+	})
+
 	It("identifies the built-ins", func() {
 		defs := entry.BuiltinTierDefs()
 		Expect(defs).To(HaveLen(3))

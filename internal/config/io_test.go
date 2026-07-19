@@ -170,7 +170,7 @@ var _ = Describe("Template round-trip", func() {
 	})
 
 	It("renders warn_unscanned ACTIVE when the layer set it", func() {
-		out, err := config.Template(&config.Config{Version: 1, WarnUnscanned: bp(false)})
+		out, err := config.Template(&config.Config{Version: 1, WarnUnscanned: new(false)})
 		Expect(err).NotTo(HaveOccurred())
 		c, err := config.Parse(out)
 		Expect(err).NotTo(HaveOccurred())
