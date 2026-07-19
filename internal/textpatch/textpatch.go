@@ -10,6 +10,7 @@
 package textpatch
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -100,7 +101,7 @@ func parse(diff string) ([]hunk, error) {
 		}
 	}
 	if len(hunks) == 0 {
-		return nil, fmt.Errorf("no unified-diff hunks found (expected @@ sections)")
+		return nil, errors.New("no unified-diff hunks found (expected @@ sections)")
 	}
 	return hunks, nil
 }

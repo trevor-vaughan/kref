@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -121,8 +122,6 @@ func RegisteredTypes() []string {
 // ExtensionTypes returns the extension→content-type map (for consistency tests).
 func ExtensionTypes() map[string]string {
 	out := make(map[string]string, len(extMap))
-	for k, v := range extMap {
-		out[k] = v
-	}
+	maps.Copy(out, extMap)
 	return out
 }

@@ -4,6 +4,8 @@
 // program is ample; a size guard keeps pathological inputs linear.
 package textdiff
 
+import "slices"
+
 // Op classifies one line of a diff.
 type Op int
 
@@ -47,7 +49,7 @@ func splitLines(s string) []string {
 	}
 	var out []string
 	start := 0
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == '\n' {
 			out = append(out, s[start:i])
 			start = i + 1
@@ -76,9 +78,9 @@ func Diff(a, b string) []Line {
 	for i := range lcs {
 		lcs[i] = make([]int, len(bl)+1)
 	}
-	for i := len(al) - 1; i >= 0; i-- {
-		for j := len(bl) - 1; j >= 0; j-- {
-			if al[i] == bl[j] {
+	for i, av := range slices.Backward(al) {
+		for j, bv := range slices.Backward(bl) {
+			if av == bv {
 				lcs[i][j] = lcs[i+1][j+1] + 1
 			} else if lcs[i+1][j] >= lcs[i][j+1] {
 				lcs[i][j] = lcs[i+1][j]
