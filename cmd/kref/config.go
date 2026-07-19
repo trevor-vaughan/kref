@@ -82,7 +82,7 @@ func newConfigCmd(dir *string) *cobra.Command {
 				}
 				defer s.Close()
 				if _, _, ok := s.ProjectConfigEntry(); ok {
-					return fmt.Errorf("a project config entry already exists")
+					return errors.New("a project config entry already exists")
 				}
 				tierName, err := chooseSharedTier(s, initTier)
 				if err != nil {
@@ -271,7 +271,7 @@ func chooseSharedTier(s *store.Store, want string) (entry.Tier, error) {
 	}
 	switch len(shared) {
 	case 0:
-		return "", fmt.Errorf("no declared shared tier to hold the project config entry")
+		return "", errors.New("no declared shared tier to hold the project config entry")
 	case 1:
 		return shared[0], nil
 	default:

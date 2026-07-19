@@ -37,7 +37,7 @@ func guidedArgs(inner cobra.PositionalArgs, g argGuide) cobra.PositionalArgs {
 }
 
 // render builds the multi-line actionable error. formatCLIError prepends
-// "error: ", so the first line reads "error: kref purge needs an entry id."
+// "error: ", so the first line reads "error: kref purge needs an entry id.".
 func (g argGuide) render(cmd *cobra.Command) error {
 	path := cmd.CommandPath()
 	var b strings.Builder
@@ -82,7 +82,7 @@ func resolveTargetOrRecent(cmd *cobra.Command, s *store.Store, args []string) (e
 	snap, err := s.MostRecent()
 	if err != nil {
 		if errors.Is(err, store.ErrNoEntries) {
-			return "", fmt.Errorf("no entries yet — create one with `kref new ...`")
+			return "", errors.New("no entries yet — create one with `kref new ...`")
 		}
 		return "", err
 	}

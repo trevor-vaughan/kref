@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,7 +47,7 @@ func newFavCmd(dir *string) *cobra.Command {
 			if addShared {
 				body, entryID, ok := s.ProjectConfigEntry()
 				if !ok {
-					return fmt.Errorf("no project config entry — create it with `kref config init --shared`")
+					return errors.New("no project config entry — create it with `kref config init --shared`")
 				}
 				pc, err := config.Parse([]byte(body))
 				if err != nil {
@@ -72,18 +73,7 @@ func newFavCmd(dir *string) *cobra.Command {
 					},
 					map[string]string{"status": "favorited", "name": name, "id": id.String(), "layer": "shared"})
 			}
-			path, uc, err := loadUserConfigForEdit()
-			if err != nil {
-				return err
-			}
-			if uc.Favorites == nil {
-				uc.Favorites = map[string]string{}
-			}
-			uc.Favorites[name] = id.String()
-			if err := config.Validate(uc); err != nil {
-				return err
-			}
-			if err := config.WriteFile(path, uc); err != nil {
+			if err := setUserFavorite(name, id); err != nil {
 				return err
 			}
 			return emit(cmd,
@@ -112,7 +102,7 @@ func newFavCmd(dir *string) *cobra.Command {
 				defer s.Close()
 				body, entryID, ok := s.ProjectConfigEntry()
 				if !ok {
-					return fmt.Errorf("no project config entry — create it with `kref config init --shared`")
+					return errors.New("no project config entry — create it with `kref config init --shared`")
 				}
 				pc, err := config.Parse([]byte(body))
 				if err != nil {
@@ -136,18 +126,7 @@ func newFavCmd(dir *string) *cobra.Command {
 					func(w io.Writer, _ bool) { fmt.Fprintf(w, "removed favorite %s (shared)\n", name) },
 					map[string]string{"status": "removed", "name": name, "layer": "shared"})
 			}
-			path, uc, err := loadUserConfigForEdit()
-			if err != nil {
-				return err
-			}
-			if _, ok := uc.Favorites[name]; !ok {
-				return fmt.Errorf("no user favorite named %q", name)
-			}
-			delete(uc.Favorites, name)
-			if err := config.Validate(uc); err != nil {
-				return err
-			}
-			if err := config.WriteFile(path, uc); err != nil {
+			if err := removeUserFavorite(name); err != nil {
 				return err
 			}
 			return emit(cmd,
@@ -232,6 +211,43 @@ func loadUserConfigForEdit() (string, *config.Config, error) {
 		return "", nil, perr
 	}
 	return path, c, nil
+}
+
+// setUserFavorite adds or updates a user-scope favorite name → id in the user
+// config file. Shared by `kref fav add` and the interactive list cockpit. The
+// name must contain a non-hex character so it never shadows an id.
+func setUserFavorite(name string, id entity.Id) error {
+	if err := config.ValidFavoriteName(name); err != nil {
+		return err
+	}
+	path, uc, err := loadUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	if uc.Favorites == nil {
+		uc.Favorites = map[string]string{}
+	}
+	uc.Favorites[name] = id.String()
+	if err := config.Validate(uc); err != nil {
+		return err
+	}
+	return config.WriteFile(path, uc)
+}
+
+// removeUserFavorite deletes a user-scope favorite name from the user config file.
+func removeUserFavorite(name string) error {
+	path, uc, err := loadUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	if _, ok := uc.Favorites[name]; !ok {
+		return fmt.Errorf("no user favorite named %q", name)
+	}
+	delete(uc.Favorites, name)
+	if err := config.Validate(uc); err != nil {
+		return err
+	}
+	return config.WriteFile(path, uc)
 }
 
 // favoritesFor returns the favorite names that point at id, sorted.

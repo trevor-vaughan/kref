@@ -55,7 +55,6 @@ var _ = Describe("kref id-argument completion", func() {
 		Entry("purge", "purge"),
 		Entry("log", "log"),
 		Entry("diff", "diff"),
-		Entry("links", "links"),
 		Entry("tree", "tree"),
 		Entry("resolve", "resolve"),
 	)
@@ -101,7 +100,7 @@ var _ = Describe("kref id-argument completion", func() {
 	It("caps the list at ten and points to `kref list` for the rest", func() {
 		dir := gitRepo()
 		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
-		for i := 0; i < 12; i++ {
+		for i := range 12 {
 			addEntry(dir, "--title", fmt.Sprintf("Entry %02d", i), "--kind", "note")
 		}
 		out := run("--dir", dir, "__complete", "rm", "")
@@ -153,6 +152,34 @@ var _ = Describe("kref completion guidance when there is nothing to offer", func
 		out := run("--dir", dir, "__complete", "new", "")
 		Expect(out).To(ContainSubstring("_activeHelp_"))
 		Expect(out).To(ContainSubstring("--title"))
+	})
+})
+
+var _ = Describe("kref todo parent completion", func() {
+	// The id targets live under `todo show`, so the parent completes only its
+	// subcommand names — no id overload, and fmt/lint are ordinary subcommands.
+	seedTodo := func() (string, string) {
+		GinkgoHelper()
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		id := newTodo(dir, "# A\n\n## Open\n- [ ] a\n\n## Done (compact)\n")
+		return dir, id
+	}
+
+	It("offers the show/fmt/lint subcommands at a bare TAB, not ids", func() {
+		dir, id := seedTodo()
+		out := run("--dir", dir, "__complete", "todo", "")
+		Expect(out).To(ContainSubstring("show\t"))
+		Expect(out).To(ContainSubstring("fmt\t"))
+		Expect(out).To(ContainSubstring("lint\t"))
+		Expect(out).NotTo(ContainSubstring(id[:12]))
+	})
+
+	It("completes todo ids under `todo show`", func() {
+		dir, id := seedTodo()
+		out := run("--dir", dir, "__complete", "todo", "show", "")
+		Expect(out).To(ContainSubstring(id[:12]))
+		Expect(out).NotTo(ContainSubstring("fmt\t"))
 	})
 })
 
@@ -273,6 +300,17 @@ var _ = Describe("kref flag-value completion", func() {
 		Expect(out).To(ContainSubstring("note"))
 	})
 
+	It("discovery completion (--kind) excludes archived-only kinds", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		addEntry(dir, "--title", "Live", "--kind", "spec")
+		g := addEntry(dir, "--title", "Arch", "--kind", "zarchivedkind")
+		run("--dir", dir, "archive", g)
+		out := run("--dir", dir, "__complete", "list", "--kind", "")
+		Expect(out).To(ContainSubstring("spec"))
+		Expect(out).NotTo(ContainSubstring("zarchivedkind"))
+	})
+
 	It("completes --label from the labels present in the store", func() {
 		dir, _, _, _ := completionRepo()
 		out := run("--dir", dir, "__complete", "list", "--label", "")
@@ -321,6 +359,34 @@ var _ = Describe("kref flag-value completion", func() {
 		Expect(out).To(MatchRegexp(`(?m)^title\t`))
 		Expect(out).NotTo(MatchRegexp(`(?m)^id\t`))
 	})
+})
+
+var _ = Describe("kref todo id-argument completion", func() {
+	// todoRepo builds a store with one kind:todo entry and one non-todo entry so
+	// the specs can assert todo commands offer only the todo.
+	todoRepo := func() (dir, todoID, other string) {
+		GinkgoHelper()
+		dir = gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		todoID = addEntry(dir, "--title", "My Todo", "--kind", "todo",
+			"--body", "# My Todo\n\n## Open\n\n## Done (compact)\n")
+		other = addEntry(dir, "--title", "A Spec", "--kind", "spec")
+		return dir, todoID, other
+	}
+
+	DescribeTable("offers only kind:todo ids",
+		func(sub []string) {
+			dir, todoID, other := todoRepo()
+			args := append([]string{"--dir", dir, "__complete"}, sub...)
+			args = append(args, "")
+			out := run(args...)
+			Expect(out).To(ContainSubstring(todoID[:12]))
+			Expect(out).NotTo(ContainSubstring(other[:12]))
+		},
+		Entry("todo show", []string{"todo", "show"}),
+		Entry("todo fmt", []string{"todo", "fmt"}),
+		Entry("todo lint", []string{"todo", "lint"}),
+	)
 })
 
 var _ = Describe("tier completion", func() {

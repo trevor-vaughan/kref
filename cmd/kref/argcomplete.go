@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -63,21 +64,23 @@ func customTierNames(dir *string) []string {
 // listAll, listArchived, and listDeleted are the candidate entry sets for id
 // completion. Most commands act on live entries; restore acts on tombstoned ones
 // and unarchive on archived ones, so each gets the set it can actually accept.
-func listAll(s *store.Store) ([]*entry.Snapshot, error) { return s.List(store.ListFilter{}) }
-
-func listArchived(s *store.Store) ([]*entry.Snapshot, error) {
-	return s.List(store.ListFilter{ArchivedOnly: true})
+func listAll(s *store.Store) ([]store.Excerpt, error) {
+	return s.ListForCompletion(store.ListFilter{})
 }
 
-func listDeleted(s *store.Store) ([]*entry.Snapshot, error) {
-	items, err := s.List(store.ListFilter{IncludeDelete: true})
+func listArchived(s *store.Store) ([]store.Excerpt, error) {
+	return s.ListForCompletion(store.ListFilter{ArchivedOnly: true})
+}
+
+func listDeleted(s *store.Store) ([]store.Excerpt, error) {
+	items, err := s.ListForCompletion(store.ListFilter{IncludeDelete: true})
 	if err != nil {
 		return nil, err
 	}
-	deleted := make([]*entry.Snapshot, 0, len(items))
-	for _, snap := range items {
-		if snap.Deleted {
-			deleted = append(deleted, snap)
+	deleted := make([]store.Excerpt, 0, len(items))
+	for _, e := range items {
+		if e.Deleted {
+			deleted = append(deleted, e)
 		}
 	}
 	return deleted, nil
@@ -88,14 +91,19 @@ func listDeleted(s *store.Store) ([]*entry.Snapshot, error) {
 // completion that reads as an unresponsive shell; the hint says why nothing was
 // offered and points at the way forward.
 type entrySource struct {
-	list  func(*store.Store) ([]*entry.Snapshot, error)
+	list  func(*store.Store) ([]store.Excerpt, error)
 	empty string
+}
+
+func listTodos(s *store.Store) ([]store.Excerpt, error) {
+	return s.ListForCompletion(store.ListFilter{Kind: "todo"})
 }
 
 var (
 	sourceAll      = entrySource{listAll, "no entries yet — create one with `kref new` or `kref ingest`"}
 	sourceArchived = entrySource{listArchived, "no archived entries — `kref list --archived` lists them once you have some"}
 	sourceDeleted  = entrySource{listDeleted, "no deleted entries to restore"}
+	sourceTodo     = entrySource{listTodos, "no kind:todo entry — create one with `kref new --kind todo`"}
 )
 
 // offerEntryIDs returns entry-id completions (short id + title description) drawn
@@ -136,14 +144,14 @@ func offerEntryIDs(dir *string, toComplete string, src entrySource) ([]string, c
 	directive := cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveKeepOrder
 	out := make([]string, 0, completionLimit)
 	matched := 0
-	for _, snap := range items {
-		short := render.ShortID(snap.ID)
+	for _, e := range items {
+		short := render.ShortID(e.ID)
 		if !strings.HasPrefix(short, toComplete) {
 			continue
 		}
 		matched++
 		if len(out) < completionLimit {
-			out = append(out, short+"\t"+snap.UpdatedAt.Format("2006-01-02")+"  "+snap.Title)
+			out = append(out, short+"\t"+e.UpdatedAt.Format("2006-01-02")+"  "+e.Title)
 		}
 	}
 	if matched > completionLimit {
@@ -271,20 +279,20 @@ func nthEnumFn(n int, values func() []string) func(*cobra.Command, []string, str
 // every entry in the store (archived included), in first-seen order. It is the
 // raw material for the discovery completions (--kind, --label), which answer
 // "what do I actually have?".
-func distinctStoreField(dir *string, field func(*entry.Snapshot) []string) ([]string, error) {
+func distinctStoreField(dir *string, field func(store.Excerpt) []string) ([]string, error) {
 	s, err := store.Open(*dir)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	items, err := s.List(store.ListFilter{IncludeArchived: true})
+	items, err := s.ListExcerpts(store.ListFilter{})
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	var out []string
-	for _, snap := range items {
-		for _, v := range field(snap) {
+	for _, e := range items {
+		for _, v := range field(e) {
 			if v == "" || seen[v] {
 				continue
 			}
@@ -298,7 +306,7 @@ func distinctStoreField(dir *string, field func(*entry.Snapshot) []string) ([]st
 // completeStoreField completes a flag value from the distinct values a field
 // takes across the store — the discovery win for --kind and --label. Returns
 // nothing on any error so completion stays quiet outside a repo.
-func completeStoreField(dir *string, field func(*entry.Snapshot) []string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+func completeStoreField(dir *string, field func(store.Excerpt) []string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		values, err := distinctStoreField(dir, field)
 		if err != nil {
@@ -315,7 +323,7 @@ func completeStoreField(dir *string, field func(*entry.Snapshot) []string) func(
 // hardcoded, so it tracks the flag definition if that ever changes.
 func completeKindWithDefault(dir *string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return func(cmd *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		kinds, err := distinctStoreField(dir, func(s *entry.Snapshot) []string { return []string{s.Kind} })
+		kinds, err := distinctStoreField(dir, func(e store.Excerpt) []string { return []string{e.Kind} })
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -364,7 +372,7 @@ func completeColumns(_ *cobra.Command, _ []string, toComplete string) ([]string,
 		prefix, last = toComplete[:i+1], toComplete[i+1:]
 	}
 	chosen := map[string]bool{}
-	for _, p := range strings.Split(prefix, ",") {
+	for p := range strings.SplitSeq(prefix, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			chosen[p] = true
 		}
@@ -385,7 +393,7 @@ func completeColumns(_ *cobra.Command, _ []string, toComplete string) ([]string,
 // then each key's non-default direction form (dates default to :desc, so
 // their explicit suffix worth offering is :asc).
 func sortFlagValues(extra ...string) []string {
-	keys := append(extra, render.SortKeys()...)
+	keys := slices.Concat(extra, render.SortKeys())
 	out := make([]string, 0, len(keys)*2)
 	out = append(out, keys...)
 	for _, k := range keys {

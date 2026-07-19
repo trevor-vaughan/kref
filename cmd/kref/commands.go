@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -25,9 +27,10 @@ import (
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/hooks"
 	"github.com/trevor-vaughan/kref/internal/mcpserver"
+	"github.com/trevor-vaughan/kref/internal/outline"
 	"github.com/trevor-vaughan/kref/internal/render"
-	"github.com/trevor-vaughan/kref/internal/scan"
 	"github.com/trevor-vaughan/kref/internal/store"
+	"github.com/trevor-vaughan/kref/internal/todoguard"
 	"github.com/trevor-vaughan/kref/internal/xdg"
 )
 
@@ -38,10 +41,8 @@ func writeJSON(cmd *cobra.Command, v any) error {
 }
 
 func parseStatus(s string) (string, error) {
-	for _, v := range statusValues {
-		if s == v {
-			return s, nil
-		}
+	if slices.Contains(statusValues, s) {
+		return s, nil
 	}
 	return "", fmt.Errorf("invalid status %q (want %s)", s, strings.Join(statusValues, "|"))
 }
@@ -186,7 +187,10 @@ func newInitCmd(dir *string) *cobra.Command {
 			}
 			name, email := s.Author()
 			cmd.PrintErrln("note: operations are attributed to your git identity but are NOT cryptographically signed (git-bug v0.10.1 limitation).")
-			cmd.PrintErrln("note: no sync remote is configured yet — entries exist only in this repository until you set one: `kref remote set <tier> <name> [url]`.")
+			sharedRemote, err := adoptOriginRemote(cmd, s)
+			if err != nil {
+				return err
+			}
 			return emit(cmd,
 				func(w io.Writer, _ bool) {
 					fmt.Fprintf(w, "initialized kref in %s as %s <%s>\n", *dir, name, email)
@@ -194,6 +198,7 @@ func newInitCmd(dir *string) *cobra.Command {
 				map[string]any{
 					"status": "initialized", "dir": *dir,
 					"author": name, "email": email, "signed": false,
+					"shared_remote": sharedRemote,
 				})
 		},
 	}
@@ -202,20 +207,49 @@ func newInitCmd(dir *string) *cobra.Command {
 	return c
 }
 
+// adoptOriginRemote binds the shared tier to the git "origin" remote when the
+// repository already has one, so a freshly-initialized store can sync without a
+// separate `kref remote set`. It only records the binding (no URL passed, so no
+// git remote is created or modified). It returns the adopted remote name ("" if
+// none) and prints a note for each outcome: origin adopted, remotes present but
+// no origin, or no remotes at all (sync impossible until one is set).
+func adoptOriginRemote(cmd *cobra.Command, s *store.Store) (string, error) {
+	remotes, err := s.GitRemotes()
+	if err != nil {
+		return "", err
+	}
+	if url, ok := remotes["origin"]; ok {
+		if err := s.SetRemote(entry.TierShared, "origin", ""); err != nil {
+			return "", err
+		}
+		cmd.PrintErrf("note: the shared tier will sync via the 'origin' remote (%s) — `kref sync push shared` to publish.\n", url)
+		return "origin", nil
+	}
+	if len(remotes) == 0 {
+		cmd.PrintErrln("note: no sync remote is configured — sync is not possible until you set one: `kref remote set <tier> <name> [url]`.")
+		return "", nil
+	}
+	cmd.PrintErrln("note: no 'origin' remote to adopt — the shared tier has no sync remote yet: `kref remote set shared <name>`.")
+	return "", nil
+}
+
 func newAddCmd(dir *string) *cobra.Command {
 	var kind, title, body, tier string
 	var contentType string
 	var labels []string
+	var force bool
 	c := &cobra.Command{
 		Use:               "new",
 		Aliases:           []string{"create"},
 		ValidArgsFunction: noPositionalHelp("new takes no arguments — configure the entry with flags like --title, --kind, --body, --tier, --label"),
 		Short:             "Create a new entry",
-		Long: "Compose a single entry from flags. To create entries from existing " +
-			"markdown files or directories, use `kref ingest` instead.",
+		Long: "Compose a single entry from flags. The body comes from --body or, " +
+			"when that is omitted, piped/redirected stdin. To create entries from " +
+			"existing markdown files or directories, use `kref ingest` instead.",
 		Example: exampleBlock([]string{
 			`kref new --title "Auth design" --kind spec`,
 			"kref new --body $'# Auth design\\n\\nprose'   # title derived from the H1",
+			"kref new --kind spec < design.md            # body piped on stdin",
 			"kref new --tier shared --label area:auth --title X",
 		}),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -229,17 +263,63 @@ func newAddCmd(dir *string) *cobra.Command {
 				return err
 			}
 			t := tdef.Name
+			// Body from --body, else piped/redirected stdin (never an interactive
+			// terminal — reading it would block on an EOF that never comes). This
+			// mirrors `kref update` and matches the agents_md guidance to pipe a
+			// body on stdin.
+			if !cmd.Flags().Changed("body") && !term.IsTerminal(int(os.Stdin.Fd())) {
+				raw, rErr := io.ReadAll(cmd.InOrStdin())
+				if rErr != nil {
+					return rErr
+				}
+				body = string(raw)
+			}
 			if title == "" {
 				title = entry.DeriveTitle(body)
 			}
 			if title == "" {
-				return fmt.Errorf("provide --title, or a --body with a heading or text to derive one from")
+				return errors.New("provide --title, or a --body with a heading or text to derive one from")
 			}
 			ct := ""
 			if cmd.Flags().Changed("content-type") {
 				ct, err = content.Canonical(contentType)
 				if err != nil {
 					return err
+				}
+			}
+			// A body that trips the secret scanner on a syncable tier is diverted
+			// into the quarantine review queue as a draft (approval retiers it to
+			// t), not written to t.
+			if body != "" {
+				fs, held, unscanned, ferr := entryParkFindings(&entry.Snapshot{Tier: string(t), TierType: string(tdef.Type)}, body)
+				if ferr != nil {
+					return ferr
+				}
+				if held {
+					actor, actorKind := resolveActor(cmd, s)
+					parked, perr := s.QuarantineNewEntry(t, kind, title, body, ct, fs, actorKind)
+					if perr != nil {
+						return perr
+					}
+					for _, l := range labels {
+						if lerr := s.AddLabel(parked.ItemID, l); lerr != nil {
+							return lerr
+						}
+					}
+					if force {
+						// --force = create+approve in one step (human/CLI only): the
+						// draft is promoted to its tier through the normal approve path.
+						if aerr := s.ApproveQuarantine(parked.ItemID, "force-approved at write", actor, actorKind); aerr != nil {
+							return aerr
+						}
+						fmt.Fprintf(cmd.OutOrStdout(), "added %s (force-approved)\n", shortStr(parked.ItemID.String(), 12))
+						return nil
+					}
+					printQuarantined(cmd, parked)
+					return nil
+				}
+				if unscanned && s.EffectiveConfig().WarnUnscannedOn() {
+					fmt.Fprintln(cmd.ErrOrStderr(), unscannedWarn)
 				}
 			}
 			id, err := s.AddWithContentType(t, kind, title, body, ct)
@@ -270,6 +350,7 @@ func newAddCmd(dir *string) *cobra.Command {
 	c.Flags().StringVar(&tier, "tier", "personal", "tier: private|personal|shared, or a custom tier (kref tier list)")
 	c.Flags().StringVar(&contentType, "content-type", "", "content type, e.g. application/json (default text/markdown)")
 	c.Flags().StringArrayVar(&labels, "label", nil, "label to attach (repeatable)")
+	c.Flags().BoolVar(&force, "force", false, "for a flagged body: create the quarantine item and approve it in one step (human/CLI only; leaves an audit trail on the entry)")
 	registerEntryFlagCompletions(c, dir)
 	return c
 }
@@ -750,7 +831,7 @@ func renderPagerBody(snap *entry.Snapshot, color bool, width int) ([]string, int
 	}
 	d := numDigits(len(renderAt(width)))
 	var lines []string
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		lines = renderAt(width - (d + 3))
 		nd := numDigits(len(lines))
 		if nd == d {
@@ -759,6 +840,87 @@ func renderPagerBody(snap *entry.Snapshot, color bool, width int) ([]string, int
 		d = nd
 	}
 	return lines, d + 3
+}
+
+// renderFoldedBody renders snap.Body block-by-block with the given fold applied
+// (at wrap width w), then appends the comment block, returning the display lines
+// and each surviving heading's body-relative rendered offset. Block-by-block is
+// what lets the pager know a heading's *rendered* line — glamour reflows, so the
+// offset can't come from the raw source. Mirrors the cockpit's body zone.
+func renderFoldedBody(snap *entry.Snapshot, opts render.ShowOptions, folded map[string]bool, w int) foldedBody {
+	if w < 1 {
+		w = 1
+	}
+	foldedSrc := outline.Parse(snap.Body).Render(folded)
+	foldedLines := strings.Split(foldedSrc, "\n")
+	hs := outline.Parse(foldedSrc).Headings()
+	var out []string
+	var rh []renderedHeading
+	for _, span := range headingBlocks(hs, len(foldedLines)) {
+		blockLines := append([]string(nil), foldedLines[span.start:span.end]...)
+		isSection := span.heading != nil
+		if isSection {
+			blockLines[0] = injectMarker(blockLines[0], span.heading.Level, folded[span.heading.Path])
+		}
+		var b bytes.Buffer
+		render.RenderBody(&b, strings.Join(blockLines, "\n"), snap.ContentType, opts.Color, w)
+		rendered := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+		if isSection {
+			// Drop RenderBody's markdown top-margin so the heading is the block's
+			// first line and its recorded offset lands on the heading.
+			for len(rendered) > 1 && strings.TrimSpace(rendered[0]) == "" {
+				rendered = rendered[1:]
+			}
+			rh = append(rh, renderedHeading{path: span.heading.Path, line: len(out)})
+		}
+		out = append(out, rendered...)
+	}
+	if len(snap.Comments) > 0 {
+		var cb bytes.Buffer
+		render.RenderComments(&cb, snap.Comments, opts.Color, opts.Width)
+		clines := strings.Split(strings.TrimRight(cb.String(), "\n"), "\n")
+		out = append(out, "")
+		rh = append(rh, renderedHeading{path: commentsFoldPath, line: len(out)})
+		// Keep the "Comments (N)" header (marked ▾/▸) as the fold affordance; fold
+		// the threads beneath it to a hint. Whole-block only — per-thread folding
+		// stays cockpit-only.
+		marker := "▾ "
+		if folded[commentsFoldPath] {
+			marker = "▸ "
+		}
+		out = append(out, marker+clines[0])
+		if folded[commentsFoldPath] {
+			if hidden := len(clines) - 1; hidden > 0 {
+				out = append(out, fmt.Sprintf("▸ %d lines", hidden))
+			}
+		} else {
+			out = append(out, clines[1:]...)
+		}
+	}
+	return foldedBody{lines: out, headings: rh}
+}
+
+// foldedPagerBody renders the unfolded fold-aware body and its gutter width via
+// the same bounded fixed-point as renderPagerBody (the wrap width depends on the
+// gutter, which depends on the line count). The returned width becomes the fixed
+// wrap width for all subsequent folds so the layout does not reflow on a fold.
+func foldedPagerBody(snap *entry.Snapshot, opts render.ShowOptions) (foldedBody, int) {
+	width := opts.Width
+	if width <= 0 {
+		width = 80
+	}
+	empty := map[string]bool{}
+	d := numDigits(len(renderFoldedBody(snap, opts, empty, width).lines))
+	var fb foldedBody
+	for range 4 {
+		fb = renderFoldedBody(snap, opts, empty, width-(d+3))
+		nd := numDigits(len(fb.lines))
+		if nd == d {
+			break
+		}
+		d = nd
+	}
+	return fb, d + 3
 }
 
 // showPagerContent composes the pager input for one snapshot: an un-numbered
@@ -775,18 +937,58 @@ func showPagerContent(snap *entry.Snapshot, opts render.ShowOptions) pagerConten
 	pc := pagerContent{title: title, header: header}
 	if opts.Raw {
 		pc.body = strings.Split(strings.TrimRight(snap.Body, "\n"), "\n")
-	} else {
-		pc.body, pc.gutterW = renderPagerBody(snap, opts.Color, opts.Width)
+		pc.body = appendPagerComments(pc.body, snap, opts)
+		return pc
+	}
+	if content.IsMarkdown(snap.ContentType) {
+		// Fold-aware markdown: block-by-block render (comments included) so the
+		// pager can fold sections and map the viewport to a heading. foldRender
+		// re-renders at the fixed wrap width on each fold.
+		fb, gw := foldedPagerBody(snap, opts)
+		width := opts.Width
+		if width <= 0 {
+			width = 80
+		}
+		wrapW := width - gw
+		pc.body = fb.lines
+		pc.gutterW = gw
 		pc.number = true
+		pc.rawBody = snap.Body
+		pc.markdown = true
+		pc.hasComments = len(snap.Comments) > 0
+		pc.foldRender = func(folded map[string]bool) foldedBody {
+			return renderFoldedBody(snap, opts, folded, wrapW)
+		}
+		return pc
+	}
+	// Non-markdown (e.g. code, JSON): render once, no fold.
+	pc.body, pc.gutterW = renderPagerBody(snap, opts.Color, opts.Width)
+	pc.number = true
+	pc.body = appendPagerComments(pc.body, snap, opts)
+	if len(snap.Comments) > 0 {
+		pc.gutterW = numDigits(len(pc.body)) + 3 // keep the gutter wide enough after appending
 	}
 	return pc
+}
+
+// appendPagerComments appends the rendered comment block (if any) to body, with a
+// separating blank line. Used by the non-fold pager paths; the markdown fold path
+// appends comments inside renderFoldedBody so a fold re-render keeps them.
+func appendPagerComments(body []string, snap *entry.Snapshot, opts render.ShowOptions) []string {
+	if len(snap.Comments) == 0 {
+		return body
+	}
+	var cb bytes.Buffer
+	render.RenderComments(&cb, snap.Comments, opts.Color, opts.Width)
+	body = append(body, "")
+	return append(body, strings.Split(strings.TrimRight(cb.String(), "\n"), "\n")...)
 }
 
 // showPaged runs the interactive pager over one entry. refetch (optional)
 // backs the pager's r hotkey: it must return a freshly-read snapshot — the
 // reason to refresh is that another process (an editing agent, a sync) has
 // changed the entry since it was opened.
-func showPaged(snap *entry.Snapshot, opts render.ShowOptions, refetch func() (*entry.Snapshot, render.ShowOptions, error)) error {
+func showPaged(snap *entry.Snapshot, opts render.ShowOptions, refetch func() (*entry.Snapshot, render.ShowOptions, error), expand func() ([]string, error)) error {
 	pc := showPagerContent(snap, opts)
 	if refetch != nil {
 		pc.reload = func() (pagerContent, error) {
@@ -797,22 +999,101 @@ func showPaged(snap *entry.Snapshot, opts render.ShowOptions, refetch func() (*e
 			return showPagerContent(s2, o2), nil
 		}
 	}
+	pc.expand = expand
 	return Page(pc)
 }
 
+// showEntryPaged runs the interactive show pager for one entry, wiring the
+// r-hotkey refetch (fresh store handle) and the e-hotkey extended-header expand.
+// Shared by `kref show` and the list cockpit's open action.
+func showEntryPaged(dir *string, snap *entry.Snapshot, opts render.ShowOptions) error {
+	id := snap.ID
+	refetch := func() (*entry.Snapshot, render.ShowOptions, error) {
+		s2, err := store.Open(*dir)
+		if err != nil {
+			return nil, opts, err
+		}
+		defer s2.Close()
+		snap2, err := s2.Get(id)
+		if err != nil {
+			return nil, opts, err
+		}
+		if m, mErr := s2.Merged(id); mErr == nil {
+			snap2.Merged = m
+		}
+		opts2 := opts
+		opts2.TrackedNote = ""
+		if snap2.Tracked {
+			drift2, dErr := bridge.DriftState(s2, snap2)
+			if dErr != nil {
+				return nil, opts, dErr
+			}
+			opts2.TrackedNote = snap2.TrackedPath + " [" + drift2 + "]"
+		}
+		return snap2, opts2, nil
+	}
+	expand := func() ([]string, error) {
+		s2, err := store.Open(*dir)
+		if err != nil {
+			return nil, err
+		}
+		defer s2.Close()
+		log, err := s2.Log(id)
+		if err != nil {
+			return nil, err
+		}
+		links, err := s2.Links(id)
+		if err != nil {
+			return nil, err
+		}
+		var hb bytes.Buffer
+		render.ExtendedHeader(&hb, snap, time.Now(), log, links, opts.Color, opts.TrackedNote, opts.Favorites)
+		hdr := strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
+		hdr = append(hdr, "") // blank line between header and body
+		return hdr, nil
+	}
+	return showPaged(snap, opts, refetch, expand)
+}
+
+// openEntry opens a single entry in the interactive viewer the list cockpit
+// dispatches to: the todo cockpit for a todo, the show pager otherwise.
+func openEntry(cmd *cobra.Command, dir *string, s *store.Store, snap *entry.Snapshot) error {
+	if snap.Kind == todoguard.TodoKind {
+		return runTodoCockpit(cmd, dir, snap.ID.String(), false, false)
+	}
+	opts := render.ShowOptions{
+		Color:     useColor(cmd),
+		Width:     ttyWidth(),
+		Favorites: favoritesFor(s.Favorites(), snap.ID),
+	}
+	if snap.Tracked {
+		if drift, err := bridge.DriftState(s, snap); err == nil {
+			opts.TrackedNote = snap.TrackedPath + " [" + drift + "]"
+		}
+	}
+	return showEntryPaged(dir, snap, opts)
+}
+
 func newShowCmd(dir *string) *cobra.Command {
-	var noHeader, noPager bool
+	var noHeader, headerOnly, noPager bool
 	c := &cobra.Command{
 		Use:     "show [<id>]",
 		Aliases: []string{"cat", "view", "get"},
 		Short:   "Show an entry",
 		Args:    cobra.MaximumNArgs(1),
 		Example: exampleBlock([]string{
-			"kref show a1b2c3d4        # view one entry",
-			"kref show                 # the most-recently-modified entry",
-			"kref show ./docs/note.md  # address it by the file it came from",
+			"kref show a1b2c3d4           # view one entry",
+			"kref show a1b2c3d4 --header  # just the metadata block, no body, no pager",
+			"kref show                    # the most-recently-modified entry",
+			"kref show ./docs/note.md     # address it by the file it came from",
 		}),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if headerOnly && noHeader {
+				return errors.New("give --header or --no-header, not both")
+			}
+			if headerOnly && plainMode(cmd) {
+				return errors.New("--header and --plain are contradictory (metadata-only vs verbatim body)")
+			}
 			s, err := store.Open(*dir)
 			if err != nil {
 				return err
@@ -844,44 +1125,20 @@ func newShowCmd(dir *string) *cobra.Command {
 			}
 			plain := plainMode(cmd)
 			opts := render.ShowOptions{
-				Raw:       plain,
-				NoHeader:  noHeader || plain,
-				Color:     useColor(cmd),
-				Width:     ttyWidth(),
-				Favorites: favNames,
+				Raw:        plain,
+				NoHeader:   noHeader || plain,
+				HeaderOnly: headerOnly,
+				Color:      useColor(cmd),
+				Width:      ttyWidth(),
+				Favorites:  favNames,
 			}
 			if snap.Tracked {
 				opts.TrackedNote = snap.TrackedPath + " [" + drift + "]"
 			}
-			if usePager(cmd) && !noPager {
-				// The r hotkey re-reads through a FRESH store handle: the open
-				// one may serve cached state, and the point of refreshing is to
-				// see what another process wrote after the pager opened.
-				refetch := func() (*entry.Snapshot, render.ShowOptions, error) {
-					s2, err := store.Open(*dir)
-					if err != nil {
-						return nil, opts, err
-					}
-					defer s2.Close()
-					snap2, err := s2.Get(id)
-					if err != nil {
-						return nil, opts, err
-					}
-					if m, mErr := s2.Merged(id); mErr == nil {
-						snap2.Merged = m
-					}
-					opts2 := opts
-					opts2.TrackedNote = ""
-					if snap2.Tracked {
-						drift2, dErr := bridge.DriftState(s2, snap2)
-						if dErr != nil {
-							return nil, opts, dErr
-						}
-						opts2.TrackedNote = snap2.TrackedPath + " [" + drift2 + "]"
-					}
-					return snap2, opts2, nil
-				}
-				return showPaged(snap, opts, refetch)
+			// --header is a chrome-free metadata peek: no body, and never paged
+			// (the block is short by design).
+			if usePager(cmd) && !noPager && !headerOnly {
+				return showEntryPaged(dir, snap, opts)
 			}
 			var buf bytes.Buffer
 			render.Show(&buf, snap, opts)
@@ -890,6 +1147,7 @@ func newShowCmd(dir *string) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&noHeader, "no-header", false, "omit the metadata header block")
+	c.Flags().BoolVar(&headerOnly, "header", false, "print only the metadata header block (no body, no pager)")
 	c.Flags().BoolVar(&noPager, "no-pager", false, "do not page output even on a terminal")
 	c.ValidArgsFunction = entryArgs(dir, 1, sourceAll)
 	return c
@@ -907,6 +1165,7 @@ func newListCmd(dir *string) *cobra.Command {
 	var labels []string
 	var includeDeleted, all, newOnly, check bool
 	var wide, archived, noPager bool
+	var openQuestions bool
 	var columns, sortBy string
 	c := &cobra.Command{
 		Use:               "list",
@@ -930,13 +1189,13 @@ func newListCmd(dir *string) *cobra.Command {
 			jsonOut := jsonMode(cmd)
 			columnsSet := cmd.Flags().Changed("columns")
 			if columnsSet && wide {
-				return fmt.Errorf("use one of --columns or --wide, not both")
+				return errors.New("use one of --columns or --wide, not both")
 			}
 			if jsonOut && (columnsSet || wide) {
-				return fmt.Errorf("--columns/--wide are not compatible with --json")
+				return errors.New("--columns/--wide are not compatible with --json")
 			}
 			if newOnly && (plain || columnsSet || wide || cmd.Flags().Changed("sort")) {
-				return fmt.Errorf("--plain/--columns/--wide/--sort are not compatible with --new")
+				return errors.New("--plain/--columns/--wide/--sort are not compatible with --new")
 			}
 			var sortSpec *render.SortSpec
 			if sortBy != "" {
@@ -946,7 +1205,7 @@ func newListCmd(dir *string) *cobra.Command {
 				}
 			}
 			if check && plain {
-				return fmt.Errorf("--check is not compatible with --plain")
+				return errors.New("--check is not compatible with --plain")
 			}
 			var cols []render.Column
 			switch {
@@ -982,10 +1241,28 @@ func newListCmd(dir *string) *cobra.Command {
 				}
 				t = tdef.Name
 			}
-			items, err := s.List(store.ListFilter{
+			lf := store.ListFilter{
 				Kind: kind, Status: status, Tier: t, Labels: labels,
 				IncludeDelete: includeDeleted || all, ArchivedOnly: archived, IncludeArchived: all,
-			})
+				OpenQuestionsOnly: openQuestions,
+			}
+			var items []*entry.Snapshot
+			if jsonMode(cmd) || check || openQuestions {
+				// --json needs full bodies/links/provenance; --check compares
+				// against snap.Body for drift. Both use the full DAG read.
+				items, err = s.List(lf)
+			} else {
+				// Table/--plain view: serve the lean metadata from the excerpt
+				// cache (O(entries), no DAG recompile).
+				var exs []store.Excerpt
+				exs, err = s.ListExcerpts(lf)
+				if err == nil {
+					items = make([]*entry.Snapshot, len(exs))
+					for i, e := range exs {
+						items[i] = e.ToSnapshot()
+					}
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -1018,7 +1295,18 @@ func newListCmd(dir *string) *cobra.Command {
 					}
 				}
 			}
+			// Surface the review queue from the command users start with. Skipped
+			// for --plain (a machine format) and --json (structured entries only).
+			var pending []store.QuarantineItem
+			if !plain && !jsonOut {
+				if q, qErr := s.QuarantineQueue(); qErr == nil {
+					pending = q
+				}
+			}
 			human := func(w io.Writer, color bool) {
+				if len(pending) > 0 {
+					renderQuarantineBanner(w, pending)
+				}
 				render.RenderList(w, items, render.ListOptions{
 					Columns: cols, Plain: plain, Color: color, ShowAll: all, Sort: sortSpec, Favorites: favIDs,
 				})
@@ -1031,21 +1319,58 @@ func newListCmd(dir *string) *cobra.Command {
 					}
 				}
 			}
-			// Lean pager (no gutter, no line jumps) for the table view only:
-			// --plain is a machine format, so it bypasses like a pipe would.
-			if usePager(cmd) && !noPager && !plain {
-				var buf bytes.Buffer
-				human(&buf, useColor(cmd))
-				return Page(pagerContent{
-					title: "kref list",
-					body:  strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"),
-				})
+			// On a terminal, the interactive list cockpit: navigate rows, open the
+			// selected one in the existing viewer, act inline. --plain/--json/--check
+			// keep the static output (a machine format bypasses like a pipe would).
+			if usePager(cmd) && !noPager && !plain && !jsonOut && !check {
+				acts := listCockpitActions{s: s, filter: lf}
+				return runListCockpit(acts,
+					render.ListOptions{Columns: cols, Color: useColor(cmd), ShowAll: all, Sort: sortSpec, Favorites: favIDs},
+					useColor(cmd), lf,
+					func(res listResult) error {
+						switch res.action {
+						case "review":
+							queue, qerr := acts.QuarantineQueue()
+							if qerr != nil {
+								return qerr
+							}
+							start := 0
+							for i, it := range queue {
+								if it.ID == res.id {
+									start = i
+									break
+								}
+							}
+							rr, rerr := runReviewModel(acts, queue, start, useColor(cmd), ttyWidth())
+							if rerr != nil {
+								return rerr
+							}
+							if rr.action == "open" {
+								snap, gerr := s.Get(rr.target)
+								if gerr != nil {
+									return gerr
+								}
+								return openEntry(cmd, dir, s, snap)
+							}
+							return nil
+						case "open":
+							snap, gerr := s.Get(res.id)
+							if gerr != nil {
+								return gerr
+							}
+							return openEntry(cmd, dir, s, snap)
+						case "edit":
+							return editEntry(cmd, s, res.id)
+						}
+						return nil
+					})
 			}
 			return emit(cmd, human, items)
 		},
 	}
 	c.Flags().BoolVar(&noPager, "no-pager", false, "do not page output even on a terminal")
 	c.Flags().BoolVar(&check, "check", false, "check each tracked file for drift (reads files)")
+	c.Flags().BoolVar(&openQuestions, "open-questions", false, "only entries with an unresolved question comment")
 	c.Flags().StringVar(&kind, "kind", "", "filter by kind")
 	c.Flags().StringVar(&status, "status", "", "filter by status")
 	c.Flags().StringVar(&tier, "tier", "", "filter by tier (kref tier list shows them)")
@@ -1173,8 +1498,8 @@ func sortSearchResults(results []store.SearchResult, sortBy string) error {
 // set those fields. Each command only registers the flags it actually defines;
 // an unknown flag is a no-op error we deliberately ignore.
 func registerEntryFlagCompletions(c *cobra.Command, dir *string) {
-	_ = c.RegisterFlagCompletionFunc("kind", completeStoreField(dir, func(s *entry.Snapshot) []string { return []string{s.Kind} }))
-	_ = c.RegisterFlagCompletionFunc("label", completeStoreField(dir, func(s *entry.Snapshot) []string { return s.Labels }))
+	_ = c.RegisterFlagCompletionFunc("kind", completeStoreField(dir, func(e store.Excerpt) []string { return []string{e.Kind} }))
+	_ = c.RegisterFlagCompletionFunc("label", completeStoreField(dir, func(e store.Excerpt) []string { return e.Labels }))
 	_ = c.RegisterFlagCompletionFunc("tier", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return fixedValues(allTierNames(dir), toComplete), cobra.ShellCompDirectiveNoFileComp
 	})
@@ -1249,7 +1574,7 @@ func newRestoreCmd(dir *string) *cobra.Command {
 }
 
 func newArchiveCmd(dir *string) *cobra.Command {
-	var obsolete, yes bool
+	var obsolete, accepted, yes bool
 	c := &cobra.Command{
 		Use:               "archive [<id|path>]",
 		ValidArgsFunction: entryArgs(dir, 1, sourceAll),
@@ -1258,14 +1583,19 @@ func newArchiveCmd(dir *string) *cobra.Command {
 		Example: exampleBlock([]string{
 			"kref archive a1b2c3d4      # hide one entry",
 			"kref archive --obsolete    # archive every obsolete entry (asks to confirm)",
+			"kref archive --accepted    # archive every accepted entry (asks to confirm)",
 			"kref archive --obsolete -y # ...without the confirmation prompt",
 		}),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if obsolete && len(args) > 0 {
-				return fmt.Errorf("give an entry id or --obsolete, not both")
+			if obsolete && accepted {
+				return errors.New("give --obsolete or --accepted, not both")
 			}
-			if !obsolete && len(args) == 0 {
-				return fmt.Errorf("give an entry id to archive, or --obsolete to archive all obsolete entries")
+			byStatus := obsolete || accepted
+			if byStatus && len(args) > 0 {
+				return errors.New("give an entry id or a status flag (--obsolete/--accepted), not both")
+			}
+			if !byStatus && len(args) == 0 {
+				return errors.New("give an entry id to archive, or --obsolete/--accepted to archive every entry in that status")
 			}
 			s, err := store.Open(*dir)
 			if err != nil {
@@ -1273,8 +1603,12 @@ func newArchiveCmd(dir *string) *cobra.Command {
 			}
 			defer s.Close()
 
-			if obsolete {
-				return archiveObsolete(cmd, s, yes)
+			if byStatus {
+				status := "obsolete"
+				if accepted {
+					status = "accepted"
+				}
+				return archiveByStatus(cmd, s, status, yes)
 			}
 			id, err := resolveArg(s, args[0])
 			if err != nil {
@@ -1293,31 +1627,33 @@ func newArchiveCmd(dir *string) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&obsolete, "obsolete", false, "archive every obsolete entry")
-	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the --obsolete confirmation prompt")
+	c.Flags().BoolVar(&accepted, "accepted", false, "archive every accepted entry")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the --obsolete/--accepted confirmation prompt")
 	return c
 }
 
-// archiveObsolete archives every non-archived obsolete entry, confirming first
-// unless yes is set. It proceeds on a y/yes answer and aborts otherwise.
-func archiveObsolete(cmd *cobra.Command, s *store.Store, yes bool) error {
+// archiveByStatus archives every non-archived entry in the given status,
+// confirming first unless yes is set. It proceeds on a y/yes answer and aborts
+// otherwise.
+func archiveByStatus(cmd *cobra.Command, s *store.Store, status string, yes bool) error {
 	// Status filter over the default (non-archived) set, so already-archived
-	// obsolete entries are not re-archived.
-	obs, err := s.List(store.ListFilter{Status: "obsolete"})
+	// entries in this status are not re-archived.
+	matches, err := s.List(store.ListFilter{Status: status})
 	if err != nil {
 		return err
 	}
 	noun := "entries"
-	if len(obs) == 1 {
+	if len(matches) == 1 {
 		noun = "entry"
 	}
-	if len(obs) == 0 {
+	if len(matches) == 0 {
 		return emit(cmd,
-			func(w io.Writer, _ bool) { fmt.Fprintln(w, "no obsolete entries to archive") },
+			func(w io.Writer, _ bool) { fmt.Fprintf(w, "no %s entries to archive\n", status) },
 			map[string]int{"archived": 0})
 	}
 	if !yes {
 		out := cmd.ErrOrStderr()
-		fmt.Fprintf(out, "Archive %d obsolete %s? Type y to proceed: ", len(obs), noun)
+		fmt.Fprintf(out, "Archive %d %s %s? Type y to proceed: ", len(matches), status, noun)
 		line, rErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 		if rErr != nil && rErr != io.EOF {
 			return rErr
@@ -1329,14 +1665,14 @@ func archiveObsolete(cmd *cobra.Command, s *store.Store, yes bool) error {
 			return nil
 		}
 	}
-	for _, snap := range obs {
+	for _, snap := range matches {
 		if err := s.Archive(snap.ID); err != nil {
 			return err
 		}
 	}
 	return emit(cmd,
-		func(w io.Writer, _ bool) { fmt.Fprintf(w, "archived %d obsolete %s\n", len(obs), noun) },
-		map[string]int{"archived": len(obs)})
+		func(w io.Writer, _ bool) { fmt.Fprintf(w, "archived %d %s %s\n", len(matches), status, noun) },
+		map[string]int{"archived": len(matches)})
 }
 
 func newUnarchiveCmd(dir *string) *cobra.Command {
@@ -1646,14 +1982,8 @@ func remoteListRun(dir *string) func(cmd *cobra.Command, args []string) error {
 						url = "(no such git remote)"
 					}
 					plain := render.Tier(string(r.Tier), string(r.Type), false)
-					gap := tierW - utf8.RuneCountInString(plain)
-					if gap < 0 {
-						gap = 0
-					}
-					namePad := nameW - utf8.RuneCountInString(name)
-					if namePad < 0 {
-						namePad = 0
-					}
+					gap := max(tierW-utf8.RuneCountInString(plain), 0)
+					namePad := max(nameW-utf8.RuneCountInString(name), 0)
 					fmt.Fprintf(w, "%s%s  %s%s  %s\n",
 						render.Tier(string(r.Tier), string(r.Type), color), strings.Repeat(" ", gap),
 						name, strings.Repeat(" ", namePad), url)
@@ -1697,7 +2027,7 @@ func newRemoteCmd(dir *string) *cobra.Command {
 				return err
 			}
 			if tdef.Type == entry.TierPrivate {
-				return fmt.Errorf("the private tier cannot have a remote")
+				return errors.New("the private tier cannot have a remote")
 			}
 			t := tdef.Name
 			remotes, err := s.Remotes()
@@ -1743,7 +2073,7 @@ func newRemoteCmd(dir *string) *cobra.Command {
 				return err
 			}
 			if tdef.Type == entry.TierPrivate {
-				return fmt.Errorf("the private tier cannot have a remote")
+				return errors.New("the private tier cannot have a remote")
 			}
 			t := tdef.Name
 			url := ""
@@ -1800,10 +2130,7 @@ func tierListRun(dir *string) func(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(w, "%-*s  %-*s  %s\n", tierW, "TIER", typeW, "TYPE", "REMOTE")
 				for _, d := range defs {
 					plain := render.Tier(string(d.Name), string(d.Type), false)
-					gap := tierW - utf8.RuneCountInString(plain)
-					if gap < 0 {
-						gap = 0
-					}
+					gap := max(tierW-utf8.RuneCountInString(plain), 0)
 					remote := remotes[d.Name]
 					switch {
 					case d.Type == entry.TierPrivate:
@@ -1854,7 +2181,7 @@ func newTierCmd(dir *string) *cobra.Command {
 		}),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if remoteURL != "" && remoteName == "" {
-				return fmt.Errorf("--url requires --remote")
+				return errors.New("--url requires --remote")
 			}
 			s, err := store.Open(*dir)
 			if err != nil {
@@ -2082,6 +2409,9 @@ func newUpdateCmd(dir *string) *cobra.Command {
 	var contentType string
 	var resetAuthor, all, yes bool
 	var author string
+	var noFmt, noLint bool
+	var ifVersion int
+	var force bool
 	c := &cobra.Command{
 		Use:     "update <id|path>... | --all",
 		Aliases: []string{"set"},
@@ -2093,6 +2423,7 @@ func newUpdateCmd(dir *string) *cobra.Command {
 			kindSet := cmd.Flags().Changed("kind")
 			authorSet := cmd.Flags().Changed("author")
 			ctypeSet := cmd.Flags().Changed("content-type")
+			ifVersionSet := cmd.Flags().Changed("if-version")
 			if ctypeSet {
 				cc, cerr := content.Canonical(contentType)
 				if cerr != nil {
@@ -2101,34 +2432,34 @@ func newUpdateCmd(dir *string) *cobra.Command {
 				contentType = cc
 			}
 			if resetAuthor && authorSet {
-				return fmt.Errorf("use one of --reset-author or --author, not both")
+				return errors.New("use one of --reset-author or --author, not both")
 			}
 			reattributing := resetAuthor || authorSet
 			if bodyChanged && fileSet {
-				return fmt.Errorf("use one of --body or --file, not both")
+				return errors.New("use one of --body or --file, not both")
 			}
 			if titleSet && strings.TrimSpace(title) == "" {
-				return fmt.Errorf("--title cannot be empty")
+				return errors.New("--title cannot be empty")
 			}
 			if kindSet && strings.TrimSpace(kind) == "" {
-				return fmt.Errorf("--kind cannot be empty")
+				return errors.New("--kind cannot be empty")
 			}
 
 			// Bulk update: multiple ids or --all. Only --kind/--reset-author/
 			// --author apply in bulk; per-entry content flags are refused. --all
 			// confirms first unless -y.
 			if all && len(args) > 0 {
-				return fmt.Errorf("give entry ids or --all, not both")
+				return errors.New("give entry ids or --all, not both")
 			}
 			if !all && len(args) == 0 {
-				return fmt.Errorf("give one or more entry ids, or --all")
+				return errors.New("give one or more entry ids, or --all")
 			}
 			if all || len(args) > 1 {
 				if bodyChanged || fileSet || titleSet {
-					return fmt.Errorf("--body/--file/--title set per-entry content and cannot be applied in bulk; update a single entry for those")
+					return errors.New("--body/--file/--title set per-entry content and cannot be applied in bulk; update a single entry for those")
 				}
 				if !kindSet && !reattributing && !ctypeSet {
-					return fmt.Errorf("bulk update needs --kind, --content-type, --reset-author, or --author")
+					return errors.New("bulk update needs --kind, --content-type, --reset-author, or --author")
 				}
 				s, err := store.Open(*dir)
 				if err != nil {
@@ -2154,7 +2485,7 @@ func newUpdateCmd(dir *string) *cobra.Command {
 					}
 				}
 				if len(ids) == 0 {
-					return fmt.Errorf("no entries to update")
+					return errors.New("no entries to update")
 				}
 				noun := "entries"
 				if len(ids) == 1 {
@@ -2183,6 +2514,25 @@ func newUpdateCmd(dir *string) *cobra.Command {
 						}
 					}
 				}
+				// Changing entries to kind:todo requires each body to satisfy the
+				// todo grammar; pre-validate all before converting any, so a bulk
+				// run never leaves a partial (some converted, some refused) result.
+				if kindSet && kind == todoguard.TodoKind {
+					var bad []string
+					for _, id := range ids {
+						rej, gerr := guardKindToTodo(s, id)
+						if gerr != nil {
+							return gerr
+						}
+						if rej != nil {
+							bad = append(bad, render.ShortID(id))
+						}
+					}
+					if len(bad) > 0 {
+						return fmt.Errorf("cannot change to kind:todo — %d entr(y/ies) do not satisfy the todo grammar: %s; fix their bodies first",
+							len(bad), strings.Join(bad, ", "))
+					}
+				}
 				for _, id := range ids {
 					if kindSet {
 						if err := s.SetKind(id, kind); err != nil {
@@ -2205,7 +2555,6 @@ func newUpdateCmd(dir *string) *cobra.Command {
 					map[string]int{"updated": len(ids)})
 			}
 
-			var fileSourced bool
 			switch {
 			case fileSet:
 				raw, err := os.ReadFile(file)
@@ -2214,7 +2563,6 @@ func newUpdateCmd(dir *string) *cobra.Command {
 				}
 				_, stripped := bridge.SplitMarker(raw)
 				body = string(stripped)
-				fileSourced = true
 				// An empty/whitespace-only file yields no body mutation below
 				// (haveBody stays false); it is treated as "no body change",
 				// NOT as a request to clear the body.
@@ -2232,7 +2580,7 @@ func newUpdateCmd(dir *string) *cobra.Command {
 			}
 			haveBody := strings.TrimSpace(body) != ""
 			if !haveBody && !titleSet && !kindSet && !reattributing && !ctypeSet {
-				return fmt.Errorf("nothing to update (give --body/--file, --title, --kind, --content-type, --reset-author, --author, or pipe a body on stdin)")
+				return errors.New("nothing to update (give --body/--file, --title, --kind, --content-type, --reset-author, --author, or pipe a body on stdin)")
 			}
 
 			s, err := store.Open(*dir)
@@ -2245,30 +2593,38 @@ func newUpdateCmd(dir *string) *cobra.Command {
 				return err
 			}
 
-			// A file-sourced body carries the ingest secret risk; scan it.
-			if fileSourced && haveBody {
-				findings, err := scan.Scan([]byte(body))
-				if errors.Is(err, scan.ErrMissing) {
-					// Warn-not-fail: store the body UNSCANNED. The advisory warning
-					// is silenceable via warn_unscanned: false; the sync-push
-					// boundary still refuses without a scanner regardless.
-					if s.EffectiveConfig().WarnUnscannedOn() {
-						fmt.Fprintf(cmd.ErrOrStderr(),
-							"warning: betterleaks not found — %s stored UNSCANNED; install it: `go install github.com/betterleaks/betterleaks@latest` (or set KREF_BETTERLEAKS)\n", file)
-					}
-					findings, err = nil, nil
+			// A changed body (from any source) is scanned: a secret on a syncable
+			// entry is diverted into the quarantine review queue and the live
+			// entry is left untouched, not refused.
+			if haveBody && body != "" {
+				snap, gErr := s.Get(id)
+				if gErr != nil {
+					return gErr
 				}
-				if err != nil {
-					return err
+				fs, held, unscanned, ferr := entryParkFindings(snap, body)
+				if ferr != nil {
+					return ferr
 				}
-				if len(findings) > 0 {
-					snap, err := s.Get(id)
-					if err != nil {
-						return err
+				if held {
+					actor, actorKind := resolveActor(cmd, s)
+					parked, perr := s.QuarantineUpdate(id, body, snap.Version, fs, actorKind)
+					if perr != nil {
+						return perr
 					}
-					if snap.Tier != string(entry.TierPrivate) {
-						return fmt.Errorf("secret detected in %s: refusing to write it onto %s entry %s — rotate the secret, then retry", file, snap.Tier, render.ShortID(id))
+					if force {
+						// --force = park+approve in one step (human/CLI only): the
+						// held body is replayed onto the live entry via approve.
+						if aerr := s.ApproveQuarantine(parked.ItemID, "force-approved at write", actor, actorKind); aerr != nil {
+							return aerr
+						}
+						fmt.Fprintf(cmd.OutOrStdout(), "updated %s (force-approved)\n", shortStr(id.String(), 12))
+						return nil
 					}
+					printQuarantined(cmd, parked)
+					return nil
+				}
+				if unscanned && s.EffectiveConfig().WarnUnscannedOn() {
+					fmt.Fprintln(cmd.ErrOrStderr(), unscannedWarn)
 				}
 			}
 
@@ -2276,11 +2632,34 @@ func newUpdateCmd(dir *string) *cobra.Command {
 			if haveBody || titleSet {
 				b := body
 				if !haveBody {
+					// Title-only: keep the stored body verbatim; do not guard it,
+					// so a legacy-malformed body never blocks a title change.
 					snap, err := s.Get(id)
 					if err != nil {
 						return err
 					}
 					b = snap.Body
+				} else {
+					// The body is changing: run it through the todo write-boundary
+					// guard (a no-op for non-todo kinds). The effective kind is the
+					// one --kind sets, else the entry's current kind.
+					effKind := kind
+					if !kindSet {
+						ksnap, kerr := s.Get(id)
+						if kerr != nil {
+							return kerr
+						}
+						effKind = ksnap.Kind
+					}
+					// CAS first (spec §8 step 3): refuse a stale todo write before
+					// formatting, preserving the author's raw proposed body.
+					if cerr := guardTodoCAS(cmd, s, id, effKind, ifVersion, ifVersionSet, b); cerr != nil {
+						return cerr
+					}
+					var gerr error
+					if b, gerr = guardTodoWrite(cmd, id, effKind, b, noFmt, noLint); gerr != nil {
+						return gerr
+					}
 				}
 				t := ""
 				if titleSet {
@@ -2291,6 +2670,16 @@ func newUpdateCmd(dir *string) *cobra.Command {
 				}
 			}
 			if kindSet {
+				if kind == todoguard.TodoKind {
+					rej, gerr := guardKindToTodo(s, id)
+					if gerr != nil {
+						return gerr
+					}
+					if rej != nil {
+						return fmt.Errorf("cannot change %s to kind:todo — its body does not satisfy the todo grammar:\n%s\nfix the body first (e.g. `kref edit %s`), then retry",
+							render.ShortID(id), rej.Error(), render.ShortID(id))
+					}
+				}
 				if err := s.SetKind(id, kind); err != nil {
 					return err
 				}
@@ -2329,7 +2718,11 @@ func newUpdateCmd(dir *string) *cobra.Command {
 	c.Flags().StringVar(&author, "author", "", "reattribute the entry to an explicit author, \"Name <email>\"")
 	c.Flags().BoolVar(&all, "all", false, "bulk-update every entry (only --kind/--reset-author/--author; confirms unless -y)")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the --all confirmation prompt")
-	_ = c.RegisterFlagCompletionFunc("kind", completeStoreField(dir, func(s *entry.Snapshot) []string { return []string{s.Kind} }))
+	c.Flags().BoolVar(&noFmt, "no-fmt", false, "skip the todo formatter on this write (todo entries only)")
+	c.Flags().BoolVar(&noLint, "no-lint", false, "skip the todo grammar linter on this write — writes even if malformed (todo entries only)")
+	c.Flags().IntVar(&ifVersion, "if-version", 0, "guard a todo write: write only if the entry is still at version N (kref todo header / kref log show it); a mismatch is refused as a stale write")
+	c.Flags().BoolVar(&force, "force", false, "for a flagged body: park the quarantine item and approve it in one step (human/CLI only; leaves a q-status:approved audit item)")
+	_ = c.RegisterFlagCompletionFunc("kind", completeStoreField(dir, func(e store.Excerpt) []string { return []string{e.Kind} }))
 	c.ValidArgsFunction = entryArgs(dir, 0, sourceAll) // variadic: ids at every position
 	applyGuide(c, cobra.ArbitraryArgs, argGuide{noun: "one or more entry ids or paths (or --all)", find: "kref list", usage: "kref update <id|path>... | --all", examples: []string{
 		`kref update a1b2c3d4 --title "New title"`,
@@ -2455,7 +2848,7 @@ func newLinkCmd(dir *string) *cobra.Command {
 		},
 	}
 	rm.ValidArgsFunction = entryArgs(dir, 2, sourceAll)
-	applyGuide(rm, cobra.ExactArgs(2), argGuide{noun: "a source and a target entry", find: "kref links a1b2c3d4", usage: "kref link rm <id|path> <target>", examples: []string{
+	applyGuide(rm, cobra.ExactArgs(2), argGuide{noun: "a source and a target entry", find: "kref show a1b2c3d4", usage: "kref link rm <id|path> <target>", examples: []string{
 		"kref link rm a1b2c3d4 e5f6a7b8   # remove the link(s) between them",
 	}})
 	c.AddCommand(add, rm)
@@ -2542,51 +2935,7 @@ func newEditCmd(dir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			snap, err := s.Get(id)
-			if err != nil {
-				return err
-			}
-
-			f, err := os.CreateTemp(xdg.CacheTempDir(), "kref-edit-*.md")
-			if err != nil {
-				return err
-			}
-			tmp := f.Name()
-			defer func() { _ = os.Remove(tmp) }()
-			if _, err := f.WriteString(snap.Body); err != nil {
-				_ = f.Close()
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
-
-			ed := resolveEditor()
-			ec := exec.Command(ed[0], append(ed[1:], tmp)...)
-			ec.Stdin, ec.Stdout, ec.Stderr = os.Stdin, os.Stdout, os.Stderr
-			if err := ec.Run(); err != nil {
-				return fmt.Errorf("editor exited with error: %w", err)
-			}
-
-			edited, err := os.ReadFile(tmp)
-			if err != nil {
-				return err
-			}
-			body := string(edited)
-			if strings.TrimSpace(body) == "" {
-				return fmt.Errorf("aborted: edited body is empty")
-			}
-			// Re-derive title from an H1 only; "" leaves the title unchanged.
-			if err := s.Update(id, body, entry.FirstHeading(body)); err != nil {
-				return err
-			}
-			snap, err = s.Get(id)
-			if err != nil {
-				return err
-			}
-			return emit(cmd,
-				func(w io.Writer, color bool) { render.Action(w, "updated", snap, color) },
-				map[string]string{"status": "updated", "id": id.String()})
+			return editEntry(cmd, s, id)
 		},
 	}
 	c.ValidArgsFunction = entryArgs(dir, 1, sourceAll)
@@ -2594,6 +2943,98 @@ func newEditCmd(dir *string) *cobra.Command {
 		"kref edit a1b2c3d4   # revise the body in $EDITOR (title re-derives from the H1)",
 	}})
 	return c
+}
+
+// editEntry opens an entry's body in $EDITOR (the reopen-until-clean guard loop
+// with an implicit CAS) and writes it back. Shared by `kref edit` and the
+// interactive list cockpit's edit action.
+func editEntry(cmd *cobra.Command, s *store.Store, id entity.Id) error {
+	snap, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.CreateTemp(xdg.CacheTempDir(), "kref-edit-*.md")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	_ = f.Close()
+
+	// Reopen-until-clean loop (spec §8, no-work-loss): a todo body that
+	// fails the guard is re-presented in the editor with the violations
+	// prepended as an HTML-comment banner; the author fixes and re-saves.
+	// A non-todo entry never rejects, so this runs exactly once. If a
+	// reopened editor leaves the same rejected body unchanged, abort
+	// rather than loop forever — the content is left untouched on disk.
+	seed := snap.Body
+	baseVersion := snap.Version // the head we opened at, for the implicit CAS below
+	var lastRejected string
+	haveRejected := false
+	for {
+		if err := os.WriteFile(tmp, []byte(seed), 0o600); err != nil {
+			return err
+		}
+		ed := resolveEditor()
+		ec := exec.Command(ed[0], append(ed[1:], tmp)...)
+		ec.Stdin, ec.Stdout, ec.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := ec.Run(); err != nil {
+			return fmt.Errorf("editor exited with error: %w", err)
+		}
+		raw, err := os.ReadFile(tmp)
+		if err != nil {
+			return err
+		}
+		body := stripLintBanner(string(raw))
+		if strings.TrimSpace(body) == "" {
+			return errors.New("aborted: edited body is empty")
+		}
+		guarded, gerr := todoguard.Guard(snap.Kind, body, todoguard.Options{})
+		var rej *todoguard.RejectedError
+		if errors.As(gerr, &rej) {
+			if haveRejected && rej.Body == lastRejected {
+				return fmt.Errorf("edit discarded: todo still has %d lint violation(s) and was not changed:\n%s",
+					len(rej.Violations), rej.Error())
+			}
+			lastRejected = rej.Body
+			haveRejected = true
+			seed = lintBanner(rej.Violations) + rej.Body
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"todo has %d lint violation(s); reopening the editor to fix them\n", len(rej.Violations))
+			continue
+		}
+		if gerr != nil {
+			return gerr
+		}
+		// Implicit CAS (spec §8 step 3): the editor may have been open a
+		// while; if a concurrent writer moved a todo off the version we
+		// opened, refuse the save and preserve the author's edit rather than
+		// clobber the intervening change (a no-op for non-todo kinds).
+		head, herr := s.Get(id)
+		if herr != nil {
+			return herr
+		}
+		if cerr := todoguard.CheckVersion(snap.Kind, baseVersion, head.Version); cerr != nil {
+			path, werr := todoguard.WriteRejected(id.String(), body)
+			if werr != nil {
+				return fmt.Errorf("%w (could not save recovery file: %w)", cerr, werr)
+			}
+			return fmt.Errorf("%w\nyour edit was saved to %s — re-run `kref edit %s` (it reloads the current version) and re-apply", cerr, path, render.ShortID(id))
+		}
+		// Re-derive title from an H1 only; "" leaves the title unchanged.
+		if err := s.Update(id, guarded, entry.FirstHeading(guarded)); err != nil {
+			return err
+		}
+		break
+	}
+	snap, err = s.Get(id)
+	if err != nil {
+		return err
+	}
+	return emit(cmd,
+		func(w io.Writer, color bool) { render.Action(w, "updated", snap, color) },
+		map[string]string{"status": "updated", "id": id.String()})
 }
 
 func confirmPurge(cmd *cobra.Command, snap *entry.Snapshot, gc, push bool) (bool, error) {
@@ -2733,7 +3174,7 @@ func newDiffCmd(dir *string) *cobra.Command {
 				return writeJSON(cmd, versions)
 			}
 			if len(versions) == 0 {
-				return fmt.Errorf("entry has no body versions")
+				return errors.New("entry has no body versions")
 			}
 
 			var buf bytes.Buffer
@@ -2767,37 +3208,6 @@ func newDiffCmd(dir *string) *cobra.Command {
 	c.Flags().BoolVar(&noPager, "no-pager", false, "do not page output even on a terminal")
 	c.Flags().BoolVar(&full, "full", false, "print every version's whole body instead of diffs")
 	return c
-}
-
-func newLinksCmd(dir *string) *cobra.Command {
-	return &cobra.Command{
-		Use:               "links [<id|path>]",
-		ValidArgsFunction: entryArgs(dir, 1, sourceAll),
-		Short:             "Show an entry's incoming and outgoing links",
-		Args:              cobra.MaximumNArgs(1),
-		Example: exampleBlock([]string{
-			"kref links a1b2c3d4  # incoming and outgoing links",
-			"kref links           # the most-recently-modified entry",
-		}),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := store.Open(*dir)
-			if err != nil {
-				return err
-			}
-			defer s.Close()
-			id, err := resolveTargetOrRecent(cmd, s, args)
-			if err != nil {
-				return err
-			}
-			view, err := s.Links(id)
-			if err != nil {
-				return err
-			}
-			return emit(cmd,
-				func(w io.Writer, _ bool) { render.Links(w, view) },
-				view)
-		},
-	}
 }
 
 func newTreeCmd(dir *string) *cobra.Command {
@@ -2952,13 +3362,18 @@ func newTidyCmd(dir *string) *cobra.Command {
 }
 
 func newMCPCmd(dir *string) *cobra.Command {
-	return &cobra.Command{
+	var allow []string
+	var clientRoots bool
+	c := &cobra.Command{
 		Use:               "mcp",
 		Short:             "Run an MCP server exposing kref tools over stdio",
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Example:           exampleBlock([]string{"kref mcp   # run the MCP server over stdio (for an agent host)"}),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return mcpserver.Serve(cmd.Context(), *dir, Version)
+			return mcpserver.Serve(cmd.Context(), *dir, Version, allow, clientRoots)
 		},
 	}
+	c.Flags().StringArrayVar(&allow, "allow", nil, "allow serving any repo under this absolute root via a per-call dir (repeatable); enables global mode")
+	c.Flags().BoolVar(&clientRoots, "client-roots", false, "confine each call to the client's advertised MCP roots (mutually exclusive with --allow)")
+	return c
 }

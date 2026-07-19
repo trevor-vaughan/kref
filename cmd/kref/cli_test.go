@@ -50,6 +50,32 @@ var _ = Describe("formatCLIError", func() {
 	})
 })
 
+var _ = Describe("KREF_DIR env var", func() {
+	It("uses KREF_DIR as the repo when --dir is not given", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		run("--dir", dir, "new", "--kind", "spec", "--title", "EnvScoped", "--body", "b")
+
+		GinkgoT().Setenv("KREF_DIR", dir)
+		Expect(run("list", "--json")).To(ContainSubstring("EnvScoped"))
+	})
+
+	It("lets an explicit --dir override KREF_DIR", func() {
+		envDir := gitRepo()
+		run("--dir", envDir, "init", "--name", "T", "--email", "t@e.com")
+		run("--dir", envDir, "new", "--kind", "spec", "--title", "FromEnv", "--body", "b")
+
+		flagDir := gitRepo()
+		run("--dir", flagDir, "init", "--name", "T", "--email", "t@e.com")
+		run("--dir", flagDir, "new", "--kind", "spec", "--title", "FromFlag", "--body", "b")
+
+		GinkgoT().Setenv("KREF_DIR", envDir)
+		out := run("--dir", flagDir, "list", "--json")
+		Expect(out).To(ContainSubstring("FromFlag"))
+		Expect(out).NotTo(ContainSubstring("FromEnv"))
+	})
+})
+
 var _ = Describe("kref CLI", func() {
 	It("round-trips init/add/list/show", func() {
 		dir := gitRepo()
@@ -64,6 +90,32 @@ var _ = Describe("kref CLI", func() {
 
 		Expect(run("--dir", dir, "list", "--json")).To(ContainSubstring("Auth"))
 		Expect(run("--dir", dir, "show", added.ID, "--json")).To(ContainSubstring("design"))
+	})
+
+	It("new reads the body from piped stdin and derives the title from its H1", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		out := runIn("# Piped Title\n\npiped new body\n", "--dir", dir, "new", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(out), &added)).To(Succeed())
+		Expect(added.ID).NotTo(BeEmpty())
+
+		Expect(run("--dir", dir, "show", added.ID, "--plain")).To(ContainSubstring("piped new body"))
+		Expect(run("--dir", dir, "show", added.ID, "--json")).To(ContainSubstring(`"title": "Piped Title"`))
+	})
+
+	It("new prefers an explicit --body over stdin", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		out := runIn("stdin body\n", "--dir", dir, "new", "--title", "T", "--body", "flag body", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(out), &added)).To(Succeed())
+		Expect(run("--dir", dir, "show", added.ID, "--plain")).To(ContainSubstring("flag body"))
+		Expect(run("--dir", dir, "show", added.ID, "--plain")).NotTo(ContainSubstring("stdin body"))
 	})
 
 	It("collapses duplicate-title entries in the human list and reveals them with --all", func() {
@@ -196,7 +248,15 @@ var _ = Describe("kref sync CLI", func() {
 		run("--dir", dirA, "init", "--name", "A", "--email", "a@e.com")
 		run("--dir", dirB, "init", "--name", "B", "--email", "b@e.com")
 		run("--dir", dirA, "remote", "set", "shared", "peer", dirB)
-		run("--dir", dirA, "new", "--tier", "shared", "--title", "Leaky", "--body", "ghp_012345678901234567890123456789abcdef")
+		// A plain `new` now parks a secret, so put one onto the syncable tier via
+		// a human forced comment (the direct-write override) to exercise the push
+		// backstop, which scans comment bodies too.
+		res := run("--dir", dirA, "new", "--tier", "shared", "--title", "Leaky", "--body", "clean", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(res), &added)).To(Succeed())
+		run("--dir", dirA, "comment", added.ID, "-m", "ghp_012345678901234567890123456789abcdef", "--force")
 
 		// The push must fail at the scan gate; run() asserts success, so drive
 		// the command directly to capture the error.
@@ -593,6 +653,7 @@ var _ = Describe("kref agents_md", func() {
 		Expect(out).To(ContainSubstring("kref search"))
 		Expect(out).To(ContainSubstring("kref_patch"))
 		Expect(out).To(ContainSubstring("--plain"))
+		Expect(out).To(ContainSubstring("--header"), "token-cheap metadata peek in the READ step")
 	})
 
 	It("works without a repository (no store access)", func() {
@@ -810,18 +871,26 @@ var _ = Describe("kref update rework", func() {
 			Expect(stdinBodyAllowed(false, true, false, false, true)).To(BeTrue())
 		})
 	})
-	It("fails closed on a secret in --file for a syncable entry", func() {
+	It("quarantines a secret in --file for a syncable entry, leaving the body intact", func() {
 		dir, id := setup()
 		// Retier to shared so the entry is syncable (non-private).
 		run("--dir", dir, "retier", id, "shared", "--yes")
 		f := filepath.Join(dir, "leak.md")
 		Expect(os.WriteFile(f, []byte("# L\nawsToken := \"ghp_012345678901234567890123456789abcdef\"\n"), 0o644)).To(Succeed())
-		var buf bytes.Buffer
-		c := newRootCmd()
-		c.SetOut(&buf)
-		c.SetErr(&buf)
-		c.SetArgs([]string{"--dir", dir, "update", id, "--file", f})
-		Expect(c.Execute()).To(HaveOccurred())
+		out := run("--dir", dir, "update", id, "--file", f)
+		Expect(out).To(ContainSubstring("quarantined")) // held, not applied, no error
+		after := run("--dir", dir, "show", id, "--plain")
+		Expect(after).To(ContainSubstring("# Orig"))                                      // original body intact
+		Expect(after).NotTo(ContainSubstring("ghp_012345678901234567890123456789abcdef")) // secret not applied
+	})
+
+	It("parks a secret from `kref new` on a syncable tier instead of creating it", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		out := run("--dir", dir, "new", "--tier", "shared", "--title", "Leaky", "--body", "ghp_012345678901234567890123456789abcdef")
+		Expect(out).To(ContainSubstring("quarantined"))
+		Expect(out).NotTo(ContainSubstring("ghp_012345678901234567890123456789abcdef"))
+		Expect(run("--dir", dir, "list", "--plain")).NotTo(ContainSubstring("Leaky")) // hidden in quarantine
 	})
 
 	It("allows a secret in --file for a private entry (stays local)", func() {
@@ -866,18 +935,23 @@ var _ = Describe("kref link add/rm", func() {
 		Expect(json.Unmarshal([]byte(jb), &b)).To(Succeed())
 		return dir, a.ID, b.ID
 	}
-	It("adds a free-form typed link visible via kref links", func() {
+	It("adds a free-form typed link visible in show --json", func() {
 		dir, a, b := two("shared", "shared")
 		Expect(run("--dir", dir, "link", "add", a, b, "--type", "depends-on")).To(ContainSubstring("linked"))
-		out := run("--dir", dir, "links", a)
-		Expect(out).To(ContainSubstring("Outgoing:"))
+		out := run("--dir", dir, "show", a, "--json")
 		Expect(out).To(ContainSubstring("depends-on"))
+		Expect(out).To(ContainSubstring(b))
 	})
 	It("removes a link", func() {
 		dir, a, b := two("shared", "shared")
 		run("--dir", dir, "link", "add", a, b)
 		run("--dir", dir, "link", "rm", a, b)
-		Expect(run("--dir", dir, "links", a)).To(ContainSubstring("no links"))
+		Expect(run("--dir", dir, "show", a, "--json")).NotTo(ContainSubstring(b))
+	})
+	It("no longer offers the links command", func() {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{"links", "whatever"})
+		Expect(cmd.Execute()).To(HaveOccurred())
 	})
 	It("warns on stderr but succeeds when linking shared→private (id rides along)", func() {
 		dir, a, b := two("shared", "private")
@@ -1347,7 +1421,9 @@ var _ = Describe("kref retier", func() {
 	It("retier to shared of a secret-bearing entry is blocked", func() {
 		dir := gitRepo()
 		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
-		out := run("--dir", dir, "new", "--tier", "personal", "--title", "Leaky", "--body", "ghp_012345678901234567890123456789abcdef", "--json")
+		// A secret on a syncable tier now parks, so seed it on private (allowed)
+		// and verify retier-to-shared is still blocked by the retier scan.
+		out := run("--dir", dir, "new", "--tier", "private", "--title", "Leaky", "--body", "ghp_012345678901234567890123456789abcdef", "--json")
 		var added struct {
 			ID string `json:"id"`
 		}
@@ -1362,7 +1438,7 @@ var _ = Describe("kref retier", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("retier blocked"))
 		Expect(err.Error()).NotTo(ContainSubstring("ghp_012345678901234567890123456789abcdef"))
-		Expect(run("--dir", dir, "show", added.ID, "--json")).To(ContainSubstring(`"tier": "personal"`))
+		Expect(run("--dir", dir, "show", added.ID, "--json")).To(ContainSubstring(`"tier": "private"`))
 	})
 
 	It("retier to private warns when the entry was already pushed but still demotes", func() {
@@ -1507,6 +1583,9 @@ var _ = Describe("kref help completeness", func() {
 			if c.Name() == "kref" || c.Name() == "help" || c.Name() == "completion" {
 				return
 			}
+			if c.Hidden {
+				return // hidden commands are off the help surface; no Example needed
+			}
 			if isLeaf && c.Example == "" {
 				missing = append(missing, c.CommandPath())
 			}
@@ -1521,8 +1600,8 @@ var _ = Describe("kref help completeness", func() {
 		Expect(out).To(ContainSubstring("# delete the entry's ref"))
 	})
 
-	It("teaches the no-id most-recent default in show/log/diff/links/tree help", func() {
-		for _, cmd := range []string{"show", "log", "diff", "links", "tree"} {
+	It("teaches the no-id most-recent default in show/log/diff/tree help", func() {
+		for _, cmd := range []string{"show", "log", "diff", "tree"} {
 			out := run(cmd, "--help")
 			Expect(out).To(ContainSubstring("most-recently-modified"),
 				"%s --help should show the no-id (most-recent) example", cmd)
@@ -2063,7 +2142,49 @@ var _ = Describe("archive lifecycle", func() {
 		Expect(run("--dir", dir, "list", "--archived")).To(ContainSubstring("Ob"))
 	})
 
-	It("rejects archive with neither an id nor --obsolete, and with both", func() {
+	It("archive --accepted -y archives every accepted entry, leaving other statuses", func() {
+		dir := seed()
+		a1 := addID(dir, "Acc1")
+		a2 := addID(dir, "Acc2")
+		_ = addID(dir, "Live")
+		o := addID(dir, "Obs")
+		run("--dir", dir, "status", a1, "accepted")
+		run("--dir", dir, "status", a2, "accepted")
+		run("--dir", dir, "status", o, "obsolete")
+		run("--dir", dir, "archive", "--accepted", "-y")
+
+		def := run("--dir", dir, "list")
+		Expect(def).To(ContainSubstring("Live"))
+		Expect(def).To(ContainSubstring("Obs")) // obsolete is untouched by --accepted
+		Expect(def).NotTo(ContainSubstring("Acc1"))
+		Expect(def).NotTo(ContainSubstring("Acc2"))
+		arch := run("--dir", dir, "list", "--archived")
+		Expect(arch).To(ContainSubstring("Acc1"))
+		Expect(arch).To(ContainSubstring("Acc2"))
+	})
+
+	It("archive --accepted reports nothing to do when no entry is accepted", func() {
+		dir := seed()
+		_ = addID(dir, "Live") // status open, not accepted
+		out := run("--dir", dir, "archive", "--accepted", "-y")
+		Expect(out).To(ContainSubstring("no accepted entries to archive"))
+		Expect(run("--dir", dir, "list")).To(ContainSubstring("Live")) // untouched
+	})
+
+	It("archive --accepted proceeds on 'y' and aborts otherwise", func() {
+		dir := seed()
+		a := addID(dir, "Ac")
+		run("--dir", dir, "status", a, "accepted")
+
+		runIn("n\n", "--dir", dir, "archive", "--accepted")
+		Expect(run("--dir", dir, "list")).To(ContainSubstring("Ac")) // aborted: not archived
+
+		runIn("y\n", "--dir", dir, "archive", "--accepted")
+		Expect(run("--dir", dir, "list")).NotTo(ContainSubstring("Ac"))
+		Expect(run("--dir", dir, "list", "--archived")).To(ContainSubstring("Ac"))
+	})
+
+	It("rejects archive with neither an id nor a status flag, and with conflicting flags", func() {
 		dir := seed()
 		id := addID(dir, "X")
 		c := newRootCmd()
@@ -2072,6 +2193,72 @@ var _ = Describe("archive lifecycle", func() {
 		c2 := newRootCmd()
 		c2.SetArgs([]string{"--dir", dir, "archive", id, "--obsolete"})
 		Expect(c2.Execute()).To(HaveOccurred())
+		c3 := newRootCmd()
+		c3.SetArgs([]string{"--dir", dir, "archive", id, "--accepted"})
+		Expect(c3.Execute()).To(HaveOccurred())
+		c4 := newRootCmd()
+		c4.SetArgs([]string{"--dir", dir, "archive", "--obsolete", "--accepted"})
+		Expect(c4.Execute()).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("init remote adoption", func() {
+	It("adopts an existing 'origin' git remote for the shared tier and reports it", func() {
+		dir := gitRepo()
+		Expect(exec.Command("git", "-C", dir, "remote", "add", "origin", "https://example.com/team.git").Run()).To(Succeed())
+
+		out := run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		Expect(out).To(ContainSubstring("origin"))
+		Expect(out).To(ContainSubstring("shared"))
+
+		Expect(run("--dir", dir, "remote", "get", "shared")).To(ContainSubstring("origin"))
+	})
+
+	It("reports the adopted remote in --json (shared_remote)", func() {
+		dir := gitRepo()
+		Expect(exec.Command("git", "-C", dir, "remote", "add", "origin", "https://example.com/team.git").Run()).To(Succeed())
+
+		// Separate streams so the JSON object on stdout is clean of the stderr notes.
+		c := newRootCmd()
+		var stdout, stderr bytes.Buffer
+		c.SetOut(&stdout)
+		c.SetErr(&stderr)
+		c.SetArgs([]string{"--dir", dir, "--json", "init", "--name", "T", "--email", "t@e.com"})
+		Expect(c.Execute()).To(Succeed())
+		var v struct {
+			SharedRemote string `json:"shared_remote"`
+		}
+		Expect(json.Unmarshal(stdout.Bytes(), &v)).To(Succeed())
+		Expect(v.SharedRemote).To(Equal("origin"))
+	})
+
+	It("leaves the shared tier unbound when remotes exist but none is 'origin'", func() {
+		dir := gitRepo()
+		Expect(exec.Command("git", "-C", dir, "remote", "add", "upstream", "https://example.com/up.git").Run()).To(Succeed())
+
+		out := run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		Expect(out).To(ContainSubstring("no 'origin' remote to adopt"))
+
+		c := newRootCmd()
+		var buf bytes.Buffer
+		c.SetOut(&buf)
+		c.SetErr(&buf)
+		c.SetArgs([]string{"--dir", dir, "remote", "get", "shared"})
+		Expect(c.Execute()).To(HaveOccurred()) // shared still unconfigured
+	})
+
+	It("leaves the shared tier unconfigured when no 'origin' remote exists, warning that sync is impossible", func() {
+		dir := gitRepo()
+		out := run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		Expect(out).To(ContainSubstring("sync"))
+
+		// No remote was adopted: `remote get shared` fails (nothing configured).
+		c := newRootCmd()
+		var buf bytes.Buffer
+		c.SetOut(&buf)
+		c.SetErr(&buf)
+		c.SetArgs([]string{"--dir", dir, "remote", "get", "shared"})
+		Expect(c.Execute()).To(HaveOccurred())
 	})
 })
 
@@ -2379,6 +2566,54 @@ var _ = Describe("list -w alias and bulk update", func() {
 		Expect(cmd.Execute()).To(HaveOccurred()) // --raw removed
 	})
 
+	It("show --header prints only the metadata block, omitting the body", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "Tester", "--email", "tester@example.com")
+		out := run("--dir", dir, "new", "--title", "Metadata Peek", "--kind", "spec",
+			"--body", "# Metadata Peek\n\nUNIQUEBODYMARKER prose", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(out), &added)).To(Succeed())
+
+		header := run("--dir", dir, "show", added.ID, "--header")
+		Expect(header).To(ContainSubstring("Tester <tester@example.com>")) // header present
+		Expect(header).To(ContainSubstring("Metadata Peek"))               // title row
+		Expect(header).NotTo(ContainSubstring("UNIQUEBODYMARKER"))         // body omitted
+	})
+
+	It("show rejects --header together with --no-header", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		id := run("--dir", dir, "new", "--title", "X", "--body", "b", "--json")
+		var a struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(id), &a)).To(Succeed())
+
+		c := newRootCmd()
+		c.SetArgs([]string{"--dir", dir, "show", a.ID, "--header", "--no-header"})
+		Expect(c.Execute()).To(HaveOccurred())
+	})
+
+	It("show rejects --header together with --plain (contradictory: metadata-only vs verbatim body)", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		id := run("--dir", dir, "new", "--title", "X", "--body", "UNIQUEBODYMARKER", "--json")
+		var a struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(id), &a)).To(Succeed())
+
+		c := newRootCmd()
+		var buf bytes.Buffer
+		c.SetOut(&buf)
+		c.SetErr(&buf)
+		c.SetArgs([]string{"--dir", dir, "show", a.ID, "--header", "--plain"})
+		Expect(c.Execute()).To(HaveOccurred())
+		Expect(buf.String()).NotTo(ContainSubstring("UNIQUEBODYMARKER")) // never leaks the body
+	})
+
 	It("show (default, piped) renders markdown rather than printing raw source", func() {
 		dir := gitRepo()
 		run("--dir", dir, "init", "--name", "Tester", "--email", "tester@example.com")
@@ -2675,7 +2910,13 @@ var _ = Describe("missing betterleaks policy", func() {
 		dirB := gitRepo()
 		run("--dir", dirA, "init", "--name", "A", "--email", "a@e.com")
 		run("--dir", dirA, "remote", "set", "shared", "peer", dirB)
-		run("--dir", dirA, "new", "--tier", "shared", "--title", "Leaky", "--body", "ghp_012345678901234567890123456789abcdef")
+		// `new` parks a secret, so seed one on shared via a human forced comment.
+		res := run("--dir", dirA, "new", "--tier", "shared", "--title", "Leaky", "--body", "clean", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(res), &added)).To(Succeed())
+		run("--dir", dirA, "comment", added.ID, "-m", "ghp_012345678901234567890123456789abcdef", "--force")
 
 		c := newRootCmd()
 		var buf bytes.Buffer
@@ -2722,6 +2963,17 @@ var _ = Describe("no-remote data-loss warning", func() {
 		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
 		run("--dir", dir, "new", "--title", "A", "--body", "x", "--json") // json: no warn, no mark
 		Expect(run("--dir", dir, "list")).NotTo(ContainSubstring("no sync remote"))
+	})
+})
+
+var _ = Describe("stale-review nag", func() {
+	It("does not nag when nothing stale is pending", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		// Fresh writes only — nothing has awaited review past the stale threshold.
+		run("--dir", dir, "new", "--title", "A", "--body", "x")
+		second := run("--dir", dir, "new", "--title", "B", "--body", "y")
+		Expect(second).NotTo(ContainSubstring("await"))
 	})
 })
 

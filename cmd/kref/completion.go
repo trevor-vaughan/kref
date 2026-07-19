@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -230,7 +231,7 @@ func newCompletionShellCmd(sh completionShell) *cobra.Command {
 				return installCompletion(cmd, sh, dir, noDesc)
 			}
 			if dir != "" {
-				return fmt.Errorf("--dir requires --install")
+				return errors.New("--dir requires --install")
 			}
 			return sh.gen(cmd.Root(), cmd.OutOrStdout(), noDesc)
 		},

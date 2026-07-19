@@ -55,9 +55,15 @@ rules OVERRIDE other skills' file-writing defaults:
   match counts, most relevant first) or ` + "`kref list --kind <kind>`" + `; read one
   entry with ` + "`kref show --plain <id>`" + `.
 - Parsing output? ALWAYS pass ` + "`--json`" + `. Human output is not a stable API.
-- Full-body updates are last-write-wins. Before ` + "`kref update <id>`" + ` with a
-  rewritten body: re-read the entry AND check ` + "`kref log <id>`" + ` for versions
-  you did not write; if the tip moved since your read, re-fetch and re-apply.
+- Full-body updates are last-write-wins, EXCEPT ` + "`kind:todo`" + ` entries, which
+  enforce an optimistic version check: read the version (the ` + "`vN`" + ` in
+  ` + "`kref log`" + `, echoed by ` + "`kref_get`" + `/` + "`kref_recall`" + ` and the
+  ` + "`kref todo`" + ` header) and declare it — ` + "`kref update --if-version N`" + `,
+  MCP ` + "`kref_update`" + ` REQUIRES ` + "`if_version`" + `, and ` + "`kref edit`" + `
+  checks implicitly; a stale write is refused (body kept under
+  ` + "`$XDG_STATE_HOME/kref/rejected/`" + `), not clobbered. For other kinds: before
+  a ` + "`kref update <id>`" + ` rewrite, re-read the entry AND check ` + "`kref log <id>`" + `
+  for versions you did not write; if the tip moved, re-fetch and re-apply.
   Nothing is ever lost (` + "`kref diff <id> --full`" + ` recovers any version), but
   recovery is not a merge strategy.
 - Prefer the MCP ` + "`kref_patch`" + ` tool (unified diff; stale or ambiguous hunks
@@ -102,7 +108,8 @@ the enclosing repo from any subdirectory, git-style).
    filter with --kind/--label/--tier; ` + "`kref list`" + ` defaults to
    newest-first recency (` + "`--sort <field>`" + ` to override).
 2. READ — ` + "`kref show --plain <id>`" + ` for exact stored content
-   (` + "`--plain`" + ` skips rendering, headers, and paging; --json for metadata).
+   (` + "`--plain`" + ` skips rendering, headers, and paging; --json for metadata;
+   ` + "`--header`" + ` for the metadata block alone, no body — a cheap peek).
    Entries are addressed by unique id prefix or by a tracked file path.
 3. ACT — create, update, link, label (below).
 4. CAPTURE — decisions and designs become entries, not files. Kinds in
@@ -117,9 +124,13 @@ the enclosing repo from any subdirectory, git-style).
   hunk line numbers are hints, context must match, stale/ambiguous hunks
   FAIL LOUDLY instead of clobbering. This is the safe concurrent editor.
 - Full-body rewrite (` + "`kref update <id>`" + ` with stdin/--body/--file) is
-  last-write-wins. MANDATORY guard until optimistic concurrency ships:
-  re-fetch the body, check ` + "`kref log <id>`" + ` for versions you did not write,
-  and only then update. If the tip moved, re-fetch and re-apply your change.
+  last-write-wins for most kinds — re-fetch, check ` + "`kref log <id>`" + ` for
+  versions you did not write, and only then update; if the tip moved, re-fetch
+  and re-apply. For ` + "`kind:todo`" + ` this is ENFORCED via optimistic concurrency:
+  read the version (` + "`vN`" + ` in ` + "`kref log`" + `, echoed by ` + "`kref_get`" + `/` + "`kref_recall`" + `)
+  and declare it — MCP ` + "`kref_update`" + ` REQUIRES ` + "`if_version`" + `,
+  ` + "`kref update --if-version N`" + ` guards on the CLI, and a stale write is
+  refused (body kept under ` + "`$XDG_STATE_HOME/kref/rejected/`" + `), not clobbered.
 - Recovery: every body version is retained — ` + "`kref log <id>`" + ` lists them,
   ` + "`kref diff <id> [m] [n]`" + ` shows changes, ` + "`kref diff <id> --full`" + ` dumps
   whole versions for copy-out. ` + "`kref rm`" + ` is a reversible tombstone
@@ -128,7 +139,7 @@ the enclosing repo from any subdirectory, git-style).
 ## Organizing
 
 - Link related entries: ` + "`kref link add <id> <target>`" + ` (typed, default
-  "relates"; ` + "`kref links <id>`" + ` shows both directions with titles).
+  "relates"; open ` + "`kref show <id>`" + ` and press ` + "`e`" + ` to see both directions with titles).
 - Labels: ` + "`kref label add <id> <label>...`" + `; filter listings with --label.
 - Status lifecycle: ` + "`kref status <id> open|active|accepted|superseded|obsolete`" + `;
   ` + "`kref supersede <old> <new>`" + ` retires an entry in favor of another.
@@ -157,4 +168,9 @@ kref_recall, kref_get, kref_update, kref_patch, kref_lifecycle
 (set_status/delete/restore/archive/unarchive), kref_supersede. Deliberately
 absent: purge, retier, sync — disclosure and destruction stay human. The
 same discipline applies: kref_patch over kref_update for edits.
+
+Comments (` + "`kref comment`" + `, incl. resolving question threads) are a CLI
+feature for now — there is no MCP comment tool yet. Comments are their own
+append-only operations, so they never touch an entry's body version and need no
+if_version token.
 `

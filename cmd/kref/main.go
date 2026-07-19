@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -40,14 +41,25 @@ func newRootCmd() *cobra.Command {
 	// is never shadowed.
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		if jsonMode(cmd) && plainMode(cmd) {
-			return fmt.Errorf("--plain and --json are mutually exclusive")
+			return errors.New("--plain and --json are mutually exclusive")
+		}
+		// Repo-directory precedence: --dir flag > KREF_DIR > "." (default). An
+		// explicit --dir wins; otherwise a set KREF_DIR selects the store (lets a
+		// global MCP host config point kref per-project without a shell wrapper).
+		if !cmd.Flags().Changed("dir") {
+			if env := strings.TrimSpace(os.Getenv("KREF_DIR")); env != "" {
+				dir = env
+			}
 		}
 		return nil
 	}
 	// After any successful op-creating command, nudge (at most daily) when
 	// syncable entries exist but no remote does — losing the repo would lose
 	// the work. Reads, --json runs, and errors stay quiet.
-	root.PersistentPostRun = func(cmd *cobra.Command, _ []string) { maybeWarnNoRemote(cmd, dir) }
+	root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
+		maybeWarnNoRemote(cmd, dir)
+		maybeWarnQuarantine(cmd, dir)
+	}
 	root.AddGroup(
 		&cobra.Group{ID: "core", Title: "Core Commands:"},
 		&cobra.Group{ID: "lifecycle", Title: "Lifecycle Commands:"},
@@ -71,12 +83,13 @@ func newRootCmd() *cobra.Command {
 	addTo("core", newShowCmd(&dir))
 	addTo("core", newLogCmd(&dir))
 	addTo("core", newDiffCmd(&dir))
-	addTo("core", newLinksCmd(&dir))
 	addTo("core", newLinkCmd(&dir))
 	addTo("core", newTreeCmd(&dir))
 	addTo("core", newTidyCmd(&dir))
 	addTo("core", newLabelCmd(&dir))
 	addTo("core", newFavCmd(&dir))
+	addTo("core", newTodoCmd(&dir))
+	addTo("core", newCommentCmd(&dir))
 	addTo("lifecycle", newRmCmd(&dir))
 	addTo("lifecycle", newRestoreCmd(&dir))
 	addTo("lifecycle", newArchiveCmd(&dir))
@@ -87,6 +100,7 @@ func newRootCmd() *cobra.Command {
 	addTo("lifecycle", newSupersedeCmd(&dir))
 	addTo("lifecycle", newResolveCmd(&dir))
 	addTo("lifecycle", newRetierCmd(&dir))
+	addTo("lifecycle", newQuarantineCmd(&dir))
 	addTo("sync", newRemoteCmd(&dir))
 	addTo("sync", newTierCmd(&dir))
 	addTo("sync", newSyncCmd(&dir))
@@ -99,6 +113,7 @@ func newRootCmd() *cobra.Command {
 	addTo("setup", newAgentsMDCmd())
 	addTo("additional", newVersionCmd())
 	addTo("additional", newCompletionCmd())
+	root.AddCommand(newCacheRefreshCmd(&dir))
 
 	listAliasesInUsage(root)
 
@@ -176,7 +191,7 @@ var mutatingCommands = map[string]bool{
 	"status": true, "supersede": true, "link": true, "label": true,
 	"retier": true, "rm": true,
 	"restore": true, "archive": true, "unarchive": true, "resolve": true,
-	"reconcile": true,
+	"reconcile": true, "comment": true,
 }
 
 // maybeWarnNoRemote prints the periodic no-remote data-loss warning to stderr
@@ -208,4 +223,43 @@ func maybeWarnNoRemote(cmd *cobra.Command, dir string) {
 	fmt.Fprintln(cmd.ErrOrStderr(),
 		"Set one with `kref remote set <tier> <name> [url]` (see `kref remote`).")
 	_ = s.MarkNoRemoteWarned(now)
+}
+
+// maybeWarnQuarantine prints the periodic stale-review reminder to stderr after a
+// mutating command, at most once per 24h, when at least one held write has awaited
+// review past the stale threshold. Never fails the command.
+func maybeWarnQuarantine(cmd *cobra.Command, dir string) {
+	if jsonMode(cmd) {
+		return
+	}
+	c := cmd
+	for c.Parent() != nil && c.Parent().Parent() != nil {
+		c = c.Parent()
+	}
+	if !mutatingCommands[c.Name()] {
+		return
+	}
+	s, err := store.Open(dir)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+	now := time.Now()
+	due, err := s.WarnQuarantineDue(now, 24*time.Hour)
+	if err != nil || !due {
+		return
+	}
+	q, err := s.QuarantineQueue()
+	if err != nil {
+		return
+	}
+	stale := 0
+	for _, it := range q {
+		if store.QuarantineStale(it, now) {
+			stale++
+		}
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"warning: %d held write(s) have awaited secret review for over 7 days — run `kref quarantine` to approve or reject.\n", stale)
+	_ = s.MarkQuarantineWarned(now)
 }
