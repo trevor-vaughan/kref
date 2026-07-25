@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -43,7 +44,11 @@ func (p *pagerSearch) input(msg tea.KeyMsg, matcher func(string) []int, sv *tui.
 		p.active, p.query = false, ""
 	case "backspace":
 		if p.query != "" {
-			p.query = p.query[:len(p.query)-1]
+			// Trim a whole rune. Byte slicing leaves a partial UTF-8 sequence,
+			// which strings.ToLower folds to U+FFFD — the query then silently
+			// matches nothing while still rendering as the intended text.
+			_, size := utf8.DecodeLastRuneInString(p.query)
+			p.query = p.query[:len(p.query)-size]
 		}
 	default:
 		if len(msg.Runes) > 0 {
@@ -69,6 +74,16 @@ func (p *pagerSearch) jump(sv *tui.ScrollView) {
 		return
 	}
 	sv.SetYOffset(p.matches[p.idx])
+}
+
+// current returns the content-line offset of the current match. Hosts that move
+// a selection cursor (the list cockpit, whose content is one line per row) use
+// it instead of jump, which only scrolls.
+func (p *pagerSearch) current() (int, bool) {
+	if len(p.matches) == 0 {
+		return 0, false
+	}
+	return p.matches[p.idx], true
 }
 
 // refresh recomputes matches for the current query against fresh content (after a

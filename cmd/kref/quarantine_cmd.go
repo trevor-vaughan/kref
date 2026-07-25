@@ -38,7 +38,8 @@ func newQuarantineCmd(dir *string) *cobra.Command {
 			// On a terminal, open the interactive review viewer at the first item;
 			// otherwise print the static queue (or --json).
 			if usePager(cmd) && !plainMode(cmd) && !jsonMode(cmd) {
-				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, 0, useColor(cmd), ttyWidth())
+				actor, actorKind := resolveActor(cmd, s)
+				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, 0, useColor(cmd), ttyWidth(), actor, actorKind)
 				if rerr != nil {
 					return rerr
 				}
@@ -101,7 +102,8 @@ func newQuarantineShowCmd(dir *string) *cobra.Command {
 						break
 					}
 				}
-				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, start, useColor(cmd), ttyWidth())
+				actor, actorKind := resolveActor(cmd, s)
+				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, start, useColor(cmd), ttyWidth(), actor, actorKind)
 				if rerr != nil {
 					return rerr
 				}
@@ -313,8 +315,8 @@ func newQuarantineRejectCmd(dir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, actorKind := resolveActor(cmd, s)
-			path, err := s.RejectQuarantine(id, note, actorKind)
+			actor, actorKind := resolveActor(cmd, s)
+			path, err := s.RejectQuarantine(id, note, actor, actorKind)
 			if err != nil {
 				return err
 			}

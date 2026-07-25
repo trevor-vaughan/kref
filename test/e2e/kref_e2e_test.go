@@ -169,11 +169,11 @@ var _ = Describe("kref end-to-end", func() {
 			Expect(e.mustRun("restore", id)).To(ContainSubstring("restored"))
 			Expect(e.mustRun("list")).To(ContainSubstring("Revivable"))
 		})
-		It("purge --force hard-deletes an entry", func() {
+		It("purge -y hard-deletes an entry", func() {
 			e := newKrefEnv("T", "t@example.com")
 			e.mustRun("init")
 			id := idOf(e.mustRun("new", "--title", "Gone", "--body", "x", "--json"))
-			e.mustRun("purge", "--force", id)
+			e.mustRun("purge", "-y", id)
 			Expect(e.mustRun("list", "--json")).NotTo(ContainSubstring(id))
 		})
 		It("purge prompts and aborts when the confirmation is declined", func() {
@@ -221,7 +221,7 @@ var _ = Describe("kref end-to-end", func() {
 			a.mustRun("remote", "set", "shared", "origin", origin)
 			id := idOf(a.mustRun("new", "--tier", "shared", "--title", "Doomed", "--body", "x", "--json"))
 			a.mustRun("sync", "push", "--tier", "shared")
-			a.mustRun("purge", "--push", "--force", id)
+			a.mustRun("purge", "--push", "-y", id)
 
 			c := newKrefEnv("Cara", "cara@example.com")
 			c.mustRun("init")
@@ -292,15 +292,15 @@ var _ = Describe("kref slice-5 reconciled verbs", func() {
 		))
 	})
 
-	It("creates a generic typed link that the links viewer shows, and removes it", func() {
+	It("creates a generic typed link that show surfaces, and removes it", func() {
 		e := newKrefEnv("T", "t@example.com")
 		e.mustRun("init")
 		a := idOf(e.mustRun("new", "--tier", "shared", "--title", "A", "--body", "a", "--json"))
 		b := idOf(e.mustRun("new", "--tier", "shared", "--title", "B", "--body", "b", "--json"))
 		e.mustRun("link", "add", a, b, "--type", "depends-on")
-		Expect(e.mustRun("links", a)).To(ContainSubstring("depends-on"))
+		Expect(e.mustRun("show", a, "--json")).To(ContainSubstring("depends-on"))
 		e.mustRun("link", "rm", a, b)
-		Expect(e.mustRun("links", a)).NotTo(ContainSubstring("depends-on"))
+		Expect(e.mustRun("show", a, "--json")).NotTo(ContainSubstring("depends-on"))
 	})
 
 	It("warns but proceeds (exit 0) on a cross-tier link to a more-private entry", func() {

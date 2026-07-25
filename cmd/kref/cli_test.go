@@ -4,15 +4,22 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
+
+	"github.com/trevor-vaughan/kref/internal/store"
 )
 
 func run(args ...string) string {
@@ -179,10 +186,10 @@ var _ = Describe("kref purge", func() {
 		return added.ID
 	}
 
-	It("hard-deletes with --force", func() {
+	It("hard-deletes with -y", func() {
 		dir := gitRepo()
 		id := add(dir, "Doomed")
-		Expect(run("--dir", dir, "purge", "--force", id)).To(ContainSubstring("purged"))
+		Expect(run("--dir", dir, "purge", "-y", id)).To(ContainSubstring("purged"))
 		Expect(run("--dir", dir, "list", "--json")).NotTo(ContainSubstring(id))
 	})
 
@@ -204,10 +211,10 @@ var _ = Describe("kref purge", func() {
 	It("reports gc=false by default and gc=true with --gc", func() {
 		dir := gitRepo()
 		id := add(dir, "GcDefault")
-		Expect(run("--dir", dir, "purge", "--force", "--json", id)).To(ContainSubstring(`"gc": false`))
+		Expect(run("--dir", dir, "purge", "-y", "--json", id)).To(ContainSubstring(`"gc": false`))
 
 		id2 := add(dir, "GcOptIn")
-		Expect(run("--dir", dir, "purge", "--force", "--gc", "--json", id2)).To(ContainSubstring(`"gc": true`))
+		Expect(run("--dir", dir, "purge", "-y", "--gc", "--json", id2)).To(ContainSubstring(`"gc": true`))
 	})
 })
 
@@ -460,6 +467,154 @@ var _ = Describe("command aliases", func() {
 
 		// `ver` is an alias for `version`.
 		Expect(run("ver")).To(MatchRegexp(`^kref \S+\n$`))
+	})
+})
+
+var _ = Describe("TUI footer convention", func() {
+	// The help popup is titled "keys" in every interactive surface, so every
+	// footer advertises it the same way. A reader who moves between `kref list`,
+	// the entry viewer, the search/diff pager, and the quarantine queue in one
+	// session should not have to relearn the label.
+	//
+	// Assert on the RENDERED last line at a real terminal width, not on the
+	// composed model string. The list footer used to spell out every key, which
+	// needed 111 columns: on any 80-column terminal both "? keys" and "q quit"
+	// were clipped off the end, while a substring check on View() still passed.
+	// Both ends of the range: the hints survive a narrow terminal, and a wide one
+	// is not capped to the narrow form.
+	It("keeps '? keys' and a quit hint visible at 80 columns", func() {
+		pager := newPagerModel(pagerContent{title: "t", body: []string{"alpha", "bravo"}})
+		pager.sv.Resize(80, 24)
+
+		viewer := newViewerModel(viewerInput{
+			title: "t", body: "## A\n\nx\n", width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		})
+		viewer.sv.Resize(80, 24)
+
+		list, _ := twoEntryModel()
+		list.sv.Resize(80, 24)
+		list.syncContent()
+
+		f := newFake()
+		q := []store.QuarantineItem{{ID: "q111", HeldOp: true, OpKind: "set-body", Target: "aaaa"}}
+		f.queue = q
+		review := newReviewModel(f, q, 0, false, 60, testReviewer, "human")
+		review.sv.Resize(80, 24)
+
+		for name, view := range map[string]string{
+			"pager":             pager.View(),
+			"entry viewer":      viewer.View(),
+			"list cockpit":      list.View(),
+			"quarantine review": review.View(),
+		} {
+			lines := strings.Split(view, "\n")
+			footer := lines[len(lines)-1]
+			Expect(ansi.StringWidth(footer)).To(BeNumerically("<=", 80), "%s footer overflows", name)
+			Expect(footer).To(ContainSubstring("? keys"), "%s footer", name)
+			Expect(footer).To(MatchRegexp(`q (quit|back)`), "%s footer", name)
+			Expect(footer).NotTo(ContainSubstring("? help"), "%s footer", name)
+		}
+	})
+})
+
+var _ = Describe("confirmation flag convention", func() {
+	// Skipping an interactive confirmation is always -y/--yes. --force is
+	// reserved for overriding a safety check — a secret scan, the reconcile
+	// active guard, tier rm's orphan check — which is a different and more
+	// dangerous verb. One flag must not mean both.
+	// Keep this in sync with the convention recorded in AGENTS.md.
+	var walk func(*cobra.Command, func(*cobra.Command))
+	walk = func(c *cobra.Command, fn func(*cobra.Command)) {
+		fn(c)
+		for _, sub := range c.Commands() {
+			walk(sub, fn)
+		}
+	}
+
+	It("skips prompts with -y/--yes, never with --force", func() {
+		var offenders []string
+		walk(newRootCmd(), func(c *cobra.Command) {
+			if f := c.Flags().Lookup("force"); f != nil && strings.Contains(f.Usage, "confirmation prompt") {
+				offenders = append(offenders, c.CommandPath()+" --force")
+			}
+		})
+		Expect(offenders).To(BeEmpty(),
+			"these skip a confirmation with --force; the convention is -y/--yes")
+	})
+
+	It("gives every --yes the -y shorthand", func() {
+		var offenders []string
+		walk(newRootCmd(), func(c *cobra.Command) {
+			if f := c.Flags().Lookup("yes"); f != nil && f.Shorthand != "y" {
+				offenders = append(offenders, c.CommandPath())
+			}
+		})
+		Expect(offenders).To(BeEmpty(), "these declare --yes without the -y shorthand")
+	})
+})
+
+var _ = Describe("JSON collection shape", func() {
+	// The contract: an array-valued key is always present and always an array.
+	// `null` never stands for an empty collection, and an absent key never
+	// means an empty one — a consumer can iterate any of these unconditionally.
+	// Keep this in sync with the JSON output convention recorded in AGENTS.md.
+	collectionKeys := []string{"links", "labels", "provenance", "comments", "favorites"}
+
+	// listStyle are the commands whose --json output is a bare array.
+	listStyle := [][]string{
+		{"list"},
+		{"list", "--kind", "nosuchkind"},
+		{"list", "--status", "obsolete"},
+		{"search", "zzznomatch"},
+		{"fav", "ls"},
+		{"quarantine", "list"},
+	}
+
+	It("emits an empty array, never null, when a list-style command matches nothing", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+
+		for _, args := range listStyle {
+			out := run(append([]string{"--dir", dir}, append(args, "--json")...)...)
+			var v any
+			Expect(json.Unmarshal([]byte(out), &v)).To(Succeed(), strings.Join(args, " "))
+			Expect(v).To(BeAssignableToTypeOf([]any{}),
+				"kref %s --json must emit [] for no results, got %q", strings.Join(args, " "), out)
+		}
+	})
+
+	It("emits every collection key as an array on an entry that has none of them", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		out := run("--dir", dir, "new", "--title", "Bare", "--body", "b", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(out), &added)).To(Succeed())
+
+		var snap map[string]any
+		Expect(json.Unmarshal([]byte(run("--dir", dir, "show", added.ID, "--json")), &snap)).To(Succeed())
+		for _, k := range collectionKeys {
+			v, ok := snap[k]
+			Expect(ok).To(BeTrue(), "show --json omits %q; an absent key must not mean an empty collection", k)
+			Expect(v).To(BeAssignableToTypeOf([]any{}), "show --json emits %q as %v, want an array", k, v)
+		}
+	})
+
+	It("emits every collection key as an array on each row of list --json", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		run("--dir", dir, "new", "--title", "Bare", "--body", "b")
+
+		var rows []map[string]any
+		Expect(json.Unmarshal([]byte(run("--dir", dir, "list", "--json")), &rows)).To(Succeed())
+		Expect(rows).To(HaveLen(1))
+		for _, k := range []string{"links", "labels", "provenance", "comments"} {
+			v, ok := rows[0][k]
+			Expect(ok).To(BeTrue(), "list --json omits %q; an absent key must not mean an empty collection", k)
+			Expect(v).To(BeAssignableToTypeOf([]any{}), "list --json emits %q as %v, want an array", k, v)
+		}
 	})
 })
 
@@ -2429,7 +2584,7 @@ var _ = Describe("export/import/vault commands", func() {
 		run("--dir", dir, "init", "--name", "A", "--email", "a@x")
 		pid := addID(dir, "private", "Keep")
 		run("--dir", dir, "vault", "backup")
-		run("--dir", dir, "purge", pid, "--force")
+		run("--dir", dir, "purge", pid, "-y")
 
 		c := newRootCmd()
 		c.SetArgs([]string{"--dir", dir, "show", pid})
@@ -3109,5 +3264,273 @@ var _ = Describe("favorites workflow", func() {
 		out := run("--dir", dir, "list", "--sort", "title")
 		Expect(strings.Index(out, "Zzz entry")).To(BeNumerically("<", strings.Index(out, "Aaa entry")),
 			"favorite Zzz pins above Aaa despite the ascending title sort")
+	})
+})
+
+var _ = Describe("viewer attribution convention", func() {
+	// Every interactive write path must record who made the write. The entry
+	// viewer takes the identity from its viewerInput, so a construction site
+	// that omits `actor` silently writes an unattributed comment — and the
+	// renderer then falls back to the commit's git identity, displaying an
+	// agent's reply as the human operator. `kref todo` shipped that way.
+	//
+	// This is a structural spec because the construction happens inside the
+	// TTY-only branch of a RunE, which no in-process CLI test can reach. It
+	// guards the invariant across every present and future site.
+	It("sets actor and actorKind at every viewerInput construction", func() {
+		srcs, err := filepath.Glob("*.go")
+		Expect(err).NotTo(HaveOccurred())
+		fset := token.NewFileSet()
+
+		sites := 0
+		for _, name := range srcs {
+			if strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			file, perr := parser.ParseFile(fset, name, nil, 0)
+			Expect(perr).NotTo(HaveOccurred())
+			ast.Inspect(file, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				if id, ok := lit.Type.(*ast.Ident); !ok || id.Name != "viewerInput" {
+					return true
+				}
+				sites++
+				var keys []string
+				for _, el := range lit.Elts {
+					if kv, ok := el.(*ast.KeyValueExpr); ok {
+						if k, ok := kv.Key.(*ast.Ident); ok {
+							keys = append(keys, k.Name)
+						}
+					}
+				}
+				where := fset.Position(lit.Pos())
+				Expect(keys).To(ContainElement("actor"), "viewerInput at %s omits actor", where)
+				Expect(keys).To(ContainElement("actorKind"), "viewerInput at %s omits actorKind", where)
+				return true
+			})
+		}
+		Expect(sites).To(BeNumerically(">=", 2), "expected the show and todo construction sites")
+	})
+})
+
+var _ = Describe("TUI mouse convention", func() {
+	// Every surface enables tea.WithMouseCellMotion, which costs the terminal its
+	// own select-to-copy and scrollback. Each one must at least forward the wheel
+	// to the viewport, or it is paying that price for nothing. Only the pager
+	// did: it calls PassKey outside its key-message case, while the other three
+	// returned before a MouseMsg could reach the viewport.
+	wheel := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}
+
+	It("scrolls the entry viewer on a wheel event", func() {
+		m := newViewerModel(viewerInput{
+			title: "t", body: strings.Repeat("filler line\n", 60), width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		})
+		out, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+		out, _ = out.Update(wheel)
+		Expect(out.(viewerModel).sv.YOffset()).To(BeNumerically(">", 0))
+	})
+
+	It("scrolls the static pager on a wheel event", func() {
+		m := newPagerModel(pagerContent{title: "t", body: strings.Split(strings.Repeat("filler\n", 60), "\n")})
+		out, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+		out, _ = out.Update(wheel)
+		Expect(out.(pagerModel).sv.YOffset()).To(BeNumerically(">", 0))
+	})
+
+	It("scrolls the review viewer on a wheel event", func() {
+		f := newFake()
+		q := []store.QuarantineItem{{ID: "q1", HeldOp: true, OpKind: "set-body", Target: "a"}}
+		f.queue = q
+		m := newReviewModel(f, q, 0, false, 40, testReviewer, "human")
+		m.sv.Resize(40, 6)
+		m.sv.SetContent(strings.Repeat("filler\n", 40))
+		m.Update(wheel)
+		Expect(m.sv.YOffset()).To(BeNumerically(">", 0))
+	})
+
+	It("scrolls the list cockpit on a wheel event", func() {
+		m, _ := twoEntryModel()
+		m.sv.Resize(80, 4) // 3 rows of content in a 2-row viewport
+		m.syncContent()
+		m.Update(wheel)
+		Expect(m.sv.YOffset()).To(BeNumerically(">", 0))
+	})
+})
+
+var _ = Describe("TUI navigation convention", func() {
+	// g goes to the top and G to the bottom in every interactive surface. The
+	// quarantine review viewer shipped without either: the keys fell through to
+	// the viewport's default keymap, which does not bind them, so they were inert
+	// while the other three honoured them. Nothing guarded it, unlike the footer
+	// label, so the convention the last sweep recorded held on three of four.
+	It("binds g and G in the quarantine review viewer", func() {
+		f := newFake()
+		q := []store.QuarantineItem{{ID: "q1", HeldOp: true, OpKind: "set-body", Target: "aaaa"}}
+		f.queue = q
+		m := newReviewModel(f, q, 0, false, 40, testReviewer, "human")
+		m.sv.Resize(40, 6)
+		m.sv.SetContent(strings.Repeat("filler\n", 40))
+
+		m.Update(key('G'))
+		Expect(m.sv.ScrollLabel()).To(Equal("bot"), "G must reach the bottom")
+		m.Update(key('g'))
+		Expect(m.sv.ScrollLabel()).To(Equal("top"), "g must reach the top")
+	})
+})
+
+var _ = Describe("TUI footer width use", func() {
+	// Fixing the 80-column clipping by making every footer permanently terse
+	// would trade one bug for another: a 200-column terminal has room for the
+	// hints and should show them. Hosts offer variants; the widest that fits
+	// wins. The footer never wraps — the chrome row count is fixed and the
+	// viewport height derives from it.
+	footerOf := func(view string) string {
+		lines := strings.Split(view, "\n")
+		return lines[len(lines)-1]
+	}
+
+	It("shows more hints on a wide terminal than on a narrow one", func() {
+		narrow, _ := twoEntryModel()
+		narrow.sv.Resize(80, 24)
+		narrow.syncContent()
+
+		wide, _ := twoEntryModel()
+		wide.sv.Resize(160, 24)
+		wide.syncContent()
+
+		nf, wf := footerOf(narrow.View()), footerOf(wide.View())
+		Expect(ansi.StringWidth(wf)).To(BeNumerically(">", ansi.StringWidth(nf)),
+			"a wide terminal must not be capped to the narrow footer")
+		Expect(wf).To(ContainSubstring("s status"), "wide footer keeps the full hint list")
+		Expect(nf).NotTo(ContainSubstring("s status"))
+	})
+
+	It("never drops the help and quit hints at any width", func() {
+		for _, w := range []int{40, 60, 80, 100, 160, 240} {
+			m, _ := twoEntryModel()
+			m.sv.Resize(w, 24)
+			m.syncContent()
+			f := footerOf(m.View())
+			Expect(ansi.StringWidth(f)).To(BeNumerically("<=", w), "footer overflows at %d", w)
+			Expect(f).To(ContainSubstring("? keys"), "at %d columns", w)
+			Expect(f).To(ContainSubstring("q quit"), "at %d columns", w)
+		}
+	})
+
+	It("keeps the review viewer's hints at every width too", func() {
+		f := newFake()
+		q := []store.QuarantineItem{{ID: "q1", HeldOp: true, OpKind: "set-body", Target: "a"}}
+		f.queue = q
+		for _, w := range []int{40, 60, 80, 120, 200} {
+			m := newReviewModel(f, q, 0, false, w, testReviewer, "human")
+			m.sv.Resize(w, 24)
+			last := footerOf(m.View())
+			Expect(ansi.StringWidth(last)).To(BeNumerically("<=", w), "footer overflows at %d", w)
+			Expect(last).To(ContainSubstring("? keys"), "at %d columns", w)
+			Expect(last).To(ContainSubstring("q back"), "at %d columns", w)
+		}
+	})
+
+	It("stays a single row at every width", func() {
+		for _, w := range []int{40, 80, 200} {
+			m, _ := twoEntryModel()
+			m.sv.Resize(w, 24)
+			m.syncContent()
+			Expect(strings.Split(m.View(), "\n")).To(HaveLen(24), "chrome must not wrap at %d", w)
+		}
+	})
+})
+
+var _ = Describe("TUI vim-key convention", func() {
+	// Wherever ↑/↓ move a selection, k/j move it the same way. The bubbles
+	// viewport binds both pairs together, so any surface that scrolls through
+	// PassKey gets this for free — the gap is a host that routes arrows itself,
+	// as the status picker did.
+	//
+	// Driving both key forms against the same starting state and comparing the
+	// result covers every surface listed here, including any added later.
+	arrowDown := tea.KeyMsg{Type: tea.KeyDown}
+	arrowUp := tea.KeyMsg{Type: tea.KeyUp}
+
+	It("moves the list cockpit cursor identically with j/k and ↓/↑", func() {
+		byRune, _ := twoEntryModel()
+		byArrow, _ := twoEntryModel()
+		byRune.Update(key('j'))
+		byArrow.Update(arrowDown)
+		Expect(byRune.cursor).To(Equal(byArrow.cursor))
+		Expect(byRune.cursor).To(Equal(1))
+
+		byRune.Update(key('k'))
+		byArrow.Update(arrowUp)
+		Expect(byRune.cursor).To(Equal(byArrow.cursor))
+		Expect(byRune.cursor).To(Equal(0))
+	})
+
+	It("moves the status picker with j/k as well as ↓/↑", func() {
+		open := func() *listModel {
+			m, _ := twoEntryModel()
+			m.Update(key('j')) // to an entry row
+			m.Update(key('s')) // open the picker
+			Expect(m.mode).To(Equal(listModeStatus))
+			return m
+		}
+		byRune, byArrow := open(), open()
+		start := byRune.statusIdx
+
+		byRune.Update(key('j'))
+		byArrow.Update(arrowDown)
+		Expect(byRune.statusIdx).To(Equal(byArrow.statusIdx))
+		Expect(byRune.statusIdx).NotTo(Equal(start), "j must move the picker")
+
+		byRune.Update(key('k'))
+		byArrow.Update(arrowUp)
+		Expect(byRune.statusIdx).To(Equal(byArrow.statusIdx))
+		Expect(byRune.statusIdx).To(Equal(start))
+	})
+
+	It("scrolls the entry viewer identically with j/k and ↓/↑", func() {
+		build := func() viewerModel {
+			m := newViewerModel(viewerInput{
+				title: "t", body: strings.Repeat("filler line\n", 60), width: 80,
+				provider: stubProvider{header: []string{"h"}},
+			})
+			out, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+			return out.(viewerModel)
+		}
+		r, _ := build().Update(key('j'))
+		a, _ := build().Update(arrowDown)
+		Expect(r.(viewerModel).sv.YOffset()).To(Equal(a.(viewerModel).sv.YOffset()))
+		Expect(r.(viewerModel).sv.YOffset()).To(BeNumerically(">", 0))
+	})
+
+	It("scrolls the pager and review viewer identically with j/k and ↓/↑", func() {
+		buildPager := func() pagerModel {
+			m := newPagerModel(pagerContent{title: "t", body: strings.Split(strings.Repeat("filler\n", 60), "\n")})
+			out, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+			return out.(pagerModel)
+		}
+		pr, _ := buildPager().Update(key('j'))
+		pa, _ := buildPager().Update(arrowDown)
+		Expect(pr.(pagerModel).sv.YOffset()).To(Equal(pa.(pagerModel).sv.YOffset()))
+		Expect(pr.(pagerModel).sv.YOffset()).To(BeNumerically(">", 0))
+
+		buildReview := func() *reviewModel {
+			f := newFake()
+			q := []store.QuarantineItem{{ID: "q1", HeldOp: true, OpKind: "set-body", Target: "a"}}
+			f.queue = q
+			m := newReviewModel(f, q, 0, false, 40, testReviewer, "human")
+			m.sv.Resize(40, 6)
+			m.sv.SetContent(strings.Repeat("filler\n", 40))
+			return m
+		}
+		rr, ra := buildReview(), buildReview()
+		rr.Update(key('j'))
+		ra.Update(arrowDown)
+		Expect(rr.sv.YOffset()).To(Equal(ra.sv.YOffset()))
+		Expect(rr.sv.YOffset()).To(BeNumerically(">", 0))
 	})
 })

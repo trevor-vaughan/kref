@@ -13,7 +13,7 @@ var _ = Describe("Store comment edit/delete", func() {
 		Expect(err).NotTo(HaveOccurred())
 		id, err := s.Add(entry.TierShared, "note", "n", "b")
 		Expect(err).NotTo(HaveOccurred())
-		cid, err := s.AddComment(id, "human", "first", false, "")
+		cid, err := s.AddComment(id, "", "human", "first", false, "")
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(s.EditComment(id, cid, "second")).To(Succeed())

@@ -252,7 +252,7 @@ func removeUserFavorite(name string) error {
 
 // favoritesFor returns the favorite names that point at id, sorted.
 func favoritesFor(favs map[string]string, id entity.Id) []string {
-	var out []string
+	out := []string{}
 	for name, target := range favs {
 		if target == id.String() {
 			out = append(out, name)

@@ -75,7 +75,7 @@ var _ = Describe("withWriteLock", func() {
 		Expect(ok).To(BeTrue())
 		DeferCleanup(func() { _ = held.Unlock() })
 
-		_, err = s.AddComment(id, "human", "hi", false, "")
+		_, err = s.AddComment(id, "", "human", "hi", false, "")
 		Expect(err).To(MatchError(ContainSubstring("could not acquire the write lock")))
 	})
 
@@ -109,7 +109,7 @@ var _ = Describe("withWriteLock", func() {
 
 		done := make(chan error, 2)
 		for range 2 {
-			go func() { _, e := s.AddComment(id, "human", "c", false, ""); done <- e }()
+			go func() { _, e := s.AddComment(id, "", "human", "c", false, ""); done <- e }()
 		}
 		Expect(<-done).NotTo(HaveOccurred())
 		Expect(<-done).NotTo(HaveOccurred())

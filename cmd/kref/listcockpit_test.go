@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,6 +18,10 @@ import (
 // key builds a rune KeyMsg for the given single character.
 func key(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
 
+// testReviewer stands in for the identity resolveActor hands the cockpit, so a
+// spec can tell a real reviewer from a hardcoded placeholder.
+const testReviewer = "Reviewer Name"
+
 // twoEntryModel returns a reloaded, sized model with a quarantine row + two entries.
 func twoEntryModel() (*listModel, *fakeActions) {
 	f := newFake()
@@ -23,7 +30,7 @@ func twoEntryModel() (*listModel, *fakeActions) {
 		{ID: "aaaa", Tier: "personal", TierType: "personal", Kind: "document", Status: "open", Title: "Alpha"},
 		{ID: "bbbb", Tier: "personal", TierType: "personal", Kind: "todo", Status: "open", Title: "Beta"},
 	}
-	m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true, store.ListFilter{})
+	m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true, store.ListFilter{}, testReviewer, "human")
 	m.reload()
 	m.sv.Resize(80, 24)
 	m.syncContent()
@@ -37,10 +44,21 @@ type fakeActions struct {
 	entries  []*entry.Snapshot
 	approved []string
 	rejected []string
-	archived []string
-	restored []string
-	statuses map[string]string
-	favs     map[string]string
+	// who made the last decision, so a spec can prove the TUI records the
+	// resolved reviewer rather than a placeholder
+	approvedBy   string
+	approvedKind string
+	rejectedBy   string
+	rejectedKind string
+	archived     []string
+	restored     []string
+	statuses     map[string]string
+	favs         map[string]string
+	// injected read failures, so a spec can tell an unreadable store from an
+	// empty one
+	listErr   error
+	queueErr  error
+	detailErr error
 }
 
 func newFake() *fakeActions {
@@ -62,18 +80,22 @@ func removeQ(q []store.QuarantineItem, id entity.Id) []store.QuarantineItem {
 	return out
 }
 
-func (f *fakeActions) QuarantineQueue() ([]store.QuarantineItem, error) { return f.queue, nil }
-func (f *fakeActions) QuarantineDetail(id entity.Id) (store.QuarantineDetail, error) {
-	return f.details[id], nil
+func (f *fakeActions) QuarantineQueue() ([]store.QuarantineItem, error) {
+	return f.queue, f.queueErr
 }
-func (f *fakeActions) ListEntries() ([]*entry.Snapshot, error) { return f.entries, nil }
+func (f *fakeActions) QuarantineDetail(id entity.Id) (store.QuarantineDetail, error) {
+	return f.details[id], f.detailErr
+}
+func (f *fakeActions) ListEntries() ([]*entry.Snapshot, error) { return f.entries, f.listErr }
 func (f *fakeActions) ApproveQuarantine(id entity.Id, note, ap, k string) error {
 	f.approved = append(f.approved, id.String())
+	f.approvedBy, f.approvedKind = ap, k
 	f.queue = removeQ(f.queue, id)
 	return nil
 }
-func (f *fakeActions) RejectQuarantine(id entity.Id, note, k string) (string, error) {
+func (f *fakeActions) RejectQuarantine(id entity.Id, note, rejecter, k string) (string, error) {
 	f.rejected = append(f.rejected, id.String())
+	f.rejectedBy, f.rejectedKind = rejecter, k
 	f.queue = removeQ(f.queue, id)
 	return "/tmp/rej", nil
 }
@@ -273,11 +295,23 @@ var _ = Describe("listModel alias overlay", func() {
 })
 
 var _ = Describe("listModel search", func() {
+	// The query is now captured by the shared pagerSearch rather than a
+	// textinput, so the spec types it the way a reader would.
+	typeQuery := func(m *listModel, q string) {
+		m.Update(key('/'))
+		for _, r := range q {
+			m.Update(key(r))
+		}
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+
 	It("jumps the cursor to a match on / then enter", func() {
 		m, _ := twoEntryModel() // rows: quarantine, aaaa "Alpha", bbbb "Beta"
 		m.Update(key('/'))
 		Expect(m.mode).To(Equal(listModeSearch))
-		m.input.SetValue("Beta")
+		for _, r := range "Beta" {
+			m.Update(key(r))
+		}
 		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		Expect(m.mode).To(Equal(listModeNone))
 		Expect(m.rows[m.cursor].id).To(Equal(entity.Id("bbbb")))
@@ -285,9 +319,7 @@ var _ = Describe("listModel search", func() {
 
 	It("reports no matches", func() {
 		m, _ := twoEntryModel()
-		m.Update(key('/'))
-		m.input.SetValue("zzzznotfound")
-		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		typeQuery(m, "zzzznotfound")
 		Expect(m.err).To(ContainSubstring("no match"))
 	})
 })
@@ -314,5 +346,154 @@ var _ = Describe("listModel help dismiss", func() {
 		m, _ := twoEntryModel()
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 		Expect(cmd).NotTo(BeNil()) // tea.Quit
+	})
+})
+
+var _ = Describe("list cockpit horizontal scroll", func() {
+	It("pans right to reveal a title wider than the window", func() {
+		f := newFake()
+		f.entries = []*entry.Snapshot{
+			{ID: "aaaa", Tier: "personal", TierType: "personal", Kind: "document", Status: "open",
+				Title: "START" + strings.Repeat("-", 100) + "END"},
+		}
+		m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true, store.ListFilter{}, testReviewer, "human")
+		m.reload()
+		m.sv.Resize(40, 12)
+		m.syncContent()
+		var mm tea.Model = m
+		Expect(mm.(*listModel).View()).NotTo(ContainSubstring("END"))
+		for range 20 {
+			mm, _ = mm.(*listModel).Update(tea.KeyMsg{Type: tea.KeyRight})
+		}
+		Expect(mm.(*listModel).View()).To(ContainSubstring("END"))
+	})
+})
+
+// A quarantine decision is the audit record of a human approval gate, so it has
+// to name the human. Both TUIs used to pass the literal string "me" as the
+// approver and an empty string as the rejecter, while the CLI resolved the real
+// identity.
+var _ = Describe("list cockpit decision attribution", func() {
+	decide := func(k rune) *fakeActions {
+		GinkgoHelper()
+		m, f := twoEntryModel()
+		m.cursor = 0 // the quarantine row
+		m.Update(key(k))
+		m.input.SetValue("a note")
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		return f
+	}
+
+	It("approves as the resolved reviewer, not a placeholder", func() {
+		f := decide('a')
+		Expect(f.approvedBy).To(Equal(testReviewer))
+		Expect(f.approvedKind).To(Equal("human"))
+	})
+
+	It("rejects as the resolved reviewer, not an empty string", func() {
+		f := decide('r')
+		Expect(f.rejectedBy).To(Equal(testReviewer))
+		Expect(f.rejectedKind).To(Equal("human"))
+	})
+})
+
+// A read failure must not read as an empty repository: "nothing here" and "the
+// store is unreadable" are different facts, and the project rule is that a
+// failure is never silent.
+var _ = Describe("list cockpit reload errors", func() {
+	It("reports an entry-list failure instead of showing an empty list", func() {
+		f := newFake()
+		f.listErr = errors.New("ref store unreadable")
+		m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, false, store.ListFilter{}, testReviewer, "human")
+		m.reload()
+		m.sv.Resize(80, 24)
+		Expect(m.View()).To(ContainSubstring("ref store unreadable"))
+	})
+
+	It("reports a quarantine-queue failure too", func() {
+		f := newFake()
+		f.queueErr = errors.New("queue unreadable")
+		m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, false, store.ListFilter{}, testReviewer, "human")
+		m.reload()
+		m.sv.Resize(80, 24)
+		Expect(m.View()).To(ContainSubstring("queue unreadable"))
+	})
+})
+
+// e, x, u, s and f are advertised in the help popup unconditionally but did
+// nothing at all with the cursor on a quarantine row, while a and r on an entry
+// row already explained themselves. The rule the entry viewer's noComment
+// follows applies here too: a key the interface advertises has to account for
+// itself rather than look broken.
+var _ = Describe("list cockpit key feedback", func() {
+	entryOnlyKeys := []rune{'e', 'x', 'u', 's', 'f'}
+
+	for _, k := range entryOnlyKeys {
+		It("explains '"+string(k)+"' on a quarantine row instead of doing nothing", func() {
+			m, _ := twoEntryModel() // cursor 0 is the quarantine row
+			m.Update(key(k))
+			Expect(m.err).To(ContainSubstring("quarantine"))
+		})
+	}
+
+	It("still acts on an entry row", func() {
+		m, f := twoEntryModel()
+		m.Update(key('j')) // to an entry row
+		m.Update(key('x'))
+		Expect(f.archived).To(ContainElement("aaaa"))
+		Expect(m.err).To(BeEmpty())
+	})
+
+	It("toggles colour on t, as the entry viewer does", func() {
+		m, _ := twoEntryModel()
+		before := m.sv.Plain()
+		m.Update(key('t'))
+		Expect(m.sv.Plain()).NotTo(Equal(before))
+	})
+})
+
+// The list cockpit had its own search with no match counter, and rebuilt the
+// model on every open/return round-trip, silently discarding it — after which n
+// answered "no matches", which reads as "your query found nothing" rather than
+// "your query is gone".
+var _ = Describe("list cockpit search", func() {
+	typeQuery := func(m *listModel, q string) {
+		m.Update(key('/'))
+		for _, r := range q {
+			m.Update(key(r))
+		}
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+
+	It("reports the match position in the footer", func() {
+		m, _ := twoEntryModel()
+		typeQuery(m, "Alpha")
+		Expect(m.View()).To(MatchRegexp(`match \d+/\d+`))
+	})
+
+	It("moves the cursor to the match", func() {
+		m, _ := twoEntryModel()
+		typeQuery(m, "Beta")
+		Expect(m.rows[m.cursor].line).To(ContainSubstring("Beta"))
+	})
+
+	It("says so when nothing matches", func() {
+		m, _ := twoEntryModel()
+		typeQuery(m, "nosuchthing")
+		Expect(m.err).To(Equal("no matches"))
+	})
+
+	It("keeps the search across the model rebuild an open/return forces", func() {
+		m, _ := twoEntryModel()
+		typeQuery(m, "Alpha")
+		carried := m.search
+
+		m2, _ := twoEntryModel()
+		m2.search = carried
+		m2.search.refresh(m2.searchMatcher)
+		m2.syncContent()
+		m2.Update(key('n'))
+		Expect(m2.err).To(BeEmpty(), "n must not claim 'no matches' on a carried search")
+		Expect(m2.View()).To(MatchRegexp(`match \d+/\d+`))
 	})
 })

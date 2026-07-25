@@ -34,7 +34,7 @@ func newRootCmd() *cobra.Command {
 	root.ValidArgsFunction = completeCommandAliases
 	root.PersistentFlags().StringVar(&dir, "dir", ".", "repository directory (default: the enclosing repo, discovered git-style; selects the ref store; path arguments stay relative to the current directory)")
 	root.PersistentFlags().Bool("json", false, "machine-readable JSON output")
-	root.PersistentFlags().Bool("plain", false, "chrome-free line-oriented output: TSV for list/search, the verbatim stored body for show")
+	root.PersistentFlags().Bool("plain", false, "chrome-free line-oriented output: TSV for list/search, the verbatim stored body (plus any comments, one per line) for show")
 	root.PersistentFlags().String("actor", "", "attribute actions to an agent (else the git identity, as human)")
 	// --plain and --json are the two machine contracts; asking for both is a
 	// contradiction. No subcommand defines PersistentPreRunE, so the root hook

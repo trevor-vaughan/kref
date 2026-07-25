@@ -162,6 +162,61 @@ var _ = Describe("kref comment", func() {
 		})
 	})
 
+	Describe("unresolve path", func() {
+		It("reopens a resolved question by prefix", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+			id := newEntry(dir, "Kappa")
+
+			run("--dir", dir, "comment", id, "-m", "why?", "--question")
+			prefix := entryComments(dir, id)[0].ID[:6]
+			run("--dir", dir, "comment", id, "--resolve", prefix)
+
+			out := run("--dir", dir, "comment", id, "--unresolve", prefix)
+			Expect(out).To(ContainSubstring("reopened"))
+			Expect(entryComments(dir, id)[0].Resolved).To(BeFalse())
+		})
+
+		It("rejects unresolving a question that is not resolved", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+			id := newEntry(dir, "Lambda")
+
+			run("--dir", dir, "comment", id, "-m", "why?", "--question")
+			prefix := entryComments(dir, id)[0].ID[:6]
+
+			_, err := runErr("--dir", dir, "comment", id, "--unresolve", prefix)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not a resolved question"))
+		})
+
+		It("rejects unresolving a non-question comment", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+			id := newEntry(dir, "Mu")
+
+			run("--dir", dir, "comment", id, "-m", "plain note")
+			prefix := entryComments(dir, id)[0].ID[:6]
+
+			_, err := runErr("--dir", dir, "comment", id, "--unresolve", prefix)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not a resolved question"))
+		})
+
+		It("rejects --resolve and --unresolve together", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+			id := newEntry(dir, "Nu")
+
+			run("--dir", dir, "comment", id, "-m", "why?", "--question")
+			prefix := entryComments(dir, id)[0].ID[:6]
+
+			_, err := runErr("--dir", dir, "comment", id, "--resolve", prefix, "--unresolve", prefix)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
+		})
+	})
+
 	Describe("edit/delete path", func() {
 		It("edits a comment body by prefix", func() {
 			dir := gitRepo()

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
@@ -67,7 +69,7 @@ var _ = Describe("reviewModel", func() {
 
 	It("approves via 'a' + note and advances (queue shrinks)", func() {
 		f, q := setup("q111", "q222")
-		m := newReviewModel(f, q, 0, true, 60)
+		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")
 		m.sv.Resize(80, 24)
 		m.Update(key('a'))
 		Expect(m.mode).To(Equal(listModeNote))
@@ -80,7 +82,7 @@ var _ = Describe("reviewModel", func() {
 
 	It("rejects via 'r' + reason", func() {
 		f, q := setup("q111")
-		m := newReviewModel(f, q, 0, true, 60)
+		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")
 		m.sv.Resize(80, 24)
 		m.Update(key('r'))
 		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -88,22 +90,24 @@ var _ = Describe("reviewModel", func() {
 		Expect(m.queue).To(HaveLen(0)) // queue now clear
 	})
 
-	It("n/p move through the queue and clamp at the ends", func() {
+	// Queue navigation moved from n/p to ]/[ so that n/N mean "next/previous
+	// search match" on this surface as they already did on the other three.
+	It("]/[ move through the queue and clamp at the ends", func() {
 		f, q := setup("q111", "q222", "q333")
-		m := newReviewModel(f, q, 0, true, 60)
+		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")
 		m.sv.Resize(80, 24)
-		m.Update(key('p')) // clamp low
+		m.Update(key('[')) // clamp low
 		Expect(m.idx).To(Equal(0))
-		m.Update(key('n'))
+		m.Update(key(']'))
 		Expect(m.idx).To(Equal(1))
-		m.Update(key('n'))
-		m.Update(key('n')) // clamp high at 2
+		m.Update(key(']'))
+		m.Update(key(']')) // clamp high at 2
 		Expect(m.idx).To(Equal(2))
 	})
 
 	It("exits with open-target on 'o'", func() {
 		f, q := setup("q111")
-		m := newReviewModel(f, q, 0, true, 60)
+		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")
 		m.sv.Resize(80, 24)
 		_, cmd := m.Update(key('o'))
 		Expect(cmd).NotTo(BeNil())
@@ -113,12 +117,105 @@ var _ = Describe("reviewModel", func() {
 
 	It("dismisses the help popup on esc instead of quitting", func() {
 		f, q := setup("q111")
-		m := newReviewModel(f, q, 0, true, 60)
+		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")
 		m.sv.Resize(80, 24)
 		m.Update(key('?'))
 		Expect(m.sv.HelpOpen()).To(BeTrue())
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 		Expect(m.sv.HelpOpen()).To(BeFalse())
 		Expect(cmd).To(BeNil())
+	})
+})
+
+var _ = Describe("review viewer decision attribution", func() {
+	decide := func(k rune) *fakeActions {
+		GinkgoHelper()
+		f := newFake()
+		q := []store.QuarantineItem{{ID: "q1", HeldOp: true, OpKind: "add-comment", Target: "e1"}}
+		f.queue = q
+		m := newReviewModel(f, q, 0, false, 80, testReviewer, "human")
+		m.sv.Resize(80, 24)
+		m.Update(key(k))
+		m.input.SetValue("a note")
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		return f
+	}
+
+	It("approves as the resolved reviewer, not a placeholder", func() {
+		f := decide('a')
+		Expect(f.approvedBy).To(Equal(testReviewer))
+		Expect(f.approvedKind).To(Equal("human"))
+	})
+
+	It("rejects as the resolved reviewer, not an empty string", func() {
+		f := decide('r')
+		Expect(f.rejectedBy).To(Equal(testReviewer))
+		Expect(f.rejectedKind).To(Equal("human"))
+	})
+})
+
+// n meant "next search match" in the other three surfaces but "next held write"
+// here. Queue navigation moves to ]/[ so n/N mean one thing everywhere.
+var _ = Describe("review viewer navigation", func() {
+	twoItems := func() *reviewModel {
+		f := newFake()
+		q := []store.QuarantineItem{
+			{ID: "q1", HeldOp: true, OpKind: "set-body", Target: "e1"},
+			{ID: "q2", HeldOp: true, OpKind: "set-body", Target: "e2"},
+		}
+		for _, it := range q {
+			f.details[it.ID] = store.QuarantineDetail{
+				Item:            it,
+				CurrentBody:     strings.Repeat("filler\n", 20),
+				ProposedContent: strings.Repeat("filler\n", 20) + "needle here\n",
+			}
+		}
+		f.queue = q
+		m := newReviewModel(f, q, 0, false, 80, testReviewer, "human")
+		m.sv.Resize(80, 24)
+		return m
+	}
+
+	It("moves through the queue with ] and [", func() {
+		m := twoItems()
+		m.Update(key(']'))
+		Expect(m.idx).To(Equal(1))
+		m.Update(key('['))
+		Expect(m.idx).To(Equal(0))
+	})
+
+	It("uses n/N for search matches, not queue navigation", func() {
+		m := twoItems()
+		m.Update(key('/'))
+		for _, r := range "needle" {
+			m.Update(key(r))
+		}
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.idx).To(Equal(0), "a search must not move the queue cursor")
+		Expect(m.View()).To(MatchRegexp(`match \d+/\d+`))
+	})
+})
+
+// loadDetail recorded the error but returned before touching the content, so the
+// viewer kept rendering the previous held write under the new item's index —
+// the worst possible framing for a screen whose job is deciding on one specific
+// write.
+var _ = Describe("review viewer detail failure", func() {
+	It("clears the previous item's content when the next one fails to load", func() {
+		f := newFake()
+		q := []store.QuarantineItem{
+			{ID: "q1", HeldOp: true, OpKind: "set-body", Target: "e1", TargetTitle: "First"},
+			{ID: "q2", HeldOp: true, OpKind: "set-body", Target: "e2", TargetTitle: "Second"},
+		}
+		f.queue = q
+		f.details[entity.Id("q1")] = store.QuarantineDetail{Item: q[0], ProposedContent: "unique-first-body"}
+		m := newReviewModel(f, q, 0, false, 80, testReviewer, "human")
+		m.sv.Resize(80, 24)
+		Expect(m.View()).To(ContainSubstring("unique-first-body"))
+
+		f.detailErr = errors.New("held payload unreadable")
+		m.Update(key(']'))
+		Expect(m.err).To(ContainSubstring("held payload unreadable"))
+		Expect(m.View()).NotTo(ContainSubstring("unique-first-body"), "stale detail from the previous item")
 	})
 })

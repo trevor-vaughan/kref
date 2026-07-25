@@ -3,11 +3,13 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/git-bug/git-bug/entity"
 
 	"github.com/trevor-vaughan/kref/internal/entry"
+	"github.com/trevor-vaughan/kref/internal/scan"
 	"github.com/trevor-vaughan/kref/internal/todoguard"
 )
 
@@ -15,6 +17,12 @@ const (
 	qDestPrefix   = "q-dest:"
 	qReviewPrefix = "q-review:"
 	qStatusPrefix = "q-status:"
+	// qFindingPrefix labels a new-entry draft with one "<rule>:<line>" finding.
+	// A held op keeps its findings in its intent JSON, but a draft's body is the
+	// proposed entry itself, so there is no payload to carry them — the label is
+	// the draft's only side-channel. It records rule and line ONLY: a finding's
+	// secret value must never leave the body.
+	qFindingPrefix = "q-finding:"
 )
 
 // reviewCommentID returns the review question-comment id recorded on a
@@ -24,6 +32,34 @@ func reviewCommentID(item *entry.Snapshot) string { return labelValue(item, qRev
 // destTier returns the intended destination tier of a new-entry draft
 // (the q-dest:<tier> label), or "" if the item is not a draft.
 func destTier(item *entry.Snapshot) string { return labelValue(item, qDestPrefix) }
+
+// findingLabel encodes one finding as a q-finding label — rule and line only.
+func findingLabel(f scan.Finding) string {
+	return fmt.Sprintf("%s%s:%d", qFindingPrefix, f.RuleID, f.StartLine)
+}
+
+// draftFindings decodes a new-entry draft's q-finding labels.
+func draftFindings(item *entry.Snapshot) []scan.Finding {
+	var out []scan.Finding
+	for _, l := range item.Labels {
+		v, ok := strings.CutPrefix(l, qFindingPrefix)
+		if !ok {
+			continue
+		}
+		// The line is the digits after the final ":", so a rule id containing a
+		// colon still round-trips. A hand-mangled label keeps its rule — the
+		// signal a reviewer actually needs — and reports line 0 rather than
+		// dropping the finding and under-reporting why the write was held.
+		f := scan.Finding{RuleID: v}
+		if i := strings.LastIndex(v, ":"); i >= 0 {
+			if n, err := strconv.Atoi(v[i+1:]); err == nil {
+				f.RuleID, f.StartLine = v[:i], n
+			}
+		}
+		out = append(out, f)
+	}
+	return out
+}
 
 func labelValue(item *entry.Snapshot, prefix string) string {
 	for _, l := range item.Labels {
@@ -43,12 +79,12 @@ func isHeldOp(item *entry.Snapshot) bool { return item.Kind == quarantineKind }
 // resolve); a "not found" on resolve is tolerated too — a rejected draft is
 // tombstoned in the quarantine tier, which ResolveComment does not search, so a
 // decision is never blocked by an unresolvable thread on an already-dead item.
-func (s *Store) resolveThread(target entity.Id, reviewCID, note, actorKind string) error {
+func (s *Store) resolveThread(target entity.Id, reviewCID, note, actor, actorKind string) error {
 	if reviewCID == "" {
 		return nil
 	}
 	if strings.TrimSpace(note) != "" {
-		if _, err := s.AddComment(target, actorKind, note, false, reviewCID); err != nil {
+		if _, err := s.AddComment(target, actor, actorKind, note, false, reviewCID); err != nil {
 			return err
 		}
 	}
@@ -72,7 +108,7 @@ func (s *Store) ApproveQuarantine(id entity.Id, note, approver, actorKind string
 		return err
 	}
 	if isHeldOp(item) {
-		return s.approveHeldOp(item, note, actorKind)
+		return s.approveHeldOp(item, note, approver, actorKind)
 	}
 	dest := destTier(item)
 	if dest == "" {
@@ -83,7 +119,7 @@ func (s *Store) ApproveQuarantine(id entity.Id, note, approver, actorKind string
 		return err // includes *RetierBlockedError for an un-allowlisted shared promotion
 	}
 	// The draft is now the live entry; resolve its review thread, clear q-labels.
-	if err := s.resolveThread(id, reviewCID, note, actorKind); err != nil {
+	if err := s.resolveThread(id, reviewCID, note, approver, actorKind); err != nil {
 		return err
 	}
 	return s.clearQuarantineLabels(id, item)
@@ -103,7 +139,7 @@ func (s *Store) clearQuarantineLabels(id entity.Id, item *entry.Snapshot) error 
 // approveHeldOp replays a held op onto its live target, resolves the review
 // thread, then tombstones the item (archive + q-status:approved) as an audit
 // record of the decision.
-func (s *Store) approveHeldOp(item *entry.Snapshot, note, actorKind string) error {
+func (s *Store) approveHeldOp(item *entry.Snapshot, note, approver, actorKind string) error {
 	var in intent
 	if err := json.Unmarshal([]byte(item.Body), &in); err != nil {
 		return fmt.Errorf("parse quarantine intent %s: %w", item.ID, err)
@@ -115,7 +151,7 @@ func (s *Store) approveHeldOp(item *entry.Snapshot, note, actorKind string) erro
 	if err := s.replayIntent(target, in); err != nil {
 		return err // includes *todoguard.StaleError for a moved todo
 	}
-	if err := s.resolveThread(target, reviewCommentID(item), note, actorKind); err != nil {
+	if err := s.resolveThread(target, reviewCommentID(item), note, approver, actorKind); err != nil {
 		return err
 	}
 	if err := s.Archive(item.ID); err != nil {
@@ -138,13 +174,13 @@ func (s *Store) replayIntent(target entity.Id, in intent) error {
 		}
 		return s.Update(target, in.Content, "")
 	case "add-comment":
-		_, err := s.AddComment(target, in.ActorKind, in.Content, in.Question, in.ReplyTo)
+		_, err := s.AddComment(target, in.Actor, in.ActorKind, in.Content, in.Question, in.ReplyTo)
 		return err
 	case "edit-comment":
 		return s.EditComment(target, in.CommentTarget, in.Content)
 	case "resolve":
 		if strings.TrimSpace(in.Content) != "" {
-			if _, err := s.AddComment(target, in.ActorKind, in.Content, false, in.CommentTarget); err != nil {
+			if _, err := s.AddComment(target, in.Actor, in.ActorKind, in.Content, false, in.CommentTarget); err != nil {
 				return err
 			}
 		}
@@ -177,7 +213,7 @@ func (s *Store) PurgeRejectedQuarantine(id entity.Id) error {
 // never lost), resolves the review thread as rejected, and tombstones the item
 // (archive + q-status:rejected). It returns the recovery file path. The item is
 // preserved for audit, not purged.
-func (s *Store) RejectQuarantine(id entity.Id, note, actorKind string) (string, error) {
+func (s *Store) RejectQuarantine(id entity.Id, note, rejecter, actorKind string) (string, error) {
 	item, err := s.Get(id)
 	if err != nil {
 		return "", err
@@ -195,7 +231,7 @@ func (s *Store) RejectQuarantine(id entity.Id, note, actorKind string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if err := s.resolveThread(reviewTarget, reviewCommentID(item), note, actorKind); err != nil {
+	if err := s.resolveThread(reviewTarget, reviewCommentID(item), note, rejecter, actorKind); err != nil {
 		return "", err
 	}
 	if err := s.Archive(id); err != nil {

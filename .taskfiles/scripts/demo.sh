@@ -32,7 +32,7 @@ OUTPUT_GIF=$4
 # honouring a system-wide vhs already on PATH.
 export PATH="$ROOT_DIR/bin:$PATH"
 
-# go.mod pins Go >= 1.26.4; let Go fetch that toolchain if the local one is older
+# go.mod pins Go >= 1.26.5; let Go fetch that toolchain if the local one is older
 # (matches the rest of the project's tasks). Respect an explicit override.
 : "${GOTOOLCHAIN:=auto}"
 export GOTOOLCHAIN

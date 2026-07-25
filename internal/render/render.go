@@ -890,9 +890,13 @@ func Show(w io.Writer, snap *entry.Snapshot, opts ShowOptions) {
 	}
 	if opts.Raw {
 		fmt.Fprintln(w, snap.Body)
-	} else {
-		RenderBody(w, snap.Body, snap.ContentType, opts.Color, opts.Width)
+		if len(snap.Comments) > 0 {
+			fmt.Fprintln(w)
+			RenderCommentsPlain(w, snap.Comments)
+		}
+		return
 	}
+	RenderBody(w, snap.Body, snap.ContentType, opts.Color, opts.Width)
 	if len(snap.Comments) > 0 {
 		fmt.Fprintln(w)
 		RenderComments(w, snap.Comments, opts.Color, opts.Width)
@@ -957,6 +961,38 @@ func wrapText(s string, width int) []string {
 	return out
 }
 
+// commentAuthor names who wrote a comment. Every comment is committed under the
+// repo's git identity, so an agent's would read as the human's; when the op
+// recorded an agent name, that is the meaningful author to show.
+func CommentAuthor(c entry.Comment) string {
+	if c.Actor != "" {
+		// Just the model: the client half is in provenance and JSON, and
+		// repeating it on every comment in a thread buries the body.
+		return entry.ActorModel(c.Actor)
+	}
+	return c.Author
+}
+
+// threadTree splits comments into top-level roots and a parent→replies map. A
+// comment whose ReplyTo names something absent (a parent on another entry, or a
+// prefix that was never resolved) is treated as a root, so no comment is ever
+// dropped for having a dangling parent.
+func threadTree(comments []entry.Comment) (roots []entry.Comment, children map[string][]entry.Comment) {
+	present := make(map[string]bool, len(comments))
+	for _, c := range comments {
+		present[c.ID] = true
+	}
+	children = make(map[string][]entry.Comment)
+	for _, c := range comments {
+		if c.ReplyTo != "" && present[c.ReplyTo] {
+			children[c.ReplyTo] = append(children[c.ReplyTo], c)
+		} else {
+			roots = append(roots, c)
+		}
+	}
+	return roots, children
+}
+
 func RenderCommentThreads(comments []entry.Comment, color bool, collapsed map[string]bool, width int) []CommentThread {
 	paint := func(code, s string) string {
 		if !color {
@@ -965,19 +1001,7 @@ func RenderCommentThreads(comments []entry.Comment, color bool, collapsed map[st
 		return code + s + ansiReset
 	}
 
-	present := make(map[string]bool, len(comments))
-	for _, c := range comments {
-		present[c.ID] = true
-	}
-	children := make(map[string][]entry.Comment)
-	var roots []entry.Comment
-	for _, c := range comments {
-		if c.ReplyTo != "" && present[c.ReplyTo] {
-			children[c.ReplyTo] = append(children[c.ReplyTo], c)
-		} else {
-			roots = append(roots, c)
-		}
-	}
+	roots, children := threadTree(comments)
 
 	now := time.Now()
 	headLine := func(c entry.Comment, depth int) string {
@@ -990,7 +1014,7 @@ func RenderCommentThreads(comments []entry.Comment, color bool, collapsed map[st
 				glyph = paint(ansiRed, "◉")
 			}
 		}
-		head := fmt.Sprintf("%s%s %s  %s", indent, glyph, c.Author, RelTime(now, c.Time))
+		head := fmt.Sprintf("%s%s %s  %s", indent, glyph, CommentAuthor(c), RelTime(now, c.Time))
 		if c.Resolved && c.ResolvedBy != "" {
 			head += " · resolved by " + c.ResolvedBy
 		}
@@ -1008,11 +1032,25 @@ func RenderCommentThreads(comments []entry.Comment, color bool, collapsed map[st
 		if width > 0 {
 			avail = max(width-len([]rune(prefix)), 8)
 		}
-		var out []string
-		for line := range strings.SplitSeq(c.Body, "\n") {
-			for _, wl := range wrapText(line, avail) {
-				out = append(out, prefix+wl)
+		var rendered []string
+		if color && avail > 0 {
+			// Render the comment body as markdown (bold/italic/lists/code/links),
+			// like the entry body, then indent each line under the comment head.
+			var b strings.Builder
+			RenderBody(&b, c.Body, "text/markdown", true, avail)
+			rendered = strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+			for len(rendered) > 1 && strings.TrimSpace(rendered[0]) == "" {
+				rendered = rendered[1:] // drop glamour's top-margin blank line
 			}
+		} else {
+			// Colour off (or no wrap width): raw wrapped text, like `show --plain`.
+			for line := range strings.SplitSeq(c.Body, "\n") {
+				rendered = append(rendered, wrapText(line, avail)...)
+			}
+		}
+		out := make([]string, len(rendered))
+		for i, ln := range rendered {
+			out[i] = prefix + ln
 		}
 		return out
 	}
@@ -1079,6 +1117,42 @@ func RenderCommentsCollapsed(w io.Writer, comments []entry.Comment, color bool, 
 // indent under their parent. width>0 word-wraps comment bodies to that width.
 func RenderComments(w io.Writer, comments []entry.Comment, color bool, width int) {
 	RenderCommentsCollapsed(w, comments, color, nil, width)
+}
+
+// RenderCommentsPlain writes the comments for --plain: one "<author>: <body>"
+// entry each, bodies verbatim and unwrapped, replies in thread order but not
+// indented. Comments belong in --plain, but the threaded presentation — count
+// header, rule, glyphs, relative times — is decoration, and stripping
+// decoration is what --plain is for. A question's state is spelled out in words
+// so it survives where a glyph would not.
+func RenderCommentsPlain(w io.Writer, comments []entry.Comment) {
+	roots, children := threadTree(comments)
+	var walk func(c entry.Comment)
+	walk = func(c entry.Comment) {
+		body, marker := c.Body, ""
+		switch {
+		case c.Deleted:
+			body = "[deleted]" // never print a tombstoned body
+		case c.Question && c.Resolved:
+			marker = " [resolved]"
+		case c.Question:
+			marker = " [open]"
+		}
+		// The marker rides on the author line so a multi-line body stays
+		// byte-for-byte intact below it.
+		first, rest, multi := strings.Cut(body, "\n")
+		line := CommentAuthor(c) + ": " + first + marker
+		if multi {
+			line += "\n" + rest
+		}
+		fmt.Fprintln(w, line)
+		for _, child := range children[c.ID] {
+			walk(child)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
 }
 
 // Action renders a one-line confirmation, e.g.

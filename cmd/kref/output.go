@@ -19,7 +19,8 @@ func jsonMode(cmd *cobra.Command) bool {
 }
 
 // plainMode reports whether the inherited persistent --plain flag is set:
-// chrome-free line-oriented output (TSV lists, verbatim show body). Plain is a
+// chrome-free line-oriented output (TSV lists; verbatim show body plus
+// author-prefixed comment lines). Plain is a
 // machine contract, so it also suppresses color and the pager.
 func plainMode(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("plain")

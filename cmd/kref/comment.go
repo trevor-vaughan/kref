@@ -12,40 +12,9 @@ import (
 	"golang.org/x/term"
 
 	"github.com/trevor-vaughan/kref/internal/commentguard"
-	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/scan"
 	"github.com/trevor-vaughan/kref/internal/store"
 )
-
-// resolveCommentID matches a hex prefix against a single entry's comments.
-// It returns an unambiguous full ID or an error.
-func resolveCommentID(snap *entry.Snapshot, prefix string) (string, error) {
-	var matches []string
-	for _, c := range snap.Comments {
-		if strings.HasPrefix(c.ID, prefix) {
-			matches = append(matches, c.ID)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("no comment matches %q", prefix)
-	case 1:
-		return matches[0], nil
-	default:
-		return "", fmt.Errorf("comment prefix %q is ambiguous (%d matches)", prefix, len(matches))
-	}
-}
-
-// findComment returns a pointer into snap.Comments for the given full id, or
-// nil when not found.
-func findComment(snap *entry.Snapshot, id string) *entry.Comment {
-	for i := range snap.Comments {
-		if snap.Comments[i].ID == id {
-			return &snap.Comments[i]
-		}
-	}
-	return nil
-}
 
 // shortStr returns up to n runes from s — guards against ids shorter than the
 // requested prefix length (shouldn't happen in practice, but be safe).
@@ -91,7 +60,7 @@ func completeCommentIDs(dir *string) func(*cobra.Command, []string, string) ([]s
 }
 
 func newCommentCmd(dir *string) *cobra.Command {
-	var message, replyTo, resolve string
+	var message, replyTo, resolve, unresolve string
 	var question bool
 	var edit, del string
 	var yes, force bool
@@ -106,11 +75,12 @@ func newCommentCmd(dir *string) *cobra.Command {
 			"kref comment a1b2c3d4 -m 'is this right?' --question",
 			"kref comment a1b2c3d4 --resolve abc123",
 			"kref comment a1b2c3d4 --resolve abc123 -m 'yes, fixed'",
+			"kref comment a1b2c3d4 --unresolve abc123",
 			"kref comment a1b2c3d4 --reply-to abc123 -m 'agreed'",
 		}),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if countSet(question, resolve != "", edit != "", del != "") > 1 {
-				return errors.New("--question, --resolve, --edit, and --delete are mutually exclusive")
+			if countSet(question, resolve != "", unresolve != "", edit != "", del != "") > 1 {
+				return errors.New("--question, --resolve, --unresolve, --edit, and --delete are mutually exclusive")
 			}
 
 			s, err := store.Open(*dir)
@@ -128,10 +98,10 @@ func newCommentCmd(dir *string) *cobra.Command {
 				return err
 			}
 
-			_, actorKind := resolveActor(cmd, s)
+			actor, actorKind := resolveActor(cmd, s)
 
 			if edit != "" {
-				target, err := resolveCommentID(snap, edit)
+				target, err := snap.ResolveCommentID(edit)
 				if err != nil {
 					return err
 				}
@@ -152,7 +122,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 					return parkComment(cmd, s, force, refused.Findings,
 						fmt.Sprintf("edited %s (force-approved)", shortStr(target, 12)),
 						func(f []scan.Finding) (store.Parked, error) {
-							return s.QuarantineEditComment(id, target, body, f, actorKind)
+							return s.QuarantineEditComment(id, target, body, f, actor, actorKind)
 						})
 				}
 				if cErr != nil {
@@ -169,7 +139,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 			}
 
 			if del != "" {
-				target, err := resolveCommentID(snap, del)
+				target, err := snap.ResolveCommentID(del)
 				if err != nil {
 					return err
 				}
@@ -194,11 +164,11 @@ func newCommentCmd(dir *string) *cobra.Command {
 
 			if resolve != "" {
 				// Resolve path: close a question comment.
-				target, err := resolveCommentID(snap, resolve)
+				target, err := snap.ResolveCommentID(resolve)
 				if err != nil {
 					return err
 				}
-				tc := findComment(snap, target)
+				tc := snap.FindComment(target)
 				if tc == nil || !tc.Question {
 					return fmt.Errorf("comment %s is not a question", resolve)
 				}
@@ -222,7 +192,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 						return parkComment(cmd, s, force, refused.Findings,
 							fmt.Sprintf("resolved %s (force-approved)", shortStr(target, 12)),
 							func(f []scan.Finding) (store.Parked, error) {
-								return s.QuarantineResolveNote(id, target, note, f, actorKind)
+								return s.QuarantineResolveNote(id, target, note, f, actor, actorKind)
 							})
 					}
 					if cErr != nil {
@@ -231,7 +201,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 					if unscanned {
 						fmt.Fprintln(cmd.ErrOrStderr(), "warning: betterleaks not found — comment stored UNSCANNED")
 					}
-					if _, aErr := s.AddComment(id, actorKind, note, false, target); aErr != nil {
+					if _, aErr := s.AddComment(id, actor, actorKind, note, false, target); aErr != nil {
 						return aErr
 					}
 				}
@@ -242,10 +212,27 @@ func newCommentCmd(dir *string) *cobra.Command {
 				return nil
 			}
 
+			if unresolve != "" {
+				// Unresolve path: reopen a resolved question.
+				target, err := snap.ResolveCommentID(unresolve)
+				if err != nil {
+					return err
+				}
+				tc := snap.FindComment(target)
+				if tc == nil || !tc.Question || !tc.Resolved {
+					return fmt.Errorf("comment %s is not a resolved question", unresolve)
+				}
+				if err := s.UnresolveComment(id, target); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "reopened %s\n", shortStr(target, 12))
+				return nil
+			}
+
 			// Add path: read body, optionally resolve --reply-to prefix.
 			parent := ""
 			if cmd.Flags().Changed("reply-to") {
-				parent, err = resolveCommentID(snap, replyTo)
+				parent, err = snap.ResolveCommentID(replyTo)
 				if err != nil {
 					return err
 				}
@@ -273,7 +260,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 			if errors.As(cErr, &refused) {
 				return parkComment(cmd, s, force, refused.Findings, "commented (force-approved)",
 					func(f []scan.Finding) (store.Parked, error) {
-						return s.QuarantineComment(id, body, question, parent, f, actorKind)
+						return s.QuarantineComment(id, body, question, parent, f, actor, actorKind)
 					})
 			}
 			if cErr != nil {
@@ -283,7 +270,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: betterleaks not found — comment stored UNSCANNED")
 			}
 
-			cid, err := s.AddComment(id, actorKind, body, question, parent)
+			cid, err := s.AddComment(id, actor, actorKind, body, question, parent)
 			if err != nil {
 				return err
 			}
@@ -307,6 +294,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 	c.Flags().BoolVarP(&question, "question", "q", false, "mark the comment as a question")
 	c.Flags().StringVar(&replyTo, "reply-to", "", "parent comment id (prefix)")
 	c.Flags().StringVar(&resolve, "resolve", "", "resolve a question by comment id (prefix)")
+	c.Flags().StringVar(&unresolve, "unresolve", "", "reopen a resolved question by comment id (prefix)")
 	c.Flags().StringVar(&edit, "edit", "", "edit a comment body by id (prefix)")
 	c.Flags().StringVar(&del, "delete", "", "delete a comment by id (prefix)")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the delete confirmation")
@@ -315,6 +303,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 	c.ValidArgsFunction = entryArgs(dir, 1, sourceAll)
 	_ = c.RegisterFlagCompletionFunc("reply-to", completeCommentIDs(dir))
 	_ = c.RegisterFlagCompletionFunc("resolve", completeCommentIDs(dir))
+	_ = c.RegisterFlagCompletionFunc("unresolve", completeCommentIDs(dir))
 	_ = c.RegisterFlagCompletionFunc("edit", completeCommentIDs(dir))
 	_ = c.RegisterFlagCompletionFunc("delete", completeCommentIDs(dir))
 

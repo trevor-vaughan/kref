@@ -18,7 +18,7 @@ var _ = Describe("quarantine park primitives", func() {
 		s, err := Init(dir, "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "the body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "the body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		snap, err := s.Get(parked.ItemID)
@@ -41,7 +41,7 @@ var _ = Describe("quarantine park primitives", func() {
 		DeferCleanup(func() { _ = s.Close() })
 		snap, err := s.Get(target)
 		Expect(err).NotTo(HaveOccurred())
-		parked, err := s.QuarantineUpdate(target, "new body with secret", snap.Version, find, "agent")
+		parked, err := s.QuarantineUpdate(target, "new body with secret", snap.Version, find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		item, err := s.Get(parked.ItemID)
@@ -56,7 +56,10 @@ var _ = Describe("quarantine park primitives", func() {
 		Expect(tsnap.Body).To(Equal("clean")) // target untouched
 		Expect(tsnap.Comments).To(HaveLen(1))
 		Expect(tsnap.Comments[0].Question).To(BeTrue())
-		Expect(tsnap.Comments[0].Body).To(ContainSubstring(parked.ItemID.String()))
+		// A 12-character prefix, as every listing shows and every quarantine
+		// subcommand resolves; the full 64 wrapped across two lines in the viewer.
+		Expect(tsnap.Comments[0].Body).To(ContainSubstring(parked.ItemID.String()[:12]))
+		Expect(tsnap.Comments[0].Body).NotTo(ContainSubstring(parked.ItemID.String()))
 	})
 
 	It("parks a held comment as an add-comment intent-item without adding the held comment to the target", func() {
@@ -66,7 +69,7 @@ var _ = Describe("quarantine park primitives", func() {
 		target, err := s.Add(entry.TierShared, "doc", "Doc", "clean")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineComment(target, "comment with secret", true, "", find, "agent")
+		parked, err := s.QuarantineComment(target, "comment with secret", true, "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		item, err := s.Get(parked.ItemID)
@@ -95,7 +98,7 @@ var _ = Describe("quarantine intent v2", func() {
 		snap, err := s.Get(target)
 		Expect(err).NotTo(HaveOccurred())
 
-		parked, err := s.QuarantineUpdate(target, "new body with secret", snap.Version, find, "agent")
+		parked, err := s.QuarantineUpdate(target, "new body with secret", snap.Version, find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		item, err := s.Get(parked.ItemID)
@@ -115,7 +118,7 @@ var _ = Describe("quarantine intent v2", func() {
 		s, err := Init(dir, "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "the body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "the body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 		item, err := s.Get(parked.ItemID)
 		Expect(err).NotTo(HaveOccurred())

@@ -288,9 +288,10 @@ type ListFilter struct {
 	OpenQuestionsOnly bool // keep only entries with >=1 unresolved question comment
 }
 
-// List returns compiled snapshots across tiers, applying the filter.
+// List returns compiled snapshots across tiers, applying the filter. It returns
+// an empty slice, never nil, so `kref list --json` emits [] for no matches.
 func (s *Store) List(f ListFilter) ([]*entry.Snapshot, error) {
-	var out []*entry.Snapshot
+	out := []*entry.Snapshot{}
 	needle := strings.ToLower(f.Search)
 	for _, t := range s.searchTierNames() {
 		if f.Tier == "" && entry.IsSystemTier(t) {
@@ -721,10 +722,10 @@ func (s *Store) Resolve(prefix string) (entity.Id, error) {
 
 // AddComment appends a comment to an entry, searching all tiers. It returns the
 // new comment's id (the AddComment op id).
-func (s *Store) AddComment(id entity.Id, actorKind, body string, question bool, replyTo string) (string, error) {
+func (s *Store) AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (string, error) {
 	var cid string
 	err := s.mutate(id, func(e *entry.Entry) error {
-		op := entry.NewAddComment(s.author, actorKind, body, question, replyTo)
+		op := entry.NewAddComment(s.author, actor, actorKind, body, question, replyTo)
 		e.Append(op)
 		cid = op.Id().String()
 		return nil
@@ -736,6 +737,14 @@ func (s *Store) AddComment(id entity.Id, actorKind, body string, question bool, 
 func (s *Store) ResolveComment(id entity.Id, target string) error {
 	return s.mutate(id, func(e *entry.Entry) error {
 		e.Append(entry.NewResolveComment(s.author, target))
+		return nil
+	})
+}
+
+// UnresolveComment reopens a resolved question comment, searching all tiers.
+func (s *Store) UnresolveComment(id entity.Id, target string) error {
+	return s.mutate(id, func(e *entry.Entry) error {
+		e.Append(entry.NewUnresolveComment(s.author, target))
 		return nil
 	})
 }

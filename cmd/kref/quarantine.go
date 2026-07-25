@@ -225,8 +225,11 @@ func paintDiff(color bool, code, s string) string {
 
 // printQuarantined reports a parked write on stdout.
 func printQuarantined(cmd *cobra.Command, p store.Parked) {
+	// Short id: every listing shows 12 characters, every quarantine subcommand
+	// resolves a prefix, and the full 64 wraps across two lines in the viewer.
+	id := render.ShortID(p.ItemID)
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"quarantined as %s (%d findings) — held for human review, not applied and not lost. "+
 			"A human approves it with `kref quarantine` (see `kref quarantine show %s`).\n",
-		p.ItemID, len(p.Findings), p.ItemID)
+		id, len(p.Findings), id)
 }

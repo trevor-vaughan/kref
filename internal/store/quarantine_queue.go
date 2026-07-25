@@ -65,7 +65,7 @@ type QuarantineItem struct {
 	DestTier    string         // drafts: intended destination tier
 	Kind        string         // drafts: entry kind
 	Title       string         // drafts: entry title
-	Findings    []scan.Finding // findings that parked the write (held ops carry them)
+	Findings    []scan.Finding // findings that parked the write (rule + line, never the value)
 	CreatedAt   time.Time
 }
 
@@ -177,5 +177,6 @@ func (s *Store) classifyQueueItem(snap *entry.Snapshot) QuarantineItem {
 	it.Kind = snap.Kind
 	it.Title = snap.Title
 	it.DestTier = destTier(snap)
+	it.Findings = draftFindings(snap)
 	return it
 }

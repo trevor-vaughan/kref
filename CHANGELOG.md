@@ -10,8 +10,97 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 first release will contain. Granular, release-to-release entries start once
 there is a tagged release to diff against.
 
+### Changed
+
+- **Quarantine queue navigation moved from `n`/`p` to `]`/`[`.** `n`/`N` now mean
+  "next/previous search match" on every interactive surface, including the
+  review viewer, which also gains `/` search. Previously `n` stepped the queue
+  here and cycled matches everywhere else.
+- **`G` scrolls to the end of the content in the entry viewer**, matching the
+  pager and the list cockpit. It used to stop at the last cursor item, which on
+  a body whose final heading is not its final line left content unreachable in
+  one key.
+- **`esc` is a layered dismiss on every surface** — modal, then help popup, then
+  a committed search, then quit. It previously quit the pager, list and review
+  viewer outright and did nothing at all in the entry viewer.
+- **Footers scale with the terminal width.** The `kref list` and quarantine
+  review footers spelled out every key unconditionally and needed 111 and 82
+  columns, so on an 80-column terminal `? keys` and the quit hint were clipped
+  off the end. They now offer progressively terser variants and show the widest
+  that fits: a 130-column terminal gets the full hint line, an 80-column one a
+  trimmed set, and below about 34 columns the position indicator gives way
+  before the help and quit hints do. Chrome never wraps — the sticky row count
+  is fixed and the viewport height derives from it.
+- **Folding in the entry viewer is `space` and `^space` only.** `space` folds the
+  section under the cursor; `^space` (ctrl+space) folds everything, or unfolds
+  everything when any section is already folded. The old `o`/`c` (open/close the
+  current section) and `O`/`C` (open/close all) bindings are retired and now do
+  nothing: they were a second way to do what `space` already did, and `o` reads
+  as "open the entry" in the list and quarantine cockpits.
+
+### Fixed
+
+- **Agent writes through the `kref todo` cockpit are attributed correctly.** The
+  cockpit resolved the actor but dropped the name, so a reply made under
+  `--actor`/`KREF_ACTOR` stored no actor and rendered as the human operator.
+- **Quarantine decisions record the real reviewer.** Both interactive decision
+  paths wrote the literal string `me` as the approver (and an empty rejecter)
+  instead of the resolved identity.
+- **Chrome is truncated by display width, not byte length.** Titles carrying an
+  em-dash or the todo header's ANSI lost their ellipsis, could emit a partial
+  escape sequence, and under-filled the bar by roughly 25 columns. Footers were
+  not truncated at all and overflowed the pane.
+- **Search backspace deletes a whole rune.** Backspacing over a non-ASCII
+  character left invalid UTF-8, so the query silently matched nothing while
+  still displaying as the text the reader intended.
+- **`ctrl+c` works inside a viewer modal.** Every modal swallowed it, including
+  the delete confirmation. A non-empty draft is preserved to the recovery tree
+  and the path reported, so the escape hatch never costs the author their text.
+- **The delete confirmation names the comment it will destroy.**
+- **The mouse wheel scrolls in every surface.** All four enable mouse capture,
+  but only the pager forwarded the events.
+- **`g`/`G` work in the quarantine review viewer**, which bound neither.
+- **A search no longer discards the reader's folds permanently** — dismissing it
+  with `esc` restores them.
+- **`kref list` reports a store read failure** instead of rendering an empty
+  list that reads as an empty repository.
+- **The list cockpit reports its search position** (`match i/N`) and keeps the
+  search when you open an entry and come back; it used to answer `n` with "no
+  matches".
+- **Keys the interface advertises account for themselves** — `e`/`x`/`u`/`s`/`f`
+  on a quarantine row said nothing at all; the pager offered `<n>g` where there
+  is no line-number gutter to aim at.
+- **The help popup says when it does not fit** on a short pane instead of
+  silently dropping its last rows, which is where the quit key lives.
+- **The quarantine review viewer clears stale detail** when an item fails to
+  load, instead of showing the previous held write under the new item's index.
+- **Quarantine notices use short ids**, like every listing.
+- **`t` toggles colour in the list, pager and review viewer**, not just the
+  entry viewer.
+- **`j`/`k` move the status picker**, matching every other surface. It switched
+  on the key type and so accepted only the arrow keys.
+
 ### Added
 
+- **Horizontal scroll for wide lines** — the interactive `kref list` cockpit and
+  the `kref search`/`kref diff` pager pan left/right with `←`/`h` and `→`/`l`, so
+  a title or diff line wider than the window can be read without wrapping.
+- **`kref show` is interactive** — on a terminal, `kref show <id>` now opens the
+  same viewer as `kref todo`: section fold, search, the numbered gutter with
+  `<n>g`, and the full comment writer (reply, edit, resolve/reopen, delete) on
+  any entry. Comment threads render in a discussion zone above the body. Piped
+  output, `--plain`, `--no-pager`, and `--header` are unchanged.
+- **Reopen a resolved question** — `kref comment <id> --unresolve <cid>` flips a
+  resolved question back to open (the inverse of `--resolve`); in the viewer,
+  `x` now toggles resolve↔reopen on a question thread, and MCP `kref_comment`
+  gains an `unresolve` action. A reopened question re-enters the `awaiting-you`
+  count.
+- **Viewer line numbers and content-type rendering** — the interactive viewer
+  (the `kref todo` cockpit, and `kref show` once converged) renders any content
+  type: Markdown folds by section, while code and other types render as a single
+  syntax-highlighted block. A line-number gutter runs down the body — `<n>g`
+  jumps to a body line — and search ignores the gutter, so a numeric query
+  matches body text rather than a line number.
 - **`KREF_DIR` environment variable** — the repository directory now resolves in
   the order `--dir` flag > `KREF_DIR` > the current directory, so a host that sets
   a per-project environment variable (an MCP host config, for instance) can run
@@ -118,13 +207,13 @@ there is a tagged release to diff against.
   `space` pages as before. `--plain` and piped output are unchanged.
 - **Show & pager UX** — `kref show` no longer clears the screen on quit: the last
   view you were reading stays in the terminal scrollback (`less -X` behaviour).
-  Press `e` to expand the header in place with the entry's history — created,
-  edited (relative + version), the editors and their edit counts, the last ten
-  body versions, and its links (both directions, with titles). Help is now a
-  centred popup on `?` instead of a footer swap. The standalone `kref links`
-  command is removed — links live in the expanded header, and `show --json` still
-  carries outgoing links. Incoming-link lookups are now served from the excerpt
-  cache (no full-history scan).
+  Help is now a centred popup on `?` instead of a footer swap. The standalone
+  `kref links` command is removed; `show --json` still carries outgoing links.
+  Incoming-link lookups are now served from the excerpt cache (no full-history
+  scan). The expandable header that was to carry an entry's history and links
+  is not wired up yet — `render.ExtendedHeader` has no caller, and in the viewer
+  `e` edits the selected comment — so links currently have no human-readable
+  surface. Tracked as an open item.
 - **Comments & questions** — `kref comment <id>` threads append-only comments on
   an entry: `-m` for the body (or piped stdin), `-q` to mark it a question,
   `--reply-to <cid>` to reply, and `--resolve <cid>` to close a question (with an
@@ -378,8 +467,36 @@ there is a tagged release to diff against.
   ActiveHelp hint when there are none), and a bare `kref fav` now defaults to
   `kref fav ls`.
 
+### Changed
+
+- **`g` jumps to the top in every viewer.** The entry viewer and the
+  `kref search`/`kref diff` pager required the vim `gg` chord while the `kref list`
+  cockpit took a single `g`, so the key a reader had just learned did nothing one
+  Enter away. Bare `g` now goes to the top everywhere; `gg` still works (the
+  second `g` is a no-op) and `<n>g` is unchanged. The help key is likewise
+  labelled `? keys` in all four viewers, matching the popup's own title.
+- **`kref purge` now skips its prompt with `-y`/`--yes`, not `--force`.** Every
+  other confirming command (`archive`, `retier`, `update --all`, `reconcile`,
+  `quarantine`) already used `-y`/`--yes`, while `--force` elsewhere means
+  "override a safety check" — the secret scan, the reconcile guard, `tier rm`'s
+  orphan check. `purge` was the one place that flag silently meant "yes, hard-delete
+  it." `kref retier` also gains the `-y` shorthand it was missing.
+
 ### Fixed
 
+- **The viewer's write keys explain themselves.** `?` advertises `r`/`e`/`d`/`x`
+  unconditionally, but on an entry with no comments — the common case for
+  `kref show` — each did nothing at all: no message, no beep. They now say why
+  ("no comment selected — this entry has none yet", "only a question can be
+  resolved"), the way the list cockpit already answered an inapplicable key.
+- **`--json` collections are always arrays.** An array-valued key is now always
+  present and always an array, so a consumer can iterate it unconditionally.
+  Previously `kref list --json` emitted `null` when nothing matched (while
+  `kref search`, `kref fav ls`, and `kref quarantine list` emitted `[]`),
+  `links`/`labels`/`provenance` were `null` on an entry that had none, and
+  `comments` disappeared entirely — three different encodings of "empty" in one
+  object, one of which crashes a naive `for` loop. The rule is recorded in
+  `AGENTS.md` and asserted across commands by the `JSON collection shape` spec.
 - **`kref new` now reads a body from piped/redirected stdin** when `--body` is
   omitted, matching `kref update` and the documented agent guidance to pipe a
   body on stdin. Previously `kref new … < file` silently created an entry with

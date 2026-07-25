@@ -1,6 +1,8 @@
 package main
 
 import (
+	"unicode/utf8"
+
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -67,5 +69,39 @@ var _ = Describe("pagerSearch", func() {
 		ps.refresh(sv.Matches)
 		Expect(ps.matches).To(Equal([]int{0, 2}))
 		Expect(ps.idx).To(Equal(0)) // clamped
+	})
+
+	// The query is built from runes but was trimmed by one byte, so backspacing
+	// over a non-ASCII character left a partial UTF-8 sequence. ToLower folds the
+	// orphan byte to U+FFFD, so the query then matched nothing at all — while the
+	// prompt still displayed the text the reader intended.
+	It("deletes a whole rune on backspace, not a byte", func() {
+		sv := newSV()
+		var ps pagerSearch
+		ps.start()
+		typeRunes(&ps, "café", sv.Matches, &sv)
+		ps.input(tea.KeyMsg{Type: tea.KeyBackspace}, sv.Matches, &sv)
+		Expect(ps.query).To(Equal("caf"))
+		Expect(utf8.ValidString(ps.query)).To(BeTrue())
+	})
+
+	It("still matches after backspacing over a multi-byte rune", func() {
+		sv := tui.NewScrollView("t")
+		sv.SetContent("a café here\nplain\n")
+		sv.Resize(40, 2)
+		var ps pagerSearch
+		ps.start()
+		typeRunes(&ps, "café", sv.Matches, &sv)
+		ps.input(tea.KeyMsg{Type: tea.KeyBackspace}, sv.Matches, &sv)
+		ps.input(tea.KeyMsg{Type: tea.KeyEnter}, sv.Matches, &sv)
+		Expect(ps.matches).To(Equal([]int{0}))
+	})
+
+	It("is a no-op on backspace with an empty query", func() {
+		sv := newSV()
+		var ps pagerSearch
+		ps.start()
+		ps.input(tea.KeyMsg{Type: tea.KeyBackspace}, sv.Matches, &sv)
+		Expect(ps.query).To(Equal(""))
 	})
 })

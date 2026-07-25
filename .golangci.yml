@@ -25,45 +25,45 @@ linters:
   # Default set (errcheck, govet, ineffassign, staticcheck, unused) stays on.
   enable:
     # correctness
-    - errorlint        # correct errors.Is/As and %w wrapping
-    - nilerr           # returning nil when err is non-nil
-    - forcetypeassert  # type assertions without comma-ok
-    - copyloopvar      # loop-variable copy issues (Go 1.22+)
-    - durationcheck    # time.Duration multiplication bugs
-    - reassign         # reassigning package-level variables
-    - bidichk          # dangerous bidirectional Unicode (trojan source)
-    - asciicheck       # non-ASCII identifiers (homoglyph attacks)
-    - predeclared      # shadowing built-ins (len, cap, error)
-    - errname          # error type/var naming (ErrFoo, FooError)
+    - errorlint # correct errors.Is/As and %w wrapping
+    - nilerr # returning nil when err is non-nil
+    - forcetypeassert # type assertions without comma-ok
+    - copyloopvar # loop-variable copy issues (Go 1.22+)
+    - durationcheck # time.Duration multiplication bugs
+    - reassign # reassigning package-level variables
+    - bidichk # dangerous bidirectional Unicode (trojan source)
+    - asciicheck # non-ASCII identifiers (homoglyph attacks)
+    - predeclared # shadowing built-ins (len, cap, error)
+    - errname # error type/var naming (ErrFoo, FooError)
     # style
-    - gocritic         # opinionated correctness/style diagnostics
-    - revive           # naming and exported-symbol conventions
-    - whitespace       # leading/trailing blank-line hygiene
-    - godot            # exported-symbol comments end with a period
-    - misspell         # common English misspellings
+    - gocritic # opinionated correctness/style diagnostics
+    - revive # naming and exported-symbol conventions
+    - whitespace # leading/trailing blank-line hygiene
+    - godot # exported-symbol comments end with a period
+    - misspell # common English misspellings
     # performance
-    - perfsprint       # faster alternatives to fmt.Sprintf
-    - unconvert        # unnecessary type conversions
+    - perfsprint # faster alternatives to fmt.Sprintf
+    - unconvert # unnecessary type conversions
     # security
-    - gosec            # weak crypto, path traversal, unsafe permissions, ...
+    - gosec # weak crypto, path traversal, unsafe permissions, ...
     # resource-safety — dormant today (kref has no HTTP/SQL and stores no
     # context), so they report nothing now, but stay enabled so they activate
     # automatically the moment such code lands. Verified to produce zero
     # findings on the current tree.
-    - bodyclose        # unclosed HTTP response bodies
-    - sqlclosecheck    # unclosed sql.Rows/Stmt
-    - rowserrcheck     # unchecked sql.Rows.Err()
-    - containedctx     # context.Context stored in a struct field
-    - fatcontext       # context accumulated across a loop
+    - bodyclose # unclosed HTTP response bodies
+    - sqlclosecheck # unclosed sql.Rows/Stmt
+    - rowserrcheck # unchecked sql.Rows.Err()
+    - containedctx # context.Context stored in a struct field
+    - fatcontext # context accumulated across a loop
     # modernization
-    - modernize        # patterns replaceable with newer Go features
-    - usestdlibvars    # stdlib constants instead of magic strings
-    - intrange         # range-over-int instead of C-style loops (Go 1.22+)
+    - modernize # patterns replaceable with newer Go features
+    - usestdlibvars # stdlib constants instead of magic strings
+    - intrange # range-over-int instead of C-style loops (Go 1.22+)
     # testing
-    - thelper          # test helpers missing t.Helper()
-    - usetesting       # t.Setenv/t.TempDir over os equivalents in tests
+    - thelper # test helpers missing t.Helper()
+    - usetesting # t.Setenv/t.TempDir over os equivalents in tests
     # meta
-    - nolintlint       # proper //nolint directive usage
+    - nolintlint # proper //nolint directive usage
 
   # Deliberately NOT enabled. Listed explicitly (even though most are off by
   # default) so a reviewer can see each was evaluated and rejected for a reason
@@ -76,36 +76,36 @@ linters:
     # inherent-to-a-CLI-wrapper pattern already excluded from gosec (G204).
     # Enabling it would force exec.CommandContext plumbing or an exclusion, so
     # it stays off deliberately.
-    - noctx            # os/exec.Command without context — kref runs git/editor
+    - noctx # os/exec.Command without context — kref runs git/editor
     # dupword removes the second of any repeated word, but every repetition in
     # this tree is intentional: table-test bodies ("auth auth"), format docs
     # ("hex:count hex:count ..."), and the embedded SKILL.md manual ("Driving
     # kref\n\nkref stores ..."). Its autofix corrupted all six; net-negative.
-    - dupword          # duplicate-word detector — false positives on test/doc data
+    - dupword # duplicate-word detector — false positives on test/doc data
     # performance — evaluated against this tree and judged net-negative.
-    - goconst          # 140 hits, almost all flag names / one-word enum values
-                       # ("status", "shared") that read fine inline; extracting
-                       # constants would be churn, not clarity.
-    - prealloc         # slice preallocation — high false-positive rate; only
-                       # worth it behind a profile that shows a real hot path.
+    - goconst # 140 hits, almost all flag names / one-word enum values
+      # ("status", "shared") that read fine inline; extracting
+      # constants would be churn, not clarity.
+    - prealloc # slice preallocation — high false-positive rate; only
+      # worth it behind a profile that shows a real hot path.
     # correctness/modernization — real wins already come from staticcheck,
     # govet, and modernize; these only add noise here.
-    - exhaustive       # enum-switch coverage — kref's switches intentionally
-                       # handle a subset with a default clause, so every hit is
-                       # a false positive.
+    - exhaustive # enum-switch coverage — kref's switches intentionally
+      # handle a subset with a default clause, so every hit is
+      # a false positive.
     # complexity / whitespace — would demand refactoring working, reviewed code.
     # Can be dialled in later against new code via issues.new-from-rev.
-    - gocyclo          # cyclomatic complexity threshold
-    - gocognit         # cognitive complexity (overlaps gocyclo)
-    - cyclop           # cyclomatic complexity (overlaps gocyclo)
-    - nestif           # nested-if depth
-    - funlen           # function length
-    - dupl             # token duplication — noisy across table-driven tests
-    - wsl_v5           # blank-line placement — pure style churn
-    - lll              # line length — gofmt already governs layout
+    - gocyclo # cyclomatic complexity threshold
+    - gocognit # cognitive complexity (overlaps gocyclo)
+    - cyclop # cyclomatic complexity (overlaps gocyclo)
+    - nestif # nested-if depth
+    - funlen # function length
+    - dupl # token duplication — noisy across table-driven tests
+    - wsl_v5 # blank-line placement — pure style churn
+    - lll # line length — gofmt already governs layout
     # testing — kref uses Ginkgo/Gomega, not testify or plain t.Parallel().
-    - testifylint      # testify assertion style — testify is not a dependency
-    - paralleltest     # missing t.Parallel() — Ginkgo owns spec parallelism
+    - testifylint # testify assertion style — testify is not a dependency
+    - paralleltest # missing t.Parallel() — Ginkgo owns spec parallelism
 
   settings:
     errcheck:

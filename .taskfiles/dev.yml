@@ -7,6 +7,7 @@ vars:
   BETTERLEAKS_VERSION: '{{.BETTERLEAKS_VERSION | default "v1.6.1"}}'
   GINKGOLEAF_VERSION: '{{.GINKGOLEAF_VERSION | default "v0.1.1"}}'
   GOLANGCI_LINT_VERSION: '{{.GOLANGCI_LINT_VERSION | default "v2.12.2"}}'
+  GOVULNCHECK_VERSION: '{{.GOVULNCHECK_VERSION | default "v1.5.0"}}'
 
 # Every `go` invocation checks the go.mod toolchain directive; provision it.
 env:
@@ -18,9 +19,16 @@ tasks:
     cmd: task dev --list
 
   tools:
-    desc: Install pinned project tools (betterleaks, ginkgoleaf, golangci-lint) into ./bin
+    desc: Install pinned project tools (betterleaks, ginkgoleaf, golangci-lint, govulncheck) into ./bin
+    env:
+      # Link the installed binaries through a repo-local temp dir so they inherit
+      # the repo's SELinux label (container_file_t). Go's default temp is /tmp,
+      # which on the dev container is fusefs and yields user_tmp_t binaries the
+      # container's policy can't exec or stat. Mirrors dev:build; lives under the
+      # git-ignored ./bin so it needs no .gitignore entry.
+      GOTMPDIR: "{{.BIN_DIR}}/.gotmp"
     cmds:
-      - mkdir -p {{.BIN_DIR}}
+      - mkdir -p '{{.BIN_DIR}}/.gotmp'
       # betterleaks is the secret scanner (a drop-in successor to gitleaks by the
       # same author): it reuses the gitleaks v8 report schema and CLI flags. The
       # release pages do not advertise `go install`, but the module's main is at
@@ -34,10 +42,16 @@ tasks:
       # `go install` builds); the install script is fetched at the same pinned
       # tag it installs. CI runs the same version via golangci-lint-action.
       - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/{{.GOLANGCI_LINT_VERSION}}/install.sh | sh -s -- -b {{.BIN_DIR}} {{.GOLANGCI_LINT_VERSION}}
+      # govulncheck reports known vulnerabilities in the module graph and, via
+      # call-graph analysis, whether the affected symbols are actually reachable.
+      # Pinned to the same tag security.yml installs so local `task check` scans
+      # match CI byte-for-byte.
+      - GOBIN={{.BIN_DIR}} go install golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}}
     status:
       - test -x {{.BIN_DIR}}/betterleaks
       - test -x {{.BIN_DIR}}/ginkgoleaf
       - test -x {{.BIN_DIR}}/golangci-lint
+      - test -x {{.BIN_DIR}}/govulncheck
 
   build:
     desc: Build the kref binary into ./bin
@@ -50,7 +64,7 @@ tasks:
       # on the dev container is fusefs and yields a user_tmp_t binary that the
       # container's policy blocks from executing. Lives under the git-ignored
       # ./bin so it needs no .gitignore entry.
-      GOTMPDIR: '{{.BIN_DIR}}/.gotmp'
+      GOTMPDIR: "{{.BIN_DIR}}/.gotmp"
     cmds:
       - mkdir -p '{{.BIN_DIR}}/.gotmp'
       - go build -ldflags "-X main.Version={{.VERSION}}" -o {{.BIN_DIR}}/{{.BIN}} ./cmd/kref
@@ -109,6 +123,12 @@ tasks:
       - go vet ./...
       - test -z "$(gofmt -l .)"
       - "{{.BIN_DIR}}/golangci-lint run"
+
+  vuln:
+    desc: Scan the module graph for known vulnerabilities (govulncheck)
+    deps: [tools]
+    cmds:
+      - "{{.BIN_DIR}}/govulncheck ./..."
 
   fmt:
     desc: Format

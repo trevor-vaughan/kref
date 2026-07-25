@@ -31,7 +31,7 @@ var _ = Describe("store.locate", func() {
 		s, err := Init(gitRepo(), "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		t, e, err := s.locate(parked.ItemID)
@@ -53,7 +53,7 @@ var _ = Describe("store.locate", func() {
 		s, err := Init(gitRepo(), "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		err = s.mutate(parked.ItemID, func(e *entry.Entry) error {
@@ -71,7 +71,7 @@ var _ = Describe("store.locate", func() {
 		s, err := Init(gitRepo(), "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(s.SetStatus(parked.ItemID, "active")).To(Succeed())
@@ -84,7 +84,7 @@ var _ = Describe("store.locate", func() {
 		s, err := Init(gitRepo(), "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		log, err := s.Log(parked.ItemID)
@@ -98,7 +98,7 @@ var _ = Describe("store.locate", func() {
 		DeferCleanup(func() { _ = s.Close() })
 		other, err := s.Add(entry.TierShared, "doc", "Other", "x")
 		Expect(err).NotTo(HaveOccurred())
-		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "agent")
+		parked, err := s.QuarantineNewEntry(entry.TierShared, "spec", "Draft", "body", "", find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(s.AddLink(parked.ItemID, other.String(), "relates")).To(Succeed())

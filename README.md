@@ -55,7 +55,7 @@ This is very much a work in progress and targeted towards my personal workflow. 
   - `spec`, `adr`, `plan`, `memory`, `reference`, `document` (free-form `kind`), each with status, links, and author attribution.
 - **Three visibility tiers, plus your own**:
   - `private` (never leaves your machine)
-     - The private tier is structurally unpushable.
+    - The private tier is structurally unpushable.
   - `personal` (your devices)
   - `shared` (your team)
   - Any number of custom tiers you declare with `kref tier add`, each with its own remote.
@@ -132,7 +132,7 @@ kref search auth            # recall by a title/body substring, with match count
 kref show <id>              # view one — rendered and paged; --plain for the raw body
 kref show                   # ...or omit the id to see the most-recently-touched entry
 kref edit <id>              # revise the body in your editor
-kref comment <id> -q -m "…" # thread a comment; -q marks a question, --resolve closes it
+kref comment <id> -q -m "…" # thread a comment; -q marks a question, --resolve closes it, --unresolve reopens it
 kref status <id> accepted   # move it through open|active|accepted|superseded|obsolete
 kref rm <id>                # soft-delete (tombstone; undo with kref restore)
 ```
