@@ -35,7 +35,7 @@ var _ = Describe("scan-on-push", func() {
 		DeferCleanup(func() { _ = s.Close() })
 		id, err := s.Add(entry.TierShared, "spec", "Clean body", "no secrets in the body itself")
 		Expect(err).NotTo(HaveOccurred())
-		cid, err := s.AddComment(id, "human", "psst: ghp_012345678901234567890123456789abcdef", false, "")
+		cid, err := s.AddComment(id, "", "human", "psst: ghp_012345678901234567890123456789abcdef", false, "")
 		Expect(err).NotTo(HaveOccurred())
 		// Delete it — the AddComment op still ships in the pushed DAG, so the
 		// secret must still be caught.

@@ -1,0 +1,26 @@
+# Checkov configuration for kref, passed to checkov via --config-file by
+# MegaLinter (REPOSITORY_CHECKOV_CONFIG_FILE in the shared profile).
+#
+# This file OVERRIDES the shared template that trevor-vaughan/megalint-config
+# stages from .mega-linter.d/.checkov.yml: the runner leaves a repo-root file of
+# the same name untouched rather than merging, so every setting we want has to
+# be spelled out here, not just the delta.
+#
+# Docs: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
+
+# github_configuration inspects branch-protection and org settings over the
+# GitHub API instead of local files, and persists the API responses to a conf
+# dir resolved against the working directory. MegaLinter mounts the workspace
+# read-only, so that write aborts the whole checkov run with
+# "OSError: [Errno 30] Read-only file system: '.megalinter_github_conf'" and
+# fails the megalint job. The framework lints no source in this repository, so
+# skipping it costs no coverage. megalint-config ships the same skip from v0.3.0
+# on; delete this file once .github/workflows/megalint.yml moves off v0.2.0.
+skip-framework:
+  - github_configuration
+
+# Paths to skip (regex, relative to working directory) — mirrors the shared
+# template, which excludes cloned upstream sources that REPOSITORY linters would
+# otherwise walk.
+skip-path:
+  - .cache

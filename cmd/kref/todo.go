@@ -11,11 +11,39 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/trevor-vaughan/kref/internal/entry"
+	"github.com/trevor-vaughan/kref/internal/outline"
 	"github.com/trevor-vaughan/kref/internal/render"
 	"github.com/trevor-vaughan/kref/internal/store"
 	"github.com/trevor-vaughan/kref/internal/todo"
 	"github.com/trevor-vaughan/kref/internal/watermark"
 )
+
+// todoInitialFold returns the sections collapsed on a todo's first interactive
+// render: the "Done (compact)" section unless full is set.
+func todoInitialFold(body string, full bool) map[string]bool {
+	collapsed := map[string]bool{}
+	if !full {
+		for _, h := range outline.Parse(body).Headings() {
+			if h.Text == "Done (compact)" {
+				collapsed[h.Path] = true
+			}
+		}
+	}
+	return collapsed
+}
+
+// todoHeaderProvider is the todo command's HeaderProvider: the pre-rendered
+// awaiting/delta/version header, the Done-collapse fold, and the
+// summarize+watermark reload closure.
+type todoHeaderProvider struct {
+	header []string
+	fold   map[string]bool
+	reload func() ([]string, []entry.Comment, error)
+}
+
+func (p todoHeaderProvider) HeaderLines() []string                      { return p.header }
+func (p todoHeaderProvider) InitialFold() map[string]bool               { return p.fold }
+func (p todoHeaderProvider) Reload() ([]string, []entry.Comment, error) { return p.reload() }
 
 func newTodoCmd(dir *string) *cobra.Command {
 	var full, noPager bool
@@ -137,13 +165,25 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 			render.TodoCockpit(&hb2, cc, theme, color)
 			return strings.Split(strings.TrimRight(hb2.String(), "\n"), "\n"), fresh.Comments, nil
 		}
-		_, actorKind := resolveActor(cmd, s)
-		in := cockpitInputFor(title, header, snap.Body, color, ttyWidth(), full, snap.Comments)
-		in.writer = s
-		in.entryID = snap.ID
-		in.actorKind = actorKind
-		in.reload = reload
-		return RunCockpit(in)
+		actor, actorKind := resolveActor(cmd, s)
+		in := viewerInput{
+			title:       title,
+			body:        snap.Body,
+			contentType: snap.ContentType,
+			color:       color,
+			width:       ttyWidth(),
+			comments:    snap.Comments,
+			writer:      s,
+			entryID:     snap.ID,
+			actor:       actor,
+			actorKind:   actorKind,
+			provider: todoHeaderProvider{
+				header: header,
+				fold:   todoInitialFold(snap.Body, full),
+				reload: reload,
+			},
+		}
+		return RunViewer(in)
 	}
 
 	w := cmd.OutOrStdout()

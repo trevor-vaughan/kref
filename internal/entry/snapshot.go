@@ -18,7 +18,8 @@ type Comment struct {
 	ID          string    `json:"id"`
 	Author      string    `json:"author"`
 	AuthorEmail string    `json:"author_email"`
-	AuthorKind  string    `json:"author_kind"` // human | agent
+	AuthorKind  string    `json:"author_kind"`     // human | agent
+	Actor       string    `json:"actor,omitempty"` // agent name when AuthorKind==agent; the git identity still authors the op
 	Body        string    `json:"body"`
 	Time        time.Time `json:"time"`
 	Question    bool      `json:"question"`
@@ -61,7 +62,7 @@ type Snapshot struct {
 	Links          []Link        `json:"links"`
 	Labels         []string      `json:"labels"`
 	Provenance     []OriginEvent `json:"provenance"`
-	Comments       []Comment     `json:"comments,omitempty"`
+	Comments       []Comment     `json:"comments"`
 	Merged         bool          `json:"merged"` // set by the store from the commit graph; not from Compile
 	AckedMerges    []string      `json:"-"`      // merge-commit hashes acknowledged via kref resolve; drives merge detection
 	Deleted        bool          `json:"deleted"`

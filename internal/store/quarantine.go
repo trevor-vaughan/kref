@@ -30,6 +30,7 @@ type intent struct {
 	BaseVersion   int            `json:"base_version,omitempty"`   // set-body CAS base captured at park time
 	Findings      []scan.Finding `json:"findings"`
 	ActorKind     string         `json:"actor_kind"`
+	Actor         string         `json:"actor,omitempty"` // agent name, when known
 }
 
 // Parked is the result of parking a flagged write: the quarantine item's id and
@@ -43,15 +44,23 @@ type Parked struct {
 // labelled with its intended destination and carrying its review thread.
 // Approval (sub-project B) retiers the draft to destTier — the id and thread
 // travel with it.
-func (s *Store) QuarantineNewEntry(destTier entry.Tier, kind, title, body, contentType string, findings []scan.Finding, actorKind string) (Parked, error) {
+func (s *Store) QuarantineNewEntry(destTier entry.Tier, kind, title, body, contentType string, findings []scan.Finding, actor, actorKind string) (Parked, error) {
 	id, err := s.AddWithContentType(entry.TierQuarantine, kind, title, body, contentType)
 	if err != nil {
 		return Parked{}, err
 	}
-	if err := s.AddLabel(id, "q-dest:"+string(destTier)); err != nil {
+	if err := s.AddLabel(id, qDestPrefix+string(destTier)); err != nil {
 		return Parked{}, err
 	}
-	cid, err := s.openReview(id, id, findings, actorKind)
+	// A held op keeps its findings in its intent JSON; a draft's body is the
+	// proposed entry, so its findings ride along as labels or the review surfaces
+	// cannot say which rule held the write.
+	for _, f := range findings {
+		if err := s.AddLabel(id, findingLabel(f)); err != nil {
+			return Parked{}, err
+		}
+	}
+	cid, err := s.openReview(id, id, findings, actor, actorKind)
 	if err != nil {
 		return Parked{}, err
 	}
@@ -65,36 +74,36 @@ func (s *Store) QuarantineNewEntry(destTier entry.Tier, kind, title, body, conte
 // intent-item. The live target is untouched; its review thread is opened.
 // baseVersion is the target's head version the writer based the change on; it is
 // captured now so approval can reject a stale replay (compare-and-swap).
-func (s *Store) QuarantineUpdate(target entity.Id, newBody string, baseVersion int, findings []scan.Finding, actorKind string) (Parked, error) {
+func (s *Store) QuarantineUpdate(target entity.Id, newBody string, baseVersion int, findings []scan.Finding, actor, actorKind string) (Parked, error) {
 	return s.parkOp(target, intent{
 		Schema: intentSchema, OpKind: "set-body", TargetID: target.String(),
-		Content: newBody, BaseVersion: baseVersion, Findings: findings, ActorKind: actorKind,
+		Content: newBody, BaseVersion: baseVersion, Findings: findings, ActorKind: actorKind, Actor: actor,
 	})
 }
 
 // QuarantineComment parks a held comment on an existing entry as an intent-item.
-func (s *Store) QuarantineComment(target entity.Id, body string, question bool, replyTo string, findings []scan.Finding, actorKind string) (Parked, error) {
+func (s *Store) QuarantineComment(target entity.Id, body string, question bool, replyTo string, findings []scan.Finding, actor, actorKind string) (Parked, error) {
 	return s.parkOp(target, intent{
 		Schema: intentSchema, OpKind: "add-comment", TargetID: target.String(),
-		Content: body, Question: question, ReplyTo: replyTo, Findings: findings, ActorKind: actorKind,
+		Content: body, Question: question, ReplyTo: replyTo, Findings: findings, ActorKind: actorKind, Actor: actor,
 	})
 }
 
 // QuarantineEditComment parks a held edit of an existing comment as an
 // intent-item; approval replays the edit onto commentTarget.
-func (s *Store) QuarantineEditComment(target entity.Id, commentTarget, newBody string, findings []scan.Finding, actorKind string) (Parked, error) {
+func (s *Store) QuarantineEditComment(target entity.Id, commentTarget, newBody string, findings []scan.Finding, actor, actorKind string) (Parked, error) {
 	return s.parkOp(target, intent{
 		Schema: intentSchema, OpKind: "edit-comment", TargetID: target.String(),
-		Content: newBody, CommentTarget: commentTarget, Findings: findings, ActorKind: actorKind,
+		Content: newBody, CommentTarget: commentTarget, Findings: findings, ActorKind: actorKind, Actor: actor,
 	})
 }
 
 // QuarantineResolveNote parks a held resolve-with-note as an intent-item;
 // approval posts the note and resolves commentTarget.
-func (s *Store) QuarantineResolveNote(target entity.Id, commentTarget, note string, findings []scan.Finding, actorKind string) (Parked, error) {
+func (s *Store) QuarantineResolveNote(target entity.Id, commentTarget, note string, findings []scan.Finding, actor, actorKind string) (Parked, error) {
 	return s.parkOp(target, intent{
 		Schema: intentSchema, OpKind: "resolve", TargetID: target.String(),
-		Content: note, CommentTarget: commentTarget, Findings: findings, ActorKind: actorKind,
+		Content: note, CommentTarget: commentTarget, Findings: findings, ActorKind: actorKind, Actor: actor,
 	})
 }
 
@@ -108,7 +117,7 @@ func (s *Store) parkOp(target entity.Id, in intent) (Parked, error) {
 	if err != nil {
 		return Parked{}, err
 	}
-	cid, err := s.openReview(target, id, in.Findings, in.ActorKind)
+	cid, err := s.openReview(target, id, in.Findings, in.Actor, in.ActorKind)
 	if err != nil {
 		return Parked{}, err
 	}
@@ -133,7 +142,15 @@ func findingsText(findings []scan.Finding) string {
 // live entry for a held op, or the draft itself for a new entry), naming the
 // findings and the quarantine item id. It returns the new comment's id so the
 // caller can record it as a q-review label for approval/rejection to resolve.
-func (s *Store) openReview(reviewTarget, itemID entity.Id, findings []scan.Finding, actorKind string) (string, error) {
-	body := findingsText(findings) + fmt.Sprintf("\nreview: kref quarantine show %s", itemID)
-	return s.AddComment(reviewTarget, actorKind, body, true, "")
+func (s *Store) openReview(reviewTarget, itemID entity.Id, findings []scan.Finding, actor, actorKind string) (string, error) {
+	// A 12-character prefix, matching every listing: subcommands resolve
+	// prefixes, and the full 64 wraps across two lines when the viewer renders
+	// this comment. Truncated here rather than via render.ShortID because the
+	// store does not depend on the render layer.
+	short := itemID.String()
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	body := findingsText(findings) + "\nreview: kref quarantine show " + short
+	return s.AddComment(reviewTarget, actor, actorKind, body, true, "")
 }

@@ -40,7 +40,7 @@ var _ = Describe("Format", func() {
 })
 
 var _ = Describe("Format golden (realistic messy body)", func() {
-	const messy = "# TODO List\n\n" +
+	const messy = "# TODO List\n\n" + // DevSkim: ignore DS176209
 		"> a preamble note\n\n" +
 		"## Open\n\n" +
 		"### Priority\n" +

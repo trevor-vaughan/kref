@@ -44,12 +44,12 @@ ______________________________________________________________________
 
 Four flags are global — accepted by every command:
 
-| Flag             | Meaning                                                                                     |
-|------------------|---------------------------------------------------------------------------------------------|
-| `--json`         | Machine-readable JSON output (stable, script-friendly shapes)                                |
+| Flag             | Meaning                                                                                       |
+|------------------|-----------------------------------------------------------------------------------------------|
+| `--json`         | Machine-readable JSON output (stable, script-friendly shapes)                                 |
 | `--plain`        | Chrome-free, line-oriented text: TSV for `list`/`search`, the verbatim stored body for `show` |
-| `--dir <path>`   | Which repository's ref store to use (see note below)                                        |
-| `--actor <name>` | Attribute actions to an agent in the provenance log; absent, the git identity is a human     |
+| `--dir <path>`   | Which repository's ref store to use (see note below)                                          |
+| `--actor <name>` | Attribute actions to an agent in the provenance log; absent, the git identity is a human      |
 
 Commands are human-readable by default and switch to JSON under `--json`.
 `kref version` follows the same rule: a plain `kref <version>` line by default
@@ -188,7 +188,7 @@ depends on color alone. Filter with `--tier`, `--kind`, `--status`, and
 
 ### Three output modes
 
-| Mode          | What it is                                                             |
+| Mode          | What it is                                                            |
 |---------------|-----------------------------------------------------------------------|
 | default table | Human-readable, colored, collapsed clean view                         |
 | `--json`      | Full objects, uncollapsed, the precise-timestamp path                 |
@@ -301,28 +301,28 @@ file it came from: `kref show ./docs/note.md`.
 On an interactive terminal a full-screen pager opens automatically with a
 line-number gutter:
 
-| Key                | Action                                                            |
-|--------------------|-------------------------------------------------------------------|
-| `j`/`k`, arrows    | scroll                                                            |
-| `ctrl+d`/`ctrl+u`  | page                                                             |
-| `gg`/`G`           | jump to top / bottom                                              |
-| `<n>g`             | jump to line *n*                                                  |
-| `/`                | search (`n`/`N` for next / previous match)                       |
-| `r`                | re-read the entry from the store and re-render in place           |
-| `?`                | toggle the key-binding help                                       |
-| `q`                | quit                                                              |
+| Key               | Action                                                  |
+|-------------------|---------------------------------------------------------|
+| `j`/`k`, arrows   | scroll                                                  |
+| `ctrl+d`/`ctrl+u` | page                                                    |
+| `g`/`G`           | jump to top / bottom                                    |
+| `<n>g`            | jump to line *n*                                        |
+| `/`               | search (`n`/`N` for next / previous match)              |
+| `r`               | re-read the entry from the store and re-render in place |
+| `?`               | toggle the key-binding help                             |
+| `q`               | quit                                                    |
 
 `r` is handy when an agent or a sync is updating the entry you are reading. When
 output is piped or redirected, paging is skipped.
 
 Four flags control the output:
 
-| Flag               | Effect                                                                                                         |
-|--------------------|----------------------------------------------------------------------------------------------------------------|
-| `--plain` (global) | emit the stored body verbatim, no header (the redirect/byte-fidelity form): `kref show --plain <id> > note.md` |
-| `--no-header`      | omit the metadata block                                                                                        |
+| Flag               | Effect                                                                                                             |
+|--------------------|--------------------------------------------------------------------------------------------------------------------|
+| `--plain` (global) | emit the stored body verbatim, no header (the redirect/byte-fidelity form): `kref show --plain <id> > note.md`     |
+| `--no-header`      | omit the metadata block                                                                                            |
 | `--header`         | print *only* the metadata block — no body, no pager (a cheap metadata peek); mutually exclusive with `--no-header` |
-| `--no-pager`       | never page, even on an interactive terminal                                                                    |
+| `--no-pager`       | never page, even on an interactive terminal                                                                        |
 
 ______________________________________________________________________
 

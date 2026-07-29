@@ -36,6 +36,12 @@ type reviewModel struct {
 	color bool
 	width int
 
+	// the resolved reviewer recorded on an approve/reject
+	actor     string
+	actorKind string
+
+	search pagerSearch // shared incremental search (/, n/N)
+
 	mode        listInputMode
 	input       textinput.Model
 	noteApprove bool
@@ -44,16 +50,22 @@ type reviewModel struct {
 	result reviewResult
 }
 
-func newReviewModel(acts listActions, queue []store.QuarantineItem, startIndex int, color bool, width int) *reviewModel {
+func newReviewModel(acts listActions, queue []store.QuarantineItem, startIndex int, color bool, width int, actor, actorKind string) *reviewModel {
 	sv := tui.NewScrollView("quarantine review")
 	sv.SetPlain(!color)
 	sv.SetHelpRows([]string{
 		"a / r   approve / reject",
-		"n / p   next / prev held write",
+		"] / [   next / prev held write",
 		"o       open the target entry",
-		"j/k     scroll        q  back",
+		"j/k     scroll          g/G  top / bottom",
+		"/ n/N   search / next / prev",
+		"t       toggle colour",
+		"? q esc keys / back",
 	})
-	m := &reviewModel{sv: sv, acts: acts, queue: queue, idx: startIndex, color: color, width: width, input: textinput.New()}
+	m := &reviewModel{
+		sv: sv, acts: acts, queue: queue, idx: startIndex, color: color, width: width,
+		actor: actor, actorKind: actorKind, input: textinput.New(),
+	}
 	m.loadDetail()
 	return m
 }
@@ -74,11 +86,22 @@ func (m *reviewModel) loadDetail() {
 	}
 	d, err := m.acts.QuarantineDetail(m.queue[m.idx].ID)
 	if err != nil {
+		// Never leave the previous item's body on screen under the new item's
+		// index — that shows one held write while claiming to be another, on the
+		// screen where the reader is about to approve or reject it.
 		m.err = err.Error()
+		m.detail = store.QuarantineDetail{}
+		m.sv.SetContent("could not load this held write: " + err.Error())
 		return
 	}
 	m.detail = d
 	m.sv.SetContent(m.content())
+	m.search.refresh(m.searchMatcher) // the content changed under the query
+}
+
+// searchMatcher returns the offsets of rendered content lines containing q.
+func (m *reviewModel) searchMatcher(q string) []int {
+	return searchMatches(strings.Split(m.content(), "\n"), q)
 }
 
 func (m *reviewModel) content() string {
@@ -113,8 +136,15 @@ func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.sv.SetContent(m.content())
 		return m, nil
+	case tea.MouseMsg:
+		// Mouse capture is enabled; forwarding the wheel is what pays for it.
+		return m, m.sv.PassKey(msg)
 	case tea.KeyMsg:
 		m.err = ""
+		if m.search.searching() {
+			m.search.input(msg, m.searchMatcher, &m.sv)
+			return m, nil
+		}
 		if m.sv.HelpOpen() {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -132,17 +162,26 @@ func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.input.Focus()
 			return m, textinput.Blink
-		case "n":
+		case "]":
 			if m.idx < len(m.queue)-1 {
 				m.idx++
 				m.loadDetail()
 			}
 			return m, nil
-		case "p":
+		case "[":
 			if m.idx > 0 {
 				m.idx--
 				m.loadDetail()
 			}
+			return m, nil
+		case "/":
+			m.search.start()
+			return m, nil
+		case "n":
+			m.search.cycle(1, &m.sv)
+			return m, nil
+		case "N":
+			m.search.cycle(-1, &m.sv)
 			return m, nil
 		case "o":
 			if len(m.queue) == 0 {
@@ -150,6 +189,17 @@ func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.result = reviewResult{action: "open", target: m.target()}
 			return m, tea.Quit
+		case "t":
+			m.color = !m.color
+			m.sv.SetPlain(!m.color)
+			m.sv.SetContent(m.content()) // the held payload is colour-rendered
+			return m, nil
+		case "g", "home":
+			m.sv.GotoTop()
+			return m, nil
+		case "G", "end":
+			m.sv.GotoBottom()
+			return m, nil
 		case "?":
 			m.sv.ToggleHelp()
 			return m, nil
@@ -174,9 +224,9 @@ func (m *reviewModel) updateNote(msg tea.Msg) (tea.Model, tea.Cmd) {
 			id := m.detail.Item.ID
 			var err error
 			if m.noteApprove {
-				err = m.acts.ApproveQuarantine(id, note, "me", "human")
+				err = m.acts.ApproveQuarantine(id, note, m.actor, m.actorKind)
 			} else {
-				_, err = m.acts.RejectQuarantine(id, note, "human")
+				_, err = m.acts.RejectQuarantine(id, note, m.actor, m.actorKind)
 			}
 			m.mode = listModeNone
 			if err != nil {
@@ -209,20 +259,32 @@ func (m *reviewModel) View() string {
 }
 
 func (m *reviewModel) footer() string {
-	pos := ""
-	if len(m.queue) > 0 {
-		pos = fmt.Sprintf("item %d/%d · ", m.idx+1, len(m.queue))
-	}
 	if m.err != "" {
 		return m.err + " · " + m.sv.ScrollLabel()
 	}
-	return pos + "a approve · r reject · n/p next/prev · o open · ? keys · q back · " + m.sv.ScrollLabel()
+	head := ""
+	if len(m.queue) > 0 {
+		head = fmt.Sprintf("item %d/%d  ·  ", m.idx+1, len(m.queue))
+	}
+	if f := m.search.footer(); f != "" {
+		head += f + "  ·  "
+	}
+	head += m.sv.ScrollLabel() + "  ·  "
+	// Spend the available width: the full hint line needed 82 columns (94 with a
+	// search indicator), so "q back" fell off an 80-column terminal — but a wide
+	// terminal has room for all of it.
+	return m.sv.Fit(withHead(head,
+		"a approve · r reject · ]/[ next/prev · o open · ? keys · q back",
+		"a/r decide · ]/[ next/prev · ? keys · q back",
+		"a/r decide · ? keys · q back",
+		"? keys · q back",
+	)...)
 }
 
 // runReviewModel runs the review viewer for one quarantine item and returns its
 // result (open the target, or back).
-func runReviewModel(acts listActions, queue []store.QuarantineItem, startIndex int, color bool, width int) (reviewResult, error) {
-	m := newReviewModel(acts, queue, startIndex, color, width)
+func runReviewModel(acts listActions, queue []store.QuarantineItem, startIndex int, color bool, width int, actor, actorKind string) (reviewResult, error) {
+	m := newReviewModel(acts, queue, startIndex, color, width, actor, actorKind)
 	out, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stdout)).Run()
 	if err != nil {
 		return reviewResult{}, err

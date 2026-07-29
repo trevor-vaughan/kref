@@ -14,7 +14,7 @@ import (
 
 // secretBody carries a ghp_ GitHub-PAT-shaped fixture; betterleaks' filter drops
 // fabricated AWS keys, so this is the reliable trip-wire the suite uses.
-const secretBody = "note: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+const secretBody = "note: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 func syncable() *entry.Snapshot {
 	return &entry.Snapshot{ID: "deadbeef", Tier: "personal", TierType: string(entry.TierPersonal)}

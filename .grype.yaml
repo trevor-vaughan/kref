@@ -25,3 +25,12 @@ ignore:
   # it independently. Revisit when git-bug upgrades bleve. Mirror in .trivyignore.
   - vulnerability: GHSA-9w9f-6mg8-jp7w
   - vulnerability: CVE-2022-31022
+
+  # golang.org/x/crypto/openpgp unmaintained (GO-2026-5932). The advisory covers
+  # that one package, but grype and trivy match per module, so they flag all of
+  # golang.org/x/crypto. kref never reaches it: `go mod why` says the main module
+  # does not need the package, the build graph uses the recommended
+  # ProtonMail/go-crypto/openpgp fork instead, and govulncheck reports nothing.
+  # No fixed version will ship — the package is being removed, not patched.
+  # Mirror in .trivyignore.
+  - vulnerability: GO-2026-5932

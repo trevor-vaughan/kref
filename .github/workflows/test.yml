@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26.4", "stable"]
+        go: ["1.26.5", "stable"]
     steps:
       # Floating tags kept intentionally so this internal CI tracks the latest
       # toolchain/test images; unpinned-uses suppressed per that decision.
@@ -42,7 +42,7 @@ jobs:
       # Tidiness is Go-version-sensitive; run it only in the go.mod-pinned leg so
       # the floating `stable` toolchain can't turn PRs red on tidy-output drift.
       - name: Verify go.mod is tidy
-        if: matrix.go == '1.26.4'
+        if: matrix.go == '1.26.5'
         run: |
           go mod tidy
           git diff --exit-code

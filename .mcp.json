@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "kref": {
+      "command": "scripts/mcp-server.sh"
+    }
+  }
+}

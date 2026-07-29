@@ -73,7 +73,9 @@ rules OVERRIDE other skills' file-writing defaults:
   treat that as a backstop — secrets go to the private tier or nowhere.
   Never use ` + "`sync push --force`" + `.
 - Attribution: pass ` + "`--actor <agent-name>`" + ` (or set KREF_ACTOR) on writes so
-  provenance records an agent, not the human.
+  provenance records an agent, not the human. Over MCP the equivalent is the
+  required ` + "`model`" + ` field on every write tool: name your own model there, or
+  pass ` + "`unknown`" + ` — never guess one.
 - Questions for the human go in a "## Questions" section inside the relevant
   entry; answers come back inline — re-read before every update.
 - Link related entries as work connects them (` + "`kref link add <id> <target>`" + `)

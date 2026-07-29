@@ -17,7 +17,7 @@ import (
 )
 
 var _ = Describe("kref_quarantine (read-only)", func() {
-	const secret = "ghp_012345678901234567890123456789abcdef"
+	const secret = "ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 
 	seed := func() (dir, qid string) {
 		dir = gitRepo()
@@ -28,7 +28,7 @@ var _ = Describe("kref_quarantine (read-only)", func() {
 		snap, err := s.Get(id)
 		Expect(err).NotTo(HaveOccurred())
 		find := []scan.Finding{{RuleID: "github-pat", Description: "GitHub PAT", Secret: secret, StartLine: 1}}
-		parked, err := s.QuarantineUpdate(id, "new body with "+secret, snap.Version, find, "agent")
+		parked, err := s.QuarantineUpdate(id, "new body with "+secret, snap.Version, find, "", "agent")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(s.Close()).To(Succeed())
 		return dir, parked.ItemID.String()
@@ -262,7 +262,7 @@ var _ = Describe("MCP tier scoping (global/client-roots mode)", func() {
 	It("remember to a private tier is refused in --allow mode", func() {
 		dir, _, _ := seed()
 		res := callG("", []string{dir}, "kref_remember",
-			map[string]any{"tier": "private", "title": "x", "body": "y", "dir": dir})
+			map[string]any{"model": "test-model", "tier": "private", "title": "x", "body": "y", "dir": dir})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("private-typed tier"))
 	})
@@ -270,14 +270,14 @@ var _ = Describe("MCP tier scoping (global/client-roots mode)", func() {
 	It("remember to the default (personal) tier still works in --allow mode", func() {
 		dir, _, _ := seed()
 		res := callG("", []string{dir}, "kref_remember",
-			map[string]any{"title": "ok", "body": "z", "dir": dir})
+			map[string]any{"model": "test-model", "title": "ok", "body": "z", "dir": dir})
 		Expect(res.IsError).To(BeFalse())
 	})
 
 	It("lifecycle on a private-typed target is refused in --allow mode", func() {
 		dir, privID, _ := seed()
 		res := callG("", []string{dir}, "kref_lifecycle",
-			map[string]any{"id": privID, "action": "archive", "dir": dir})
+			map[string]any{"model": "test-model", "id": privID, "action": "archive", "dir": dir})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("private-typed tier"))
 	})
@@ -285,7 +285,7 @@ var _ = Describe("MCP tier scoping (global/client-roots mode)", func() {
 	It("supersede refuses when either side is private-typed in --allow mode", func() {
 		dir, privID, sharedID := seed()
 		res := callG("", []string{dir}, "kref_supersede",
-			map[string]any{"old": sharedID, "new": privID, "dir": dir})
+			map[string]any{"model": "test-model", "old": sharedID, "new": privID, "dir": dir})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("private-typed tier"))
 	})
@@ -343,7 +343,7 @@ var _ = Describe("MCP per-call dir (locked mode)", func() {
 	It("refuses a mismatched dir on a write tool and performs no write", func() {
 		dir, id := seed()
 		other := gitRepo()
-		res := call(dir, "kref_update", map[string]any{"id": id, "body": "changed", "dir": other})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id, "body": "changed", "dir": other})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("does not match"))
 
@@ -363,7 +363,7 @@ var _ = Describe("kref_remember", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
 
-		res := call(dir, "kref_remember", map[string]any{
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model",
 			"title": "Auth design", "body": "the body", "tier": "personal", "kind": "spec",
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -386,7 +386,7 @@ var _ = Describe("kref_remember", func() {
 		s, err := store.Init(dir, "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
-		res := call(dir, "kref_remember", map[string]any{"title": "X", "body": "y", "tier": "bogus"})
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model", "title": "X", "body": "y", "tier": "bogus"})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("tier"))
 	})
@@ -500,7 +500,7 @@ var _ = Describe("kref_update and kref_supersede", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
 
-		res := call(dir, "kref_update", map[string]any{"id": id.String(), "body": "v2 body"})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id.String(), "body": "v2 body"})
 		Expect(res.IsError).To(BeFalse())
 
 		s2, err := store.Open(dir)
@@ -521,7 +521,7 @@ var _ = Describe("kref_update and kref_supersede", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
 
-		res := call(dir, "kref_supersede", map[string]any{"old": oldID.String(), "new": newID.String()})
+		res := call(dir, "kref_supersede", map[string]any{"model": "test-model", "old": oldID.String(), "new": newID.String()})
 		Expect(res.IsError).To(BeFalse())
 
 		s2, err := store.Open(dir)
@@ -534,7 +534,7 @@ var _ = Describe("kref_update and kref_supersede", func() {
 })
 
 var _ = Describe("kref_update labels and links", func() {
-	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 	BeforeEach(func() { GinkgoT().Setenv("XDG_STATE_HOME", GinkgoT().TempDir()) })
 
@@ -577,13 +577,13 @@ var _ = Describe("kref_update labels and links", func() {
 	}
 	It("adds and removes labels via a body update", func() {
 		dir, id := seedEntry(entry.TierPersonal, "spec", "body")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": id, "body": "body v2", "add_labels": []any{"area:x", "prio:hi"},
 		})
 		Expect(res.IsError).To(BeFalse())
 		Expect(labelsOf(dir, id)).To(ContainElements("area:x", "prio:hi"))
 
-		res = call(dir, "kref_update", map[string]any{"id": id, "remove_labels": []any{"prio:hi"}})
+		res = call(dir, "kref_update", map[string]any{"model": "test-model", "id": id, "remove_labels": []any{"prio:hi"}})
 		Expect(res.IsError).To(BeFalse())
 		Expect(labelsOf(dir, id)).To(ContainElement("area:x"))
 		Expect(labelsOf(dir, id)).NotTo(ContainElement("prio:hi"))
@@ -597,7 +597,7 @@ var _ = Describe("kref_update labels and links", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
 
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": from, "add_links": []any{map[string]any{"to": to.String(), "type": "blocks"}},
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -609,7 +609,7 @@ var _ = Describe("kref_update labels and links", func() {
 		}
 		Expect(got).To(Equal("blocks"))
 
-		res = call(dir, "kref_update", map[string]any{"id": from, "remove_links": []any{to.String()}})
+		res = call(dir, "kref_update", map[string]any{"model": "test-model", "id": from, "remove_links": []any{to.String()}})
 		Expect(res.IsError).To(BeFalse())
 		Expect(linksOf(dir, from)).To(BeEmpty())
 	})
@@ -621,7 +621,7 @@ var _ = Describe("kref_update labels and links", func() {
 		to, err := s.Add(entry.TierPersonal, "spec", "To", "to")
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": from, "add_links": []any{map[string]any{"to": to.String()}},
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -630,21 +630,21 @@ var _ = Describe("kref_update labels and links", func() {
 
 	It("applies a label-only update (no body) with no if_version on a todo", func() {
 		dir, id := seedEntry(entry.TierPersonal, "todo", "# T\n\n## Open\n- [ ] a\n\n## Done (compact)\n")
-		res := call(dir, "kref_update", map[string]any{"id": id, "add_labels": []any{"triaged"}})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id, "add_labels": []any{"triaged"}})
 		Expect(res.IsError).To(BeFalse())
 		Expect(labelsOf(dir, id)).To(ContainElement("triaged"))
 	})
 
 	It("errors when the call has neither a body nor any label/link array", func() {
 		dir, id := seedEntry(entry.TierPersonal, "spec", "body")
-		res := call(dir, "kref_update", map[string]any{"id": id})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("nothing to update"))
 	})
 
 	It("refuses a secret-bearing add_labels value on a syncable tier, naming the rule not the value", func() {
 		dir, id := seedEntry(entry.TierPersonal, "spec", "body")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": id, "add_labels": []any{"token=" + secretBody},
 		})
 		Expect(res.IsError).To(BeTrue())
@@ -655,7 +655,7 @@ var _ = Describe("kref_update labels and links", func() {
 
 	It("allows a secret-bearing add_labels value on the private tier", func() {
 		dir, id := seedEntry(entry.TierPrivate, "spec", "body")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": id, "add_labels": []any{"token=" + secretBody},
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -664,7 +664,7 @@ var _ = Describe("kref_update labels and links", func() {
 
 	It("parks a secret body but still applies a clean label to the live entry", func() {
 		dir, id := seedEntry(entry.TierPersonal, "spec", "clean body")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": id, "body": secretBody, "add_labels": []any{"reviewed"},
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -688,7 +688,7 @@ var _ = Describe("kref_patch", func() {
 
 	It("applies a unified diff (line numbers as hints) and reports the new version", func() {
 		dir, id := seed()
-		res := call(dir, "kref_patch", map[string]any{
+		res := call(dir, "kref_patch", map[string]any{"model": "test-model",
 			"id":   id,
 			"diff": "@@ -42,3 +42,3 @@\n line one\n-line two\n+line 2\n line three\n",
 		})
@@ -705,7 +705,7 @@ var _ = Describe("kref_patch", func() {
 
 	It("returns a tool error (not partial application) on a stale hunk", func() {
 		dir, id := seed()
-		res := call(dir, "kref_patch", map[string]any{
+		res := call(dir, "kref_patch", map[string]any{"model": "test-model",
 			"id": id,
 			"diff": "@@ -1,1 +1,1 @@\n-line one\n+line ONE\n" +
 				"@@ -9,1 +9,1 @@\n-absent\n+x\n",
@@ -745,44 +745,44 @@ var _ = Describe("kref_lifecycle", func() {
 
 	It("sets a lifecycle status", func() {
 		dir, id := seed()
-		res := call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "set_status", "status": "accepted"})
+		res := call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "set_status", "status": "accepted"})
 		Expect(res.IsError).To(BeFalse())
 		Expect(snap(dir, id).Status).To(Equal("accepted"))
 	})
 
 	It("tombstones with delete and undoes with restore", func() {
 		dir, id := seed()
-		Expect(call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "delete"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "delete"}).IsError).To(BeFalse())
 		Expect(snap(dir, id).Deleted).To(BeTrue())
-		Expect(call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "restore"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "restore"}).IsError).To(BeFalse())
 		Expect(snap(dir, id).Deleted).To(BeFalse())
 	})
 
 	It("archives and unarchives", func() {
 		dir, id := seed()
-		Expect(call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "archive"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "archive"}).IsError).To(BeFalse())
 		Expect(snap(dir, id).Archived).To(BeTrue())
-		Expect(call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "unarchive"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "unarchive"}).IsError).To(BeFalse())
 		Expect(snap(dir, id).Archived).To(BeFalse())
 	})
 
 	It("rejects unknown actions, a missing status, and an invalid status", func() {
 		dir, id := seed()
-		res := call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "purge"})
+		res := call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "purge"})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("action"))
 
-		res = call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "set_status"})
+		res = call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "set_status"})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("status"))
 
-		res = call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "set_status", "status": "bogus"})
+		res = call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "set_status", "status": "bogus"})
 		Expect(res.IsError).To(BeTrue())
 	})
 
 	It("does not expose a retier tool or action", func() {
 		dir, id := seed()
-		res := call(dir, "kref_lifecycle", map[string]any{"id": id, "action": "retier"})
+		res := call(dir, "kref_lifecycle", map[string]any{"model": "test-model", "id": id, "action": "retier"})
 		Expect(res.IsError).To(BeTrue())
 	})
 })
@@ -800,7 +800,7 @@ var _ = Describe("custom tiers", func() {
 
 	It("kref_remember writes to a declared custom tier", func() {
 		dir := seed()
-		res := call(dir, "kref_remember", map[string]any{
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model",
 			"title": "Custom tier note", "body": "b", "tier": "research",
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -818,14 +818,14 @@ var _ = Describe("custom tiers", func() {
 
 	It("kref_remember rejects an undeclared tier as a tool error", func() {
 		dir := seed()
-		res := call(dir, "kref_remember", map[string]any{"title": "X", "body": "y", "tier": "ghost"})
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model", "title": "X", "body": "y", "tier": "ghost"})
 		Expect(res.IsError).To(BeTrue())
 		Expect(text(res)).To(ContainSubstring("unknown tier"))
 	})
 
 	It("kref_recall filters by a custom tier and rejects unknown ones", func() {
 		dir := seed()
-		res := call(dir, "kref_remember", map[string]any{
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model",
 			"title": "Custom tier note", "body": "b", "tier": "research",
 		})
 		Expect(res.IsError).To(BeFalse())
@@ -857,18 +857,18 @@ var _ = Describe("tool error paths", func() {
 	})
 
 	It("kref_update reports an unknown id as a tool error", func() {
-		res := call(freshDir(), "kref_update", map[string]any{"id": "deadbeef", "body": "x"})
+		res := call(freshDir(), "kref_update", map[string]any{"model": "test-model", "id": "deadbeef", "body": "x"})
 		Expect(res.IsError).To(BeTrue())
 	})
 
 	It("kref_supersede reports an unknown id as a tool error", func() {
-		res := call(freshDir(), "kref_supersede", map[string]any{"old": "deadbeef", "new": "cafef00d"})
+		res := call(freshDir(), "kref_supersede", map[string]any{"model": "test-model", "old": "deadbeef", "new": "cafef00d"})
 		Expect(res.IsError).To(BeTrue())
 	})
 })
 
 var _ = Describe("kref_comment", func() {
-	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 	seed := func(tier entry.Tier, body string) (string, string) {
 		GinkgoHelper()
@@ -892,8 +892,8 @@ var _ = Describe("kref_comment", func() {
 
 	It("adds a plain comment, a question, and a threaded reply", func() {
 		dir, id := seed(entry.TierPersonal, "body")
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "a note"}).IsError).To(BeFalse())
-		q := call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "ship it?", "question": true})
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "a note"}).IsError).To(BeFalse())
+		q := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "ship it?", "question": true})
 		Expect(q.IsError).To(BeFalse())
 		cs := comments(dir, id)
 		Expect(cs).To(HaveLen(2))
@@ -905,7 +905,7 @@ var _ = Describe("kref_comment", func() {
 		}
 		Expect(question.Body).To(Equal("ship it?"))
 
-		reply := call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "yes", "reply_to": question.ID})
+		reply := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "yes", "reply_to": question.ID})
 		Expect(reply.IsError).To(BeFalse())
 		cs = comments(dir, id)
 		var replied bool
@@ -920,26 +920,26 @@ var _ = Describe("kref_comment", func() {
 
 	It("edits a comment's body", func() {
 		dir, id := seed(entry.TierPersonal, "body")
-		add := call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "typo"})
+		add := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "typo"})
 		Expect(add.IsError).To(BeFalse())
 		target := comments(dir, id)[0].ID
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "edit", "target": target, "body": "fixed"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "edit", "target": target, "body": "fixed"}).IsError).To(BeFalse())
 		Expect(comments(dir, id)[0].Body).To(Equal("fixed"))
 	})
 
 	It("deletes (tombstones) a comment", func() {
 		dir, id := seed(entry.TierPersonal, "body")
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "oops"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "oops"}).IsError).To(BeFalse())
 		target := comments(dir, id)[0].ID
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "delete", "target": target}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "delete", "target": target}).IsError).To(BeFalse())
 		Expect(comments(dir, id)[0].Deleted).To(BeTrue())
 	})
 
 	It("resolves a question, posting an optional note reply first", func() {
 		dir, id := seed(entry.TierPersonal, "body")
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "which way?", "question": true}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "which way?", "question": true}).IsError).To(BeFalse())
 		target := comments(dir, id)[0].ID
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "resolve", "target": target, "note": "went with A"}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "resolve", "target": target, "note": "went with A"}).IsError).To(BeFalse())
 		cs := comments(dir, id)
 		Expect(cs).To(HaveLen(2)) // the question + the note reply
 		var resolved, hasNote bool
@@ -957,23 +957,41 @@ var _ = Describe("kref_comment", func() {
 
 	It("resolves without a note when none is given", func() {
 		dir, id := seed(entry.TierPersonal, "body")
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "q?", "question": true}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "q?", "question": true}).IsError).To(BeFalse())
 		target := comments(dir, id)[0].ID
-		Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "resolve", "target": target}).IsError).To(BeFalse())
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "resolve", "target": target}).IsError).To(BeFalse())
 		Expect(comments(dir, id)).To(HaveLen(1)) // no extra note comment
+	})
+
+	It("reopens a resolved question via unresolve", func() {
+		dir, id := seed(entry.TierPersonal, "body")
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "q?", "question": true}).IsError).To(BeFalse())
+		target := comments(dir, id)[0].ID
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "resolve", "target": target}).IsError).To(BeFalse())
+		Expect(comments(dir, id)[0].Resolved).To(BeTrue())
+
+		Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "unresolve", "target": target}).IsError).To(BeFalse())
+		Expect(comments(dir, id)[0].Resolved).To(BeFalse())
+	})
+
+	It("rejects unresolve without a target", func() {
+		dir, id := seed(entry.TierPersonal, "body")
+		bad := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "unresolve"})
+		Expect(bad.IsError).To(BeTrue())
+		Expect(text(bad)).To(ContainSubstring("target"))
 	})
 
 	It("rejects an unknown action and a missing target", func() {
 		dir, id := seed(entry.TierPersonal, "body")
-		bad := call(dir, "kref_comment", map[string]any{"id": id, "action": "frobnicate"})
+		bad := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "frobnicate"})
 		Expect(bad.IsError).To(BeTrue())
 		Expect(text(bad)).To(ContainSubstring("action"))
 
-		noTarget := call(dir, "kref_comment", map[string]any{"id": id, "action": "edit", "body": "x"})
+		noTarget := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "edit", "body": "x"})
 		Expect(noTarget.IsError).To(BeTrue())
 		Expect(text(noTarget)).To(ContainSubstring("target"))
 
-		noBody := call(dir, "kref_comment", map[string]any{"id": id, "action": "add"})
+		noBody := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add"})
 		Expect(noBody.IsError).To(BeTrue())
 		Expect(text(noBody)).To(ContainSubstring("body"))
 	})
@@ -983,7 +1001,7 @@ var _ = Describe("kref_comment", func() {
 
 		It("quarantines a secret-bearing added comment; the target keeps only the review thread", func() {
 			dir, id := seed(entry.TierPersonal, "body")
-			res := call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": secretBody})
+			res := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": secretBody})
 			Expect(res.IsError).To(BeFalse()) // held, not an error
 			Expect(text(res)).To(ContainSubstring("quarantined"))
 			cs := comments(dir, id)
@@ -994,9 +1012,9 @@ var _ = Describe("kref_comment", func() {
 
 		It("parks a secret on edit without clobbering the stored comment", func() {
 			dir, id := seed(entry.TierPersonal, "body")
-			Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "clean"}).IsError).To(BeFalse())
+			Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "clean"}).IsError).To(BeFalse())
 			target := comments(dir, id)[0].ID
-			res := call(dir, "kref_comment", map[string]any{"id": id, "action": "edit", "target": target, "body": secretBody})
+			res := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "edit", "target": target, "body": secretBody})
 			Expect(res.IsError).To(BeFalse()) // held, not an error
 			Expect(text(res)).To(ContainSubstring("quarantined"))
 			// The edit is held: the original comment body is unchanged.
@@ -1011,23 +1029,23 @@ var _ = Describe("kref_comment", func() {
 
 		It("allows a secret-bearing comment on a private entry (private cannot push)", func() {
 			dir, id := seed(entry.TierPrivate, "body")
-			res := call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": secretBody})
+			res := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": secretBody})
 			Expect(res.IsError).To(BeFalse())
 			Expect(comments(dir, id)).To(HaveLen(1))
 		})
 
 		It("does not accept a force argument on an agent comment (force is human-only)", func() {
 			dir, id := seed(entry.TierPersonal, "body")
-			res := call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": secretBody, "force": true})
+			res := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": secretBody, "force": true})
 			Expect(res.IsError).To(BeTrue())        // force is not an accepted argument (schema-rejected)
 			Expect(comments(dir, id)).To(BeEmpty()) // nothing written or parked
 		})
 
 		It("parks a secret-bearing resolve note and never suggests force", func() {
 			dir, id := seed(entry.TierPersonal, "body")
-			Expect(call(dir, "kref_comment", map[string]any{"id": id, "action": "add", "body": "ok?", "question": true}).IsError).To(BeFalse())
+			Expect(call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "add", "body": "ok?", "question": true}).IsError).To(BeFalse())
 			target := comments(dir, id)[0].ID
-			res := call(dir, "kref_comment", map[string]any{"id": id, "action": "resolve", "target": target, "note": secretBody})
+			res := call(dir, "kref_comment", map[string]any{"model": "test-model", "id": id, "action": "resolve", "target": target, "note": secretBody})
 			Expect(res.IsError).To(BeFalse()) // held, not an error
 			Expect(text(res)).To(ContainSubstring("quarantined"))
 			Expect(text(res)).NotTo(ContainSubstring("force")) // MCP never forces
@@ -1042,7 +1060,7 @@ var _ = Describe("kref_comment", func() {
 })
 
 var _ = Describe("kref entry-body secret scanning (fail-closed, no work lost)", func() {
-	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 	BeforeEach(func() { GinkgoT().Setenv("XDG_STATE_HOME", GinkgoT().TempDir()) })
 
@@ -1094,7 +1112,7 @@ var _ = Describe("kref entry-body secret scanning (fail-closed, no work lost)", 
 
 	It("kref_remember quarantines a secret instead of writing to the syncable tier", func() {
 		dir := freshStore()
-		res := call(dir, "kref_remember", map[string]any{"title": "Leak", "body": secretBody, "tier": "personal"})
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model", "title": "Leak", "body": secretBody, "tier": "personal"})
 		Expect(res.IsError).To(BeFalse()) // held, not an error
 		Expect(text(res)).To(ContainSubstring("quarantined"))
 		Expect(text(res)).NotTo(ContainSubstring("ghp_012345678901234567890123456789abcdef")) // never echoes the secret
@@ -1104,21 +1122,21 @@ var _ = Describe("kref entry-body secret scanning (fail-closed, no work lost)", 
 
 	It("kref_remember allows a secret into a private tier (private cannot push)", func() {
 		dir := freshStore()
-		res := call(dir, "kref_remember", map[string]any{"title": "Priv", "body": secretBody, "tier": "private"})
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model", "title": "Priv", "body": secretBody, "tier": "private"})
 		Expect(res.IsError).To(BeFalse())
 		Expect(count(dir)).To(Equal(1))
 	})
 
 	It("does not let an agent force a secret into a syncable tier (force is human-only)", func() {
 		dir := freshStore()
-		res := call(dir, "kref_remember", map[string]any{"title": "F", "body": secretBody, "tier": "personal", "force": true})
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model", "title": "F", "body": secretBody, "tier": "personal", "force": true})
 		Expect(res.IsError).To(BeTrue()) // force is not an accepted argument
 		Expect(count(dir)).To(Equal(0))  // nothing created
 	})
 
 	It("kref_update quarantines a secret on a syncable entry, leaving the target intact", func() {
 		dir, id := seed(entry.TierPersonal, "clean body")
-		res := call(dir, "kref_update", map[string]any{"id": id, "body": secretBody})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id, "body": secretBody})
 		Expect(res.IsError).To(BeFalse())
 		Expect(text(res)).To(ContainSubstring("quarantined"))
 		Expect(bodyOf(dir, id)).To(Equal("clean body")) // target untouched
@@ -1127,7 +1145,7 @@ var _ = Describe("kref entry-body secret scanning (fail-closed, no work lost)", 
 
 	It("does not let an agent force a secret onto a syncable entry (force is human-only)", func() {
 		dir, id := seed(entry.TierPersonal, "clean body")
-		res := call(dir, "kref_update", map[string]any{"id": id, "body": secretBody, "force": true})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id, "body": secretBody, "force": true})
 		Expect(res.IsError).To(BeTrue())                // force is not an accepted argument
 		Expect(bodyOf(dir, id)).To(Equal("clean body")) // original intact
 	})
@@ -1135,7 +1153,7 @@ var _ = Describe("kref entry-body secret scanning (fail-closed, no work lost)", 
 	It("kref_patch quarantines a diff that introduces a secret, leaving the body intact", func() {
 		dir, id := seed(entry.TierPersonal, "clean body\n")
 		diff := "@@ -1 +1,2 @@\n clean body\n+" + secretBody
-		res := call(dir, "kref_patch", map[string]any{"id": id, "diff": diff})
+		res := call(dir, "kref_patch", map[string]any{"model": "test-model", "id": id, "diff": diff})
 		Expect(res.IsError).To(BeFalse())
 		Expect(text(res)).To(ContainSubstring("quarantined"))
 		Expect(bodyOf(dir, id)).To(Equal("clean body\n")) // target untouched
@@ -1161,7 +1179,7 @@ var _ = Describe("kref MCP todo guard", func() {
 
 	It("kref_update requires if_version for a todo", func() {
 		dir, id := seedTodo("# T\n\n## Open\n- [ ] a\n\n## Done (compact)\n")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id":   id,
 			"body": "# T\n\n## Open\n- [ ] a\n- [ ] b\n\n## Done (compact)\n",
 		})
@@ -1172,12 +1190,12 @@ var _ = Describe("kref MCP todo guard", func() {
 	It("kref_update refuses a stale if_version and names the recovery file", func() {
 		dir, id := seedTodo("# T\n\n## Open\n- [ ] a\n\n## Done (compact)\n") // version 1
 		// Move it to version 2 with the correct token.
-		Expect(call(dir, "kref_update", map[string]any{
+		Expect(call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": id, "if_version": 1,
 			"body": "# T\n\n## Open\n- [ ] a\n- [ ] b\n\n## Done (compact)\n",
 		}).IsError).To(BeFalse())
 		// A writer still holding version 1 must be refused.
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id": id, "if_version": 1,
 			"body": "# T\n\n## Open\n- [ ] a\n- [ ] c stale\n\n## Done (compact)\n",
 		})
@@ -1193,13 +1211,13 @@ var _ = Describe("kref MCP todo guard", func() {
 		id, err := s.Add(entry.TierPersonal, "document", "D", "# D\n\nprose\n")
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
-		res := call(dir, "kref_update", map[string]any{"id": id.String(), "body": "# D\n\nnew prose\n"})
+		res := call(dir, "kref_update", map[string]any{"model": "test-model", "id": id.String(), "body": "# D\n\nnew prose\n"})
 		Expect(res.IsError).To(BeFalse())
 	})
 
 	It("kref_update auto-formats a todo body", func() {
 		dir, id := seedTodo("# T\n\n## Open\n- [ ] a\n\n## Done (compact)\n")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id":         id,
 			"if_version": 1,
 			"body":       "# T\n\n## Open\n- [x] done it\n- [ ] a\n\n## Done (compact)\n",
@@ -1219,7 +1237,7 @@ var _ = Describe("kref MCP todo guard", func() {
 
 	It("kref_update refuses a malformed todo body and names the recovery file", func() {
 		dir, id := seedTodo("# T\n\n## Open\n\n## Done (compact)\n")
-		res := call(dir, "kref_update", map[string]any{
+		res := call(dir, "kref_update", map[string]any{"model": "test-model",
 			"id":         id,
 			"if_version": 1,
 			"body":       "# T\n\n## Opne\n\n## Open\n\n## Done (compact)\n",
@@ -1234,7 +1252,7 @@ var _ = Describe("kref MCP todo guard", func() {
 		s, err := store.Init(dir, "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		_ = s.Close()
-		res := call(dir, "kref_remember", map[string]any{
+		res := call(dir, "kref_remember", map[string]any{"model": "test-model",
 			"kind":  "todo",
 			"title": "T",
 			"body":  "# T\n\n## Opne\n\n## Open\n\n## Done (compact)\n",

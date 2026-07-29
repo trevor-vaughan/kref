@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -27,7 +26,6 @@ import (
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/hooks"
 	"github.com/trevor-vaughan/kref/internal/mcpserver"
-	"github.com/trevor-vaughan/kref/internal/outline"
 	"github.com/trevor-vaughan/kref/internal/render"
 	"github.com/trevor-vaughan/kref/internal/store"
 	"github.com/trevor-vaughan/kref/internal/todoguard"
@@ -297,7 +295,7 @@ func newAddCmd(dir *string) *cobra.Command {
 				}
 				if held {
 					actor, actorKind := resolveActor(cmd, s)
-					parked, perr := s.QuarantineNewEntry(t, kind, title, body, ct, fs, actorKind)
+					parked, perr := s.QuarantineNewEntry(t, kind, title, body, ct, fs, actor, actorKind)
 					if perr != nil {
 						return perr
 					}
@@ -812,251 +810,69 @@ func numDigits(n int) int {
 	return d
 }
 
-// renderPagerBody renders the entry body for the pager, wrapping markdown to
-// width minus the line-number gutter. The gutter width depends on the rendered
-// line count, which depends on the wrap width, so it runs a bounded fixed-point
-// (converges in ≤2 passes in practice). Returns the body lines and the total
-// gutter width (digits+3 for " │ ").
-func renderPagerBody(snap *entry.Snapshot, color bool, width int) ([]string, int) {
-	if width <= 0 {
-		width = 80
-	}
-	renderAt := func(cw int) []string {
-		if cw < 1 {
-			cw = 1
-		}
-		var b bytes.Buffer
-		render.RenderBody(&b, snap.Body, snap.ContentType, color, cw)
-		return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
-	}
-	d := numDigits(len(renderAt(width)))
-	var lines []string
-	for range 4 {
-		lines = renderAt(width - (d + 3))
-		nd := numDigits(len(lines))
-		if nd == d {
-			break
-		}
-		d = nd
-	}
-	return lines, d + 3
+// showHeaderProvider is the entry viewer's HeaderProvider for kref show: the
+// rendered metadata header + a reload that re-reads the entry. Entries have no
+// Done-collapse, so InitialFold is empty.
+type showHeaderProvider struct {
+	header []string
+	reload func() (header []string, comments []entry.Comment, err error)
 }
 
-// renderFoldedBody renders snap.Body block-by-block with the given fold applied
-// (at wrap width w), then appends the comment block, returning the display lines
-// and each surviving heading's body-relative rendered offset. Block-by-block is
-// what lets the pager know a heading's *rendered* line — glamour reflows, so the
-// offset can't come from the raw source. Mirrors the cockpit's body zone.
-func renderFoldedBody(snap *entry.Snapshot, opts render.ShowOptions, folded map[string]bool, w int) foldedBody {
-	if w < 1 {
-		w = 1
-	}
-	foldedSrc := outline.Parse(snap.Body).Render(folded)
-	foldedLines := strings.Split(foldedSrc, "\n")
-	hs := outline.Parse(foldedSrc).Headings()
-	var out []string
-	var rh []renderedHeading
-	for _, span := range headingBlocks(hs, len(foldedLines)) {
-		blockLines := append([]string(nil), foldedLines[span.start:span.end]...)
-		isSection := span.heading != nil
-		if isSection {
-			blockLines[0] = injectMarker(blockLines[0], span.heading.Level, folded[span.heading.Path])
-		}
-		var b bytes.Buffer
-		render.RenderBody(&b, strings.Join(blockLines, "\n"), snap.ContentType, opts.Color, w)
-		rendered := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
-		if isSection {
-			// Drop RenderBody's markdown top-margin so the heading is the block's
-			// first line and its recorded offset lands on the heading.
-			for len(rendered) > 1 && strings.TrimSpace(rendered[0]) == "" {
-				rendered = rendered[1:]
-			}
-			rh = append(rh, renderedHeading{path: span.heading.Path, line: len(out)})
-		}
-		out = append(out, rendered...)
-	}
-	if len(snap.Comments) > 0 {
-		var cb bytes.Buffer
-		render.RenderComments(&cb, snap.Comments, opts.Color, opts.Width)
-		clines := strings.Split(strings.TrimRight(cb.String(), "\n"), "\n")
-		out = append(out, "")
-		rh = append(rh, renderedHeading{path: commentsFoldPath, line: len(out)})
-		// Keep the "Comments (N)" header (marked ▾/▸) as the fold affordance; fold
-		// the threads beneath it to a hint. Whole-block only — per-thread folding
-		// stays cockpit-only.
-		marker := "▾ "
-		if folded[commentsFoldPath] {
-			marker = "▸ "
-		}
-		out = append(out, marker+clines[0])
-		if folded[commentsFoldPath] {
-			if hidden := len(clines) - 1; hidden > 0 {
-				out = append(out, fmt.Sprintf("▸ %d lines", hidden))
-			}
-		} else {
-			out = append(out, clines[1:]...)
-		}
-	}
-	return foldedBody{lines: out, headings: rh}
-}
+func (p showHeaderProvider) HeaderLines() []string                      { return p.header }
+func (p showHeaderProvider) InitialFold() map[string]bool               { return map[string]bool{} }
+func (p showHeaderProvider) Reload() ([]string, []entry.Comment, error) { return p.reload() }
 
-// foldedPagerBody renders the unfolded fold-aware body and its gutter width via
-// the same bounded fixed-point as renderPagerBody (the wrap width depends on the
-// gutter, which depends on the line count). The returned width becomes the fixed
-// wrap width for all subsequent folds so the layout does not reflow on a fold.
-func foldedPagerBody(snap *entry.Snapshot, opts render.ShowOptions) (foldedBody, int) {
-	width := opts.Width
-	if width <= 0 {
-		width = 80
-	}
-	empty := map[string]bool{}
-	d := numDigits(len(renderFoldedBody(snap, opts, empty, width).lines))
-	var fb foldedBody
-	for range 4 {
-		fb = renderFoldedBody(snap, opts, empty, width-(d+3))
-		nd := numDigits(len(fb.lines))
-		if nd == d {
-			break
-		}
-		d = nd
-	}
-	return fb, d + 3
-}
-
-// showPagerContent composes the pager input for one snapshot: an un-numbered
-// header above a numbered body (fancy mode only).
-func showPagerContent(snap *entry.Snapshot, opts render.ShowOptions) pagerContent {
-	title := render.ShortID(snap.ID) + "  " + snap.Title
-	var header []string
-	if !opts.NoHeader {
-		var hb bytes.Buffer
-		render.ShowHeader(&hb, snap, opts.Color, opts.TrackedNote, opts.Favorites)
-		header = strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
-		header = append(header, "") // blank line between header and body
-	}
-	pc := pagerContent{title: title, header: header}
-	if opts.Raw {
-		pc.body = strings.Split(strings.TrimRight(snap.Body, "\n"), "\n")
-		pc.body = appendPagerComments(pc.body, snap, opts)
-		return pc
-	}
-	if content.IsMarkdown(snap.ContentType) {
-		// Fold-aware markdown: block-by-block render (comments included) so the
-		// pager can fold sections and map the viewport to a heading. foldRender
-		// re-renders at the fixed wrap width on each fold.
-		fb, gw := foldedPagerBody(snap, opts)
-		width := opts.Width
-		if width <= 0 {
-			width = 80
-		}
-		wrapW := width - gw
-		pc.body = fb.lines
-		pc.gutterW = gw
-		pc.number = true
-		pc.rawBody = snap.Body
-		pc.markdown = true
-		pc.hasComments = len(snap.Comments) > 0
-		pc.foldRender = func(folded map[string]bool) foldedBody {
-			return renderFoldedBody(snap, opts, folded, wrapW)
-		}
-		return pc
-	}
-	// Non-markdown (e.g. code, JSON): render once, no fold.
-	pc.body, pc.gutterW = renderPagerBody(snap, opts.Color, opts.Width)
-	pc.number = true
-	pc.body = appendPagerComments(pc.body, snap, opts)
-	if len(snap.Comments) > 0 {
-		pc.gutterW = numDigits(len(pc.body)) + 3 // keep the gutter wide enough after appending
-	}
-	return pc
-}
-
-// appendPagerComments appends the rendered comment block (if any) to body, with a
-// separating blank line. Used by the non-fold pager paths; the markdown fold path
-// appends comments inside renderFoldedBody so a fold re-render keeps them.
-func appendPagerComments(body []string, snap *entry.Snapshot, opts render.ShowOptions) []string {
-	if len(snap.Comments) == 0 {
-		return body
-	}
-	var cb bytes.Buffer
-	render.RenderComments(&cb, snap.Comments, opts.Color, opts.Width)
-	body = append(body, "")
-	return append(body, strings.Split(strings.TrimRight(cb.String(), "\n"), "\n")...)
-}
-
-// showPaged runs the interactive pager over one entry. refetch (optional)
-// backs the pager's r hotkey: it must return a freshly-read snapshot — the
-// reason to refresh is that another process (an editing agent, a sync) has
-// changed the entry since it was opened.
-func showPaged(snap *entry.Snapshot, opts render.ShowOptions, refetch func() (*entry.Snapshot, render.ShowOptions, error), expand func() ([]string, error)) error {
-	pc := showPagerContent(snap, opts)
-	if refetch != nil {
-		pc.reload = func() (pagerContent, error) {
-			s2, o2, err := refetch()
-			if err != nil {
-				return pagerContent{}, err
-			}
-			return showPagerContent(s2, o2), nil
-		}
-	}
-	pc.expand = expand
-	return Page(pc)
-}
-
-// showEntryPaged runs the interactive show pager for one entry, wiring the
-// r-hotkey refetch (fresh store handle) and the e-hotkey extended-header expand.
-// Shared by `kref show` and the list cockpit's open action.
-func showEntryPaged(dir *string, snap *entry.Snapshot, opts render.ShowOptions) error {
+// showViewer runs the interactive entry viewer for one entry on the already-open
+// store s: read + fold + search + numbered gutter AND the comment writer. The
+// caller handles static/--plain/--header output; this is the TTY path.
+func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts render.ShowOptions) error {
 	id := snap.ID
-	refetch := func() (*entry.Snapshot, render.ShowOptions, error) {
-		s2, err := store.Open(*dir)
-		if err != nil {
-			return nil, opts, err
+	renderHeader := func(sn *entry.Snapshot, o render.ShowOptions) []string {
+		if o.NoHeader {
+			return nil
 		}
-		defer s2.Close()
-		snap2, err := s2.Get(id)
+		var hb bytes.Buffer
+		render.ShowHeader(&hb, sn, o.Color, o.TrackedNote, o.Favorites)
+		return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
+	}
+	reload := func() ([]string, []entry.Comment, error) {
+		snap2, err := s.Get(id)
 		if err != nil {
-			return nil, opts, err
+			return nil, nil, err
 		}
-		if m, mErr := s2.Merged(id); mErr == nil {
+		if m, mErr := s.Merged(id); mErr == nil {
 			snap2.Merged = m
 		}
-		opts2 := opts
-		opts2.TrackedNote = ""
+		o2 := opts
+		o2.TrackedNote = ""
 		if snap2.Tracked {
-			drift2, dErr := bridge.DriftState(s2, snap2)
+			drift2, dErr := bridge.DriftState(s, snap2)
 			if dErr != nil {
-				return nil, opts, dErr
+				return nil, nil, dErr
 			}
-			opts2.TrackedNote = snap2.TrackedPath + " [" + drift2 + "]"
+			o2.TrackedNote = snap2.TrackedPath + " [" + drift2 + "]"
 		}
-		return snap2, opts2, nil
+		return renderHeader(snap2, o2), snap2.Comments, nil
 	}
-	expand := func() ([]string, error) {
-		s2, err := store.Open(*dir)
-		if err != nil {
-			return nil, err
-		}
-		defer s2.Close()
-		log, err := s2.Log(id)
-		if err != nil {
-			return nil, err
-		}
-		links, err := s2.Links(id)
-		if err != nil {
-			return nil, err
-		}
-		var hb bytes.Buffer
-		render.ExtendedHeader(&hb, snap, time.Now(), log, links, opts.Color, opts.TrackedNote, opts.Favorites)
-		hdr := strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
-		hdr = append(hdr, "") // blank line between header and body
-		return hdr, nil
+	actor, actorKind := resolveActor(cmd, s)
+	in := viewerInput{
+		title:       render.ShortID(snap.ID) + "  " + snap.Title,
+		body:        snap.Body,
+		contentType: snap.ContentType,
+		color:       opts.Color,
+		width:       opts.Width,
+		comments:    snap.Comments,
+		writer:      s,
+		entryID:     snap.ID,
+		actor:       actor,
+		actorKind:   actorKind,
+		provider:    showHeaderProvider{header: renderHeader(snap, opts), reload: reload},
 	}
-	return showPaged(snap, opts, refetch, expand)
+	return RunViewer(in)
 }
 
 // openEntry opens a single entry in the interactive viewer the list cockpit
-// dispatches to: the todo cockpit for a todo, the show pager otherwise.
+// dispatches to: the todo cockpit for a todo, the unified show viewer otherwise.
 func openEntry(cmd *cobra.Command, dir *string, s *store.Store, snap *entry.Snapshot) error {
 	if snap.Kind == todoguard.TodoKind {
 		return runTodoCockpit(cmd, dir, snap.ID.String(), false, false)
@@ -1071,7 +887,7 @@ func openEntry(cmd *cobra.Command, dir *string, s *store.Store, snap *entry.Snap
 			opts.TrackedNote = snap.TrackedPath + " [" + drift + "]"
 		}
 	}
-	return showEntryPaged(dir, snap, opts)
+	return showViewer(cmd, s, snap, opts)
 }
 
 func newShowCmd(dir *string) *cobra.Command {
@@ -1138,7 +954,7 @@ func newShowCmd(dir *string) *cobra.Command {
 			// --header is a chrome-free metadata peek: no body, and never paged
 			// (the block is short by design).
 			if usePager(cmd) && !noPager && !headerOnly {
-				return showEntryPaged(dir, snap, opts)
+				return showViewer(cmd, s, snap, opts)
 			}
 			var buf bytes.Buffer
 			render.Show(&buf, snap, opts)
@@ -1324,9 +1140,10 @@ func newListCmd(dir *string) *cobra.Command {
 			// keep the static output (a machine format bypasses like a pipe would).
 			if usePager(cmd) && !noPager && !plain && !jsonOut && !check {
 				acts := listCockpitActions{s: s, filter: lf}
+				actor, actorKind := resolveActor(cmd, s)
 				return runListCockpit(acts,
 					render.ListOptions{Columns: cols, Color: useColor(cmd), ShowAll: all, Sort: sortSpec, Favorites: favIDs},
-					useColor(cmd), lf,
+					useColor(cmd), lf, actor, actorKind,
 					func(res listResult) error {
 						switch res.action {
 						case "review":
@@ -1341,7 +1158,7 @@ func newListCmd(dir *string) *cobra.Command {
 									break
 								}
 							}
-							rr, rerr := runReviewModel(acts, queue, start, useColor(cmd), ttyWidth())
+							rr, rerr := runReviewModel(acts, queue, start, useColor(cmd), ttyWidth(), actor, actorKind)
 							if rerr != nil {
 								return rerr
 							}
@@ -1890,7 +1707,7 @@ func newVaultCmd(dir *string) *cobra.Command {
 }
 
 func newPurgeCmd(dir *string) *cobra.Command {
-	var force, gc, push bool
+	var yes, gc, push bool
 	c := &cobra.Command{
 		Use:     "purge <id>",
 		Aliases: []string{"destroy"},
@@ -1909,7 +1726,7 @@ func newPurgeCmd(dir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !force {
+			if !yes {
 				confirmed, err := confirmPurge(cmd, snap, gc, push)
 				if err != nil {
 					return err
@@ -1930,7 +1747,7 @@ func newPurgeCmd(dir *string) *cobra.Command {
 				map[string]any{"status": "purged", "id": id.String(), "gc": gc, "push": push})
 		},
 	}
-	c.Flags().BoolVar(&force, "force", false, "skip the confirmation prompt")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	c.Flags().BoolVar(&gc, "gc", false, "also run repo-wide `git gc --prune=now` to excise objects now (irreversible)")
 	c.Flags().BoolVar(&push, "push", false, "also delete the entry on the tier's configured remote")
 	c.ValidArgsFunction = entryArgs(dir, 1, sourceAll)
@@ -2607,7 +2424,7 @@ func newUpdateCmd(dir *string) *cobra.Command {
 				}
 				if held {
 					actor, actorKind := resolveActor(cmd, s)
-					parked, perr := s.QuarantineUpdate(id, body, snap.Version, fs, actorKind)
+					parked, perr := s.QuarantineUpdate(id, body, snap.Version, fs, actor, actorKind)
 					if perr != nil {
 						return perr
 					}
@@ -3330,7 +3147,7 @@ func newRetierCmd(dir *string) *cobra.Command {
 			return runRetier(cmd, *dir, args[0], args[1], yes)
 		},
 	}
-	c.Flags().BoolVar(&yes, "yes", false, "skip the promote-to-shared confirmation prompt")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the promote-to-shared confirmation prompt")
 	c.ValidArgsFunction = entryThenEnumFn(dir, func() []string { return declaredTierNames(dir) })
 	applyGuide(c, cobra.ExactArgs(2), argGuide{noun: "an entry id and a tier", find: "kref list", usage: "kref retier <id|path> <tier>", examples: []string{
 		"kref retier a1b2c3d4 shared   # any declared tier — see kref tier list",

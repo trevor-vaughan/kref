@@ -48,9 +48,18 @@ func New(t Tier) *Entry { return wrap(dag.New(Definition(t))) }
 // WrapForRead returns the wrapper function dag.ReadAll requires.
 func WrapForRead() func(*dag.Entity) *Entry { return wrap }
 
-// Compile folds the operation DAG into a Snapshot.
+// Compile folds the operation DAG into a Snapshot. The collection fields start
+// as empty slices rather than nil so a Snapshot always serializes them as JSON
+// arrays — the CLI's JSON contract (AGENTS.md) is that an array-valued key is
+// always present and always an array.
 func (e *Entry) Compile() *Snapshot {
-	snap := &Snapshot{ID: e.Id()}
+	snap := &Snapshot{
+		ID:         e.Id(),
+		Links:      []Link{},
+		Labels:     []string{},
+		Provenance: []OriginEvent{},
+		Comments:   []Comment{},
+	}
 	for _, op := range e.Operations() {
 		//nolint:forcetypeassert // every op in this entry's DAG is one of our
 		// Operation types by construction; a foreign op is a programmer error.

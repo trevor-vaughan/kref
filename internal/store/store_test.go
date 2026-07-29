@@ -631,7 +631,7 @@ var _ = Describe("Store.AddComment / ResolveComment", func() {
 		id, err := s.Add(entry.TierShared, "spec", "T", "b")
 		Expect(err).NotTo(HaveOccurred())
 
-		cid, err := s.AddComment(id, "human", "why?", true, "")
+		cid, err := s.AddComment(id, "", "human", "why?", true, "")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cid).NotTo(BeEmpty())
 
@@ -654,7 +654,7 @@ var _ = Describe("Store.AddComment / ResolveComment", func() {
 		s, err := Init(dir, "Tester", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		_, err = s.AddComment(entity.Id("deadbeef"), "human", "x", false, "")
+		_, err = s.AddComment(entity.Id("deadbeef"), "", "human", "x", false, "")
 		Expect(err).To(HaveOccurred())
 	})
 })
@@ -669,13 +669,13 @@ var _ = Describe("Store.List OpenQuestionsOnly filter", func() {
 		// Entry with an open question comment — must appear.
 		idOpen, err := s.Add(entry.TierShared, "spec", "OpenQuestion", "b")
 		Expect(err).NotTo(HaveOccurred())
-		_, err = s.AddComment(idOpen, "human", "why?", true, "")
+		_, err = s.AddComment(idOpen, "", "human", "why?", true, "")
 		Expect(err).NotTo(HaveOccurred())
 
 		// Entry with a question that is then resolved — must NOT appear.
 		idResolved, err := s.Add(entry.TierShared, "spec", "ResolvedQuestion", "b")
 		Expect(err).NotTo(HaveOccurred())
-		cid, err := s.AddComment(idResolved, "human", "resolved?", true, "")
+		cid, err := s.AddComment(idResolved, "", "human", "resolved?", true, "")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(s.ResolveComment(idResolved, cid)).To(Succeed())
 
@@ -725,5 +725,32 @@ var _ = Describe("Store.Track / Untrack", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.Tracked).To(BeTrue())
 		Expect(snap.TrackedPath).To(Equal("docs/new.md"))
+	})
+})
+
+var _ = Describe("Store.UnresolveComment", func() {
+	It("reopens a resolved question round-trip", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "Tester", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		id, err := s.Add(entry.TierShared, "spec", "T", "b")
+		Expect(err).NotTo(HaveOccurred())
+
+		cid, err := s.AddComment(id, "", "human", "why?", true, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.ResolveComment(id, cid)).To(Succeed())
+
+		snap, err := s.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Comments[0].Resolved).To(BeTrue())
+
+		Expect(s.UnresolveComment(id, cid)).To(Succeed())
+
+		snap, err = s.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Comments).To(HaveLen(1))
+		Expect(snap.Comments[0].Resolved).To(BeFalse())
+		Expect(snap.Comments[0].Question).To(BeTrue())
 	})
 })

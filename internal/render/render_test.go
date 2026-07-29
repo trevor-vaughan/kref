@@ -252,8 +252,9 @@ var _ = Describe("Show with Raw (--plain) and comments", func() {
 		render.Show(&b, s, render.ShowOptions{NoHeader: true, Raw: true, Color: false})
 		out := b.String()
 		Expect(out).To(ContainSubstring("notevisible"), "body must appear")
-		Expect(out).To(ContainSubstring("Comments (1)"), "comment header must appear in --plain mode")
-		Expect(out).To(ContainSubstring("comment body here"), "comment text must appear in --plain mode")
+		// --plain renders comments chrome-free (see the "Show under Raw" specs),
+		// so the count header is gone — but the comments themselves must not be.
+		Expect(out).To(ContainSubstring("alice: comment body here"), "comment text must appear in --plain mode")
 	})
 })
 
@@ -931,5 +932,18 @@ var _ = Describe("RenderCommentThreads nodes", func() {
 			words = append(words, strings.Fields(ln)...)
 		}
 		Expect(words).To(Equal(strings.Fields(long))) // no words lost or reordered
+	})
+})
+
+var _ = Describe("comment markdown rendering", func() {
+	It("renders comment bodies as markdown when colour is on, raw when off", func() {
+		comments := []entry.Comment{{ID: "c1", Author: "a", Body: "this is **bold** text"}}
+		on := render.RenderCommentThreads(comments, true, nil, 60)
+		joinedOn := strings.Join(on[0].Nodes[0].Lines, "\n")
+		Expect(joinedOn).NotTo(ContainSubstring("**bold**")) // markers rendered away
+		Expect(joinedOn).To(ContainSubstring("bold"))        // text preserved
+		off := render.RenderCommentThreads(comments, false, nil, 60)
+		joinedOff := strings.Join(off[0].Nodes[0].Lines, "\n")
+		Expect(joinedOff).To(ContainSubstring("**bold**")) // raw when colour off
 	})
 })

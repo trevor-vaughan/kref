@@ -13,9 +13,9 @@ var _ = DescribeTable("Parse+String round-trips a body exactly",
 	},
 	Entry("empty", ""),
 	Entry("title + open + done sections",
-		"# TODO\n\n## Open\n- [ ] a task\n\n## Done (compact)\nshipped\n"),
+		"# TODO\n\n## Open\n- [ ] a task\n\n## Done (compact)\nshipped\n"), // DevSkim: ignore DS176209
 	Entry("no trailing newline",
-		"# TODO\n\n## Open\n- [ ] a task"),
+		"# TODO\n\n## Open\n- [ ] a task"), // DevSkim: ignore DS176209
 	Entry("item with indented notes",
 		"# T\n\n## Open\n- [ ] a task\n  - a note\n  more note\n\n## Done (compact)\n"),
 )

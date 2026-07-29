@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -8,7 +9,9 @@ import (
 	"github.com/git-bug/git-bug/entity"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/spf13/cobra"
 
+	"github.com/trevor-vaughan/kref/internal/scan"
 	"github.com/trevor-vaughan/kref/internal/store"
 )
 
@@ -327,5 +330,21 @@ var _ = Describe("kref comment quarantine paths", func() {
 		dir, id := newEntry()
 		out := run("--dir", dir, "comment", id, "-m", qSecret, "--force")
 		Expect(out).To(ContainSubstring("force-approved"))
+	})
+})
+
+// Every listing shows 12 characters and every quarantine subcommand resolves a
+// prefix, but the park notice printed the full 64-character id twice — and the
+// copy embedded in the review comment wrapped across two lines in the viewer.
+var _ = Describe("quarantine id length", func() {
+	longID := entity.Id("20d8685302071562d51de203b5651d168e24b7d6602c1823a3f04fa27c3abb84") // DevSkim: ignore DS173237
+
+	It("uses a short id in the park notice", func() {
+		var out bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&out)
+		printQuarantined(c, store.Parked{ItemID: longID, Findings: []scan.Finding{{RuleID: "github-pat"}}})
+		Expect(out.String()).NotTo(MatchRegexp(`[0-9a-f]{20,}`), "full id in the park notice")
+		Expect(out.String()).To(ContainSubstring("20d868530207"))
 	})
 })

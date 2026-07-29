@@ -43,10 +43,11 @@ const (
 	ArchiveOp
 	UnarchiveOp
 	SetContentTypeOp
-	AddCommentOp     // #20
-	ResolveCommentOp // #21 (op struct added in a later task)
-	EditCommentOp    // #22
-	DeleteCommentOp  // #23
+	AddCommentOp       // #20
+	ResolveCommentOp   // #21 (op struct added in a later task)
+	EditCommentOp      // #22
+	DeleteCommentOp    // #23
+	UnresolveCommentOp // #24
 )
 
 // Create initializes an entry with a kind and title.
@@ -495,15 +496,21 @@ type AddComment struct {
 	Question  bool   `json:"question,omitempty"`
 	ReplyTo   string `json:"reply_to,omitempty"`
 	ActorKind string `json:"actor_kind"`
+	// Actor names the agent when ActorKind is "agent". Optional not for the sake
+	// of released clients — there are none — but because comment ops already
+	// exist in local stores: an op written before this field decodes to "" and
+	// renders as it always did (the git identity).
+	Actor string `json:"actor,omitempty"`
 }
 
-func NewAddComment(author identity.Interface, actorKind, body string, question bool, replyTo string) *AddComment {
+func NewAddComment(author identity.Interface, actor, actorKind, body string, question bool, replyTo string) *AddComment {
 	return &AddComment{
 		OpBase:    dag.NewOpBase(AddCommentOp, author, time.Now().Unix()),
 		Body:      body,
 		Question:  question,
 		ReplyTo:   replyTo,
 		ActorKind: actorKind,
+		Actor:     actor,
 	}
 }
 
@@ -523,6 +530,7 @@ func (op *AddComment) Apply(s *Snapshot) {
 		Question:   op.Question,
 		ReplyTo:    op.ReplyTo,
 		AuthorKind: op.ActorKind,
+		Actor:      op.Actor,
 		Time:       op.Time(),
 	}
 	if a := op.Author(); a != nil {
@@ -568,6 +576,45 @@ func (op *ResolveComment) Apply(s *Snapshot) {
 		if a := op.Author(); a != nil {
 			c.ResolvedBy = a.Name()
 		}
+		s.UpdatedAt = op.Time()
+		return
+	}
+}
+
+// UnresolveComment reopens a resolved question comment — the inverse of
+// ResolveComment. Pure state transition; idempotent; a no-op for an unknown
+// target, a non-question, or an already-open question, so history applies
+// cleanly in any order.
+type UnresolveComment struct {
+	dag.OpBase
+	Target string `json:"target"`
+}
+
+func NewUnresolveComment(author identity.Interface, target string) *UnresolveComment {
+	return &UnresolveComment{
+		OpBase: dag.NewOpBase(UnresolveCommentOp, author, time.Now().Unix()),
+		Target: target,
+	}
+}
+
+func (op *UnresolveComment) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
+
+func (op *UnresolveComment) Validate() error {
+	if op.Target == "" {
+		return errors.New("unresolve target required")
+	}
+	return op.OpBase.Validate(op, UnresolveCommentOp)
+}
+
+func (op *UnresolveComment) Apply(s *Snapshot) {
+	for i := range s.Comments {
+		c := &s.Comments[i]
+		if c.ID != op.Target || !c.Question || !c.Resolved {
+			continue
+		}
+		c.Resolved = false
+		c.ResolvedBy = ""
+		c.ResolvedAt = time.Time{}
 		s.UpdatedAt = op.Time()
 		return
 	}
@@ -746,6 +793,8 @@ func operationUnmarshaler(raw json.RawMessage, _ entity.Resolvers) (dag.Operatio
 		op = &EditComment{}
 	case DeleteCommentOp:
 		op = &DeleteComment{}
+	case UnresolveCommentOp:
+		op = &UnresolveComment{}
 	default:
 		return nil, fmt.Errorf("unknown operation type %v", t.OperationType)
 	}

@@ -41,7 +41,7 @@ type listActions interface {
 	QuarantineDetail(id entity.Id) (store.QuarantineDetail, error)
 	ListEntries() ([]*entry.Snapshot, error)
 	ApproveQuarantine(id entity.Id, note, approver, actorKind string) error
-	RejectQuarantine(id entity.Id, note, actorKind string) (string, error)
+	RejectQuarantine(id entity.Id, note, rejecter, actorKind string) (string, error)
 	Archive(id entity.Id) error
 	Unarchive(id entity.Id) error
 	SetStatus(id entity.Id, status string) error
@@ -94,6 +94,11 @@ type listModel struct {
 	filter store.ListFilter
 	color  bool
 
+	// the resolved reviewer recorded on an approve/reject; a quarantine
+	// decision is an audit record and has to name who made it
+	actor     string
+	actorKind string
+
 	rows   []cockpitRow
 	cursor int
 
@@ -102,8 +107,7 @@ type listModel struct {
 	statusIdx int
 	err       string // transient footer message
 
-	matches  []int
-	matchPos int
+	search pagerSearch // shared incremental search (/, n/N) — same as the viewer and pager
 
 	noteApprove bool       // note mode: approve (true) vs reject
 	result      listResult // set on exit for a full-screen action
@@ -111,23 +115,37 @@ type listModel struct {
 
 // listResult is what the model exits with: a full-screen action to run, or quit.
 type listResult struct {
-	action string // "" quit, "open", "edit"
+	action string // "" quit, "open", "edit", "review" (a held write)
 	id     entity.Id
 	cursor int
 }
 
-func newListModel(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter) *listModel {
+func newListModel(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string) *listModel {
 	sv := tui.NewScrollView("kref list")
 	sv.SetPlain(!color)
 	sv.SetHelpRows(listHelpRows())
-	return &listModel{sv: sv, acts: acts, opts: opts, filter: filter, color: color, input: textinput.New()}
+	sv.SetHorizontalStep(8) // ←/h →/l pan to read titles wider than the window
+	return &listModel{
+		sv: sv, acts: acts, opts: opts, filter: filter, color: color,
+		actor: actor, actorKind: actorKind, input: textinput.New(),
+	}
 }
 
 // reload refetches the queue + entries, rebuilds the rows, and keeps the cursor
 // on the same id when it survives.
 func (m *listModel) reload() {
-	q, _ := m.acts.QuarantineQueue()
-	e, _ := m.acts.ListEntries()
+	q, qErr := m.acts.QuarantineQueue()
+	e, lErr := m.acts.ListEntries()
+	// An unreadable store must not render as an empty repository: "nothing here"
+	// and "the read failed" are different facts, and the reader needs to know
+	// which one they are looking at. The entry list is the headline, so it wins
+	// when both fail.
+	switch {
+	case lErr != nil:
+		m.err = lErr.Error()
+	case qErr != nil:
+		m.err = qErr.Error()
+	}
 	var keep entity.Id
 	if m.cursor >= 0 && m.cursor < len(m.rows) {
 		keep = m.rows[m.cursor].id
@@ -181,6 +199,23 @@ func (m *listModel) selected() (cockpitRow, bool) {
 	return m.rows[m.cursor], true
 }
 
+// entryRow returns the selected row when it is an entry, and otherwise records
+// why the key did nothing. The footer and the help popup advertise these keys
+// unconditionally, so on a quarantine row they have to account for themselves
+// rather than look broken — the rule the entry viewer's noComment follows.
+func (m *listModel) entryRow(verb string) (cockpitRow, bool) {
+	r, ok := m.selected()
+	if !ok {
+		m.err = "nothing selected"
+		return cockpitRow{}, false
+	}
+	if r.kind != rowEntry {
+		m.err = "this is a quarantine item — " + verb + " applies to an entry; a/r decide it, enter reviews it"
+		return cockpitRow{}, false
+	}
+	return r, true
+}
+
 // mutate records an in-place action's error on the footer, or reloads the rows
 // on success (so counts and the queue stay live).
 func (m *listModel) mutate(err error) {
@@ -232,6 +267,9 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sv.Resize(msg.Width, msg.Height)
 		m.syncContent()
 		return m, nil
+	case tea.MouseMsg:
+		// Mouse capture is enabled; forwarding the wheel is what pays for it.
+		return m, m.sv.PassKey(msg)
 	case tea.KeyMsg:
 		m.err = "" // clear a transient error on the next keypress
 		// A dialog/popup swallows the next key and closes; only ctrl+c (the hard
@@ -274,10 +312,11 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Quit
 				}
 			case "e":
-				if r, ok := m.selected(); ok && r.kind == rowEntry {
+				if r, ok := m.entryRow("edit"); ok {
 					m.result = listResult{action: "edit", id: r.id, cursor: m.cursor}
 					return m, tea.Quit
 				}
+				return m, nil
 			case "a", "r":
 				if r, ok := m.selected(); ok && r.kind == rowQuarantine {
 					m.noteApprove = msg.String() == "a"
@@ -289,23 +328,23 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = "not a quarantine item"
 				return m, nil
 			case "x":
-				if r, ok := m.selected(); ok && r.kind == rowEntry {
+				if r, ok := m.entryRow("archive"); ok {
 					m.mutate(m.acts.Archive(r.id))
 				}
 				return m, nil
 			case "u":
-				if r, ok := m.selected(); ok && r.kind == rowEntry {
+				if r, ok := m.entryRow("unarchive"); ok {
 					m.mutate(m.acts.Unarchive(r.id))
 				}
 				return m, nil
 			case "s":
-				if r, ok := m.selected(); ok && r.kind == rowEntry {
+				if r, ok := m.entryRow("status"); ok {
 					m.mode = listModeStatus
 					m.statusIdx = statusIndex(r.snap.Status)
 				}
 				return m, nil
 			case "f":
-				if r, ok := m.selected(); ok && r.kind == rowEntry {
+				if r, ok := m.entryRow("alias"); ok {
 					m.mode = listModeFav
 					m.input.SetValue(existingFavName(m.acts, r.id))
 					m.input.CursorEnd()
@@ -315,14 +354,22 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "/":
 				m.mode = listModeSearch
-				m.input.SetValue("")
-				m.input.Focus()
-				return m, textinput.Blink
+				m.search.start()
+				m.sv.SetStatus("/")
+				return m, nil
+			case "left", "h", "right", "l":
+				// Pan horizontally to read a title wider than the window; the
+				// viewport handles the offset (rows stay one line each).
+				return m, m.sv.PassKey(msg)
 			case "n":
 				m.jumpMatch(1)
 				return m, nil
 			case "N":
 				m.jumpMatch(-1)
+				return m, nil
+			case "t":
+				m.color = !m.color
+				m.sv.SetPlain(!m.color)
 				return m, nil
 			case "?":
 				m.sv.ToggleHelp()
@@ -347,9 +394,9 @@ func (m *listModel) updateNote(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r, _ := m.selected()
 			var err error
 			if m.noteApprove {
-				err = m.acts.ApproveQuarantine(r.id, note, "me", "human")
+				err = m.acts.ApproveQuarantine(r.id, note, m.actor, m.actorKind)
 			} else {
-				_, err = m.acts.RejectQuarantine(r.id, note, "human")
+				_, err = m.acts.RejectQuarantine(r.id, note, m.actor, m.actorKind)
 			}
 			m.mode = listModeNone
 			if err != nil {
@@ -365,54 +412,68 @@ func (m *listModel) updateNote(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// updateSearch routes keys while the / search input is active. Enter runs the
-// match and jumps to the first hit; esc cancels.
+// updateSearch routes keys while the / search input is active, through the same
+// pagerSearch the entry viewer and pager use — so the query line, the wrapping
+// n/N cycle and the "match i/N" counter behave identically on every surface.
 func (m *listModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if km, ok := msg.(tea.KeyMsg); ok {
-		switch km.Type {
-		case tea.KeyEsc:
-			m.mode = listModeNone
-			m.sv.SetStatus(m.statusLine())
-			return m, nil
-		case tea.KeyEnter:
-			m.mode = listModeNone
-			m.computeMatches(m.input.Value())
-			m.matchPos = -1
-			m.jumpMatch(1)
-			return m, nil
-		}
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	m.sv.SetStatus("/" + m.input.Value())
-	return m, cmd
+	m.search.input(km, m.searchMatcher, &m.sv)
+	if m.search.searching() {
+		m.sv.SetStatus("/" + m.search.query)
+		return m, nil
+	}
+	// The query line closed: enter committed it (idx is already 0, so land on
+	// that first hit) or esc cancelled it.
+	m.mode = listModeNone
+	if _, hit := m.search.current(); hit {
+		m.moveToMatch()
+	} else {
+		if m.search.query != "" {
+			m.err = "no matches"
+		}
+		m.sv.SetStatus(m.statusLine())
+	}
+	return m, nil
 }
 
-// computeMatches records the row indices whose rendered line contains query.
-func (m *listModel) computeMatches(query string) {
-	m.matches = nil
-	ql := strings.ToLower(strings.TrimSpace(query))
-	if ql == "" {
-		return
-	}
+// searchMatcher returns the row indices whose rendered line contains q. The
+// cockpit renders exactly one line per row, so a content-line offset is a row
+// index.
+func (m *listModel) searchMatcher(q string) []int {
+	lines := make([]string, len(m.rows))
 	for i, r := range m.rows {
-		if strings.Contains(strings.ToLower(r.line), ql) {
-			m.matches = append(m.matches, i)
-		}
+		lines[i] = r.line
 	}
+	return searchMatches(lines, q)
 }
 
-// jumpMatch moves the cursor to the next/previous match (wrapping).
-func (m *listModel) jumpMatch(dir int) {
-	if len(m.matches) == 0 {
+// moveToMatch puts the cursor on the current match. The list selects a row
+// rather than scrolling to an offset, so it drives the cursor itself instead of
+// using pagerSearch.jump.
+func (m *listModel) moveToMatch() {
+	row, ok := m.search.current()
+	if !ok {
 		m.err = "no matches"
 		m.sv.SetStatus(m.statusLine())
 		return
 	}
-	m.matchPos = (m.matchPos + dir + len(m.matches)) % len(m.matches)
-	m.cursor = m.matches[m.matchPos]
+	m.cursor = clamp(row, 0, max(len(m.rows)-1, 0))
 	m.followCursor()
 	m.syncContent()
+}
+
+// jumpMatch cycles to the next/previous match (wrapping) and selects it.
+func (m *listModel) jumpMatch(dir int) {
+	if _, ok := m.search.current(); !ok {
+		m.err = "no matches"
+		m.sv.SetStatus(m.statusLine())
+		return
+	}
+	m.search.cycle(dir, &m.sv)
+	m.moveToMatch()
 }
 
 // updateFav routes keys while the alias (favorite) input overlay is open. An
@@ -456,14 +517,17 @@ func (m *listModel) updateStatus(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	switch km.Type {
-	case tea.KeyEsc:
+	// Switch on the key string rather than the type so k/j sit beside up/down.
+	// The picker takes no text, so the letters are free — and every other
+	// surface accepts both, because the viewport's keymap binds them together.
+	switch km.String() {
+	case "esc":
 		m.mode = listModeNone
-	case tea.KeyUp:
+	case "up", "k":
 		m.statusIdx = clamp(m.statusIdx-1, 0, len(statusValues)-1)
-	case tea.KeyDown:
+	case "down", "j":
 		m.statusIdx = clamp(m.statusIdx+1, 0, len(statusValues)-1)
-	case tea.KeyEnter:
+	case "enter":
 		r, _ := m.selected()
 		m.mode = listModeNone
 		m.mutate(m.acts.SetStatus(r.id, statusValues[m.statusIdx]))
@@ -526,16 +590,44 @@ func (m *listModel) footer() string {
 	if m.err != "" {
 		return m.err + " · " + m.sv.ScrollLabel()
 	}
-	return "↑↓ move · enter open · a/r review · e edit · x/u arch · s status · f alias · / search · ? keys · q quit · " + m.sv.ScrollLabel()
+	pos := m.sv.ScrollLabel()
+	if f := m.search.footer(); f != "" {
+		pos = f + "  ·  " + pos
+	}
+	head := fmt.Sprintf("%d/%d  ·  %s  ·  ", m.cursor+1, max(len(m.rows), 1), pos)
+	// Spend whatever width the terminal has. The old footer spelled every key
+	// unconditionally and needed 111 columns, so on an 80-column terminal it was
+	// clipped and both "? keys" and "q quit" fell off the end; capping it at the
+	// narrow form instead would have starved wide terminals of the same hints.
+	return m.sv.Fit(withHead(head,
+		"↑↓ move · enter open · a/r review · e edit · x/u arch · s status · f alias · / search · ? keys · q quit",
+		"↑↓ move · enter open · a/r review · e edit · / search · ? keys · q quit",
+		"↑↓ move · enter open · / search · ? keys · q quit",
+		"? keys · q quit",
+	)...)
+}
+
+// withHead prefixes each footer variant with the position head and appends a
+// bare last resort that drops the head entirely. Fit measures whole rows, so the
+// head has to be part of each candidate — and on a very narrow terminal the
+// position is what gives, never the two hints that say how to get help and out.
+func withHead(head string, variants ...string) []string {
+	out := make([]string, 0, len(variants)+1)
+	for _, v := range variants {
+		out = append(out, head+v)
+	}
+	return append(out, variants[len(variants)-1])
 }
 
 func listHelpRows() []string {
 	return []string{
-		"↑/↓ j/k  move        enter  open (show/todo)",
-		"a / r    approve/rej e      edit ($EDITOR)",
-		"x / u    archive/res s      status",
-		"f        alias        /     search  n/N next/prev",
-		"g / G    top/bottom   q     quit",
+		"↑/↓ j/k   move             enter   open (show/todo)",
+		"←/→ h/l   pan title        g / G   top / bottom",
+		"a / r     approve/reject   e       edit ($EDITOR)",
+		"x / u     archive/restore  s       status",
+		"f         alias            /       search   n/N next/prev",
+		"t         toggle colour",
+		"? q esc   keys / quit",
 	}
 }
 
@@ -552,12 +644,18 @@ func clamp(v, lo, hi int) int {
 // runListCockpit runs the interactive list, looping: run the model, and when it
 // exits for a full-screen action (open/edit) dispatch to the real viewer/editor
 // via handle, then re-enter at the saved cursor. Quit ends the loop.
-func runListCockpit(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, handle func(res listResult) error) error {
+func runListCockpit(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string, handle func(res listResult) error) error {
 	cursor := 0
+	// The model is rebuilt on every return from a full-screen action, which used
+	// to discard the search silently — after which n reported "no matches",
+	// reading as "your query found nothing" rather than "your query is gone".
+	var search pagerSearch
 	for {
-		m := newListModel(acts, opts, color, filter)
+		m := newListModel(acts, opts, color, filter, actor, actorKind)
 		m.reload()
 		m.cursor = clamp(cursor, 0, max(len(m.rows)-1, 0))
+		m.search = search
+		m.search.refresh(m.searchMatcher)
 		m.syncContent()
 		out, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stdout)).Run()
 		if err != nil {
@@ -567,7 +665,7 @@ func runListCockpit(acts listActions, opts render.ListOptions, color bool, filte
 		if !ok || fm.result.action == "" {
 			return nil // quit
 		}
-		cursor = fm.result.cursor
+		cursor, search = fm.result.cursor, fm.search
 		if herr := handle(fm.result); herr != nil {
 			return herr
 		}
@@ -591,8 +689,8 @@ func (a listCockpitActions) ListEntries() ([]*entry.Snapshot, error) { return a.
 func (a listCockpitActions) ApproveQuarantine(id entity.Id, note, ap, k string) error {
 	return a.s.ApproveQuarantine(id, note, ap, k)
 }
-func (a listCockpitActions) RejectQuarantine(id entity.Id, note, k string) (string, error) {
-	return a.s.RejectQuarantine(id, note, k)
+func (a listCockpitActions) RejectQuarantine(id entity.Id, note, rejecter, k string) (string, error) {
+	return a.s.RejectQuarantine(id, note, rejecter, k)
 }
 func (a listCockpitActions) Archive(id entity.Id) error              { return a.s.Archive(id) }
 func (a listCockpitActions) Unarchive(id entity.Id) error            { return a.s.Unarchive(id) }

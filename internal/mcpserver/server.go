@@ -19,6 +19,7 @@ import (
 	"github.com/trevor-vaughan/kref/internal/commentguard"
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/entryguard"
+	"github.com/trevor-vaughan/kref/internal/render"
 	"github.com/trevor-vaughan/kref/internal/scan"
 	"github.com/trevor-vaughan/kref/internal/store"
 	"github.com/trevor-vaughan/kref/internal/textpatch"
@@ -49,7 +50,7 @@ func New(cfg Config) *mcp.Server {
 			"trips the secret scanner on a syncable tier the entry is HELD for human review " +
 			"(quarantined) instead of saved: you get a quarantine id, a review thread opens, " +
 			"and it is created only on human approval — nothing is lost. A private tier " +
-			"cannot push, so it saves normally there.",
+			"cannot push, so it saves normally there. " + modelNote,
 	}, remember(dp))
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "kref_recall",
@@ -76,7 +77,7 @@ func New(cfg Config) *mcp.Server {
 			"(add_links is [{to, type?}] with type defaulting to \"relates\"; remove_links " +
 			"is an array of target ids). body may be omitted for a metadata-only update. " +
 			"Label and link changes apply to the live entry even when the body is held for " +
-			"review; a secret in an add_labels value on a syncable tier is refused.",
+			"review; a secret in an add_labels value on a syncable tier is refused. " + modelNote,
 	}, update(dp))
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "kref_patch",
@@ -88,7 +89,7 @@ func New(cfg Config) *mcp.Server {
 			"secret scanner on a syncable entry the update is HELD for human review " +
 			"(quarantined), leaving the live entry untouched until approved. Prefer this over " +
 			"kref_update for small edits — a stale or ambiguous hunk fails loudly " +
-			"instead of overwriting concurrent changes.",
+			"instead of overwriting concurrent changes. " + modelNote,
 	}, patchTool(dp))
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "kref_lifecycle",
@@ -96,7 +97,7 @@ func New(cfg Config) *mcp.Server {
 			"(requires status: open|active|accepted|superseded|obsolete), delete " +
 			"(reversible tombstone), restore (undo delete), archive (hide from " +
 			"listings, status kept), unarchive. Hard-delete (purge) and tier moves " +
-			"(retier) are deliberately not available to agents.",
+			"(retier) are deliberately not available to agents. " + modelNote,
 	}, lifecycle(dp))
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "kref_comment",
@@ -104,14 +105,17 @@ func New(cfg Config) *mcp.Server {
 			"add ({body, question?, reply_to?} — question marks a thread open until " +
 			"resolved, reply_to nests under another comment), resolve ({target, note?} " +
 			"— resolves a question, optionally posting a closing note reply first), " +
-			"edit ({target, body}), delete ({target}, a reversible tombstone). If an added " +
+			"unresolve ({target} — reopens a resolved question), " +
+			"edit ({target, body}), delete ({target}, a reversible tombstone). " +
+			"target and reply_to take a comment id or an unambiguous prefix of one; " +
+			"an unknown or ambiguous one is an error, never a silent no-op. If an added " +
 			"comment body trips the secret scanner on a syncable entry it is HELD for human " +
 			"review (quarantined) and posted only on approval; a private entry cannot push, " +
-			"so it posts normally there.",
+			"so it posts normally there. " + modelNote,
 	}, comment(dp))
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "kref_supersede",
-		Description: "Mark <old> superseded by <new> (links them and retires <old>).",
+		Description: "Mark <old> superseded by <new> (links them and retires <old>). " + modelNote,
 	}, supersede(dp))
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "kref_quarantine",
@@ -316,6 +320,28 @@ func isPrivateTyped(tierType string) bool { return tierType == string(entry.Tier
 // (global/client-roots, non-home) call.
 const restrictedTierMsg = "that entry is in a private-typed tier, which a global/client-roots MCP server does not serve (only the client's own single root gets private-tier access)"
 
+// heldForReview reports whether a snapshot is a quarantine-tier item. Those are
+// reachable by id — the park response returns one and kref_quarantine list
+// enumerates the rest — but their body IS the withheld material: a draft's body
+// is the proposed entry, and a held op's is the intent payload, secret and all.
+// kref_quarantine is the only surface that may serve them, and it serves
+// metadata alone; a general read tool handing back the body would reduce that
+// withholding to decoration.
+func heldForReview(snap *entry.Snapshot) bool {
+	return snap.Tier == string(entry.TierQuarantine)
+}
+
+const heldForReviewMsg = "%s is held for human review: use kref_quarantine show for its findings and metadata (its proposed content is withheld from agents)"
+
+// heldForReviewWriteMsg covers the write side. Approve promotes a held item as
+// it then stands, so an agent that can edit one can change what a human is
+// about to judge after they have looked at it — swapping the body, redirecting
+// q-dest so an approved draft lands on a different tier, stripping the
+// q-finding labels the decision rests on, or archiving the item out of the
+// queue entirely. Discussion stays open: for a draft the review thread lives on
+// the item itself, and explaining a false positive is exactly what it is for.
+const heldForReviewWriteMsg = "%s is held for human review: an agent cannot modify a held write — its content and findings are what a human is about to judge. Use kref_comment on its review thread to explain it (say so if it is test data) or ask for it to be rejected, then resubmit a corrected version."
+
 // canonicalDir renders p for comparison: absolute, symlinks resolved when the
 // path exists, else lexically cleaned. A non-existent callDir simply fails the
 // equality — no special existence signal.
@@ -332,6 +358,7 @@ func canonicalDir(p string) string {
 
 type rememberParams struct {
 	dirParam
+	modelParam
 	Kind   string   `json:"kind,omitempty"`
 	Title  string   `json:"title,omitempty"`
 	Body   string   `json:"body,omitempty"`
@@ -341,6 +368,7 @@ type rememberParams struct {
 
 func remember(dp dirPolicy) mcp.ToolHandlerFor[rememberParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p rememberParams) (*mcp.CallToolResult, any, error) {
+		actor := agentActor(req, p.Model)
 		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
@@ -378,7 +406,7 @@ func remember(dp dirPolicy) mcp.ToolHandlerFor[rememberParams, any] {
 		// not written to `tier`.
 		target := &entry.Snapshot{Tier: string(tier), TierType: string(tierType)}
 		unscanned, done := parkEntry(target, p.Body, func(f []scan.Finding) (store.Parked, error) {
-			return st.QuarantineNewEntry(tier, kind, title, p.Body, "", f, "agent")
+			return st.QuarantineNewEntry(tier, kind, title, p.Body, "", f, actor, "agent")
 		})
 		if done != nil {
 			return done, nil, nil
@@ -396,7 +424,7 @@ func remember(dp dirPolicy) mcp.ToolHandlerFor[rememberParams, any] {
 				return nil, nil, err
 			}
 		}
-		if err := st.RecordOrigin(id, "mcp", "agent", "", "create"); err != nil {
+		if err := st.RecordOrigin(id, actor, "agent", "", "create"); err != nil {
 			return nil, nil, err
 		}
 		msg := "remembered " + id.String()
@@ -529,6 +557,9 @@ func get(dp dirPolicy) mcp.ToolHandlerFor[getParams, any] {
 		if restricted && isPrivateTyped(snap.TierType) {
 			return toolError("%s", restrictedTierMsg), nil, nil
 		}
+		if heldForReview(snap) {
+			return toolError(heldForReviewMsg, snap.ID), nil, nil
+		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "%s [%s/%s] %s\n", snap.ID.String(), snap.Tier, snap.Status, snap.Title)
 		fmt.Fprintf(&b, "kind: %s\n", snap.Kind)
@@ -553,6 +584,7 @@ func get(dp dirPolicy) mcp.ToolHandlerFor[getParams, any] {
 
 type updateParams struct {
 	dirParam
+	modelParam
 	ID           string    `json:"id"`
 	Body         string    `json:"body,omitempty"`
 	Title        string    `json:"title,omitempty"`
@@ -692,6 +724,7 @@ func applyMeta(st *store.Store, id entity.Id, plan metaPlan) (string, error) {
 
 func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p updateParams) (*mcp.CallToolResult, any, error) {
+		actor := agentActor(req, p.Model)
 		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
@@ -711,6 +744,9 @@ func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 		}
 		if restricted && isPrivateTyped(snap.TierType) {
 			return toolError("%s", restrictedTierMsg), nil, nil
+		}
+		if heldForReview(snap) {
+			return toolError(heldForReviewWriteMsg, snap.ID), nil, nil
 		}
 
 		hasBody := p.Body != ""
@@ -745,7 +781,7 @@ func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 			unscanned, cerr := entryguard.Check(snap, p.Body, false)
 			var refused *entryguard.RefusedError
 			if errors.As(cerr, &refused) {
-				parked, perr := st.QuarantineUpdate(id, p.Body, snap.Version, refused.Findings, "agent")
+				parked, perr := st.QuarantineUpdate(id, p.Body, snap.Version, refused.Findings, actor, "agent")
 				if perr != nil {
 					return toolError("quarantine failed: %v", perr), nil, nil
 				}
@@ -775,6 +811,9 @@ func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 		if bodyMsg == "" {
 			bodyMsg = "updated " + id.String()
 		}
+		if err := st.RecordOrigin(id, actor, "agent", "", "update"); err != nil {
+			return nil, nil, err
+		}
 		out := bodyMsg + metaMsg
 		if len(plan.warnings) > 0 {
 			out += "\n" + strings.Join(plan.warnings, "\n")
@@ -785,12 +824,14 @@ func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 
 type patchParams struct {
 	dirParam
+	modelParam
 	ID   string `json:"id"`
 	Diff string `json:"diff"`
 }
 
 func patchTool(dp dirPolicy) mcp.ToolHandlerFor[patchParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p patchParams) (*mcp.CallToolResult, any, error) {
+		actor := agentActor(req, p.Model)
 		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
@@ -811,6 +852,9 @@ func patchTool(dp dirPolicy) mcp.ToolHandlerFor[patchParams, any] {
 		if restricted && isPrivateTyped(snap.TierType) {
 			return toolError("%s", restrictedTierMsg), nil, nil
 		}
+		if heldForReview(snap) {
+			return toolError(heldForReviewWriteMsg, snap.ID), nil, nil
+		}
 		newBody, err := textpatch.Apply(snap.Body, p.Diff)
 		if err != nil {
 			return toolError("%v", err), nil, nil
@@ -819,7 +863,7 @@ func patchTool(dp dirPolicy) mcp.ToolHandlerFor[patchParams, any] {
 			return toolError("patch would leave the body empty — use kref_update if that is intended"), nil, nil
 		}
 		unscanned, done := parkEntry(snap, newBody, func(f []scan.Finding) (store.Parked, error) {
-			return st.QuarantineUpdate(id, newBody, snap.Version, f, "agent")
+			return st.QuarantineUpdate(id, newBody, snap.Version, f, actor, "agent")
 		})
 		if done != nil {
 			return done, nil, nil
@@ -835,6 +879,9 @@ func patchTool(dp dirPolicy) mcp.ToolHandlerFor[patchParams, any] {
 		if err != nil {
 			return nil, nil, err
 		}
+		if err := st.RecordOrigin(id, actor, "agent", "", "patch"); err != nil {
+			return nil, nil, err
+		}
 		msg := fmt.Sprintf("patched %s to version %d", id.String(), len(versions))
 		if unscanned {
 			msg += unscannedNote
@@ -845,6 +892,7 @@ func patchTool(dp dirPolicy) mcp.ToolHandlerFor[patchParams, any] {
 
 type lifecycleParams struct {
 	dirParam
+	modelParam
 	ID     string `json:"id"`
 	Action string `json:"action"`
 	Status string `json:"status,omitempty"`
@@ -852,6 +900,7 @@ type lifecycleParams struct {
 
 func lifecycle(dp dirPolicy) mcp.ToolHandlerFor[lifecycleParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p lifecycleParams) (*mcp.CallToolResult, any, error) {
+		actor := agentActor(req, p.Model)
 		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
@@ -865,14 +914,15 @@ func lifecycle(dp dirPolicy) mcp.ToolHandlerFor[lifecycleParams, any] {
 		if err != nil {
 			return toolError("%v", err), nil, nil
 		}
-		if restricted {
-			snap, err := st.Get(id)
-			if err != nil {
-				return toolError("%v", err), nil, nil
-			}
-			if isPrivateTyped(snap.TierType) {
-				return toolError("%s", restrictedTierMsg), nil, nil
-			}
+		snap, err := st.Get(id)
+		if err != nil {
+			return toolError("%v", err), nil, nil
+		}
+		if restricted && isPrivateTyped(snap.TierType) {
+			return toolError("%s", restrictedTierMsg), nil, nil
+		}
+		if heldForReview(snap) {
+			return toolError(heldForReviewWriteMsg, snap.ID), nil, nil
 		}
 		var opErr error
 		switch p.Action {
@@ -896,6 +946,9 @@ func lifecycle(dp dirPolicy) mcp.ToolHandlerFor[lifecycleParams, any] {
 		}
 		if opErr != nil {
 			return toolError("%v", opErr), nil, nil
+		}
+		if err := st.RecordOrigin(id, actor, "agent", "", p.Action); err != nil {
+			return nil, nil, err
 		}
 		if p.Action == "set_status" {
 			return textResult(fmt.Sprintf("set %s to %s", id.String(), p.Status)), nil, nil
@@ -1013,10 +1066,11 @@ const unscannedNote = " (stored UNSCANNED: betterleaks unavailable)"
 // write was held for human review, not applied and not lost. An agent should
 // discuss it on the entry's review thread rather than treat it as a failure.
 func quarantineText(p store.Parked) string {
+	id := render.ShortID(p.ItemID)
 	return fmt.Sprintf(
 		"quarantined as %s (%d findings) — held for human review, not applied and "+
 			"not lost. Discuss on the entry's review thread; a human approves it via "+
-			"kref quarantine (see kref quarantine show %s).", p.ItemID, len(p.Findings), p.ItemID)
+			"kref quarantine (see kref quarantine show %s).", id, len(p.Findings), id)
 }
 
 func quarantinedResult(p store.Parked) *mcp.CallToolResult {
@@ -1064,6 +1118,7 @@ func parkComment(snap *entry.Snapshot, body string, parkFn func([]scan.Finding) 
 
 type commentParams struct {
 	dirParam
+	modelParam
 	ID       string `json:"id"`
 	Action   string `json:"action"`
 	Body     string `json:"body,omitempty"`
@@ -1075,6 +1130,7 @@ type commentParams struct {
 
 func comment(dp dirPolicy) mcp.ToolHandlerFor[commentParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p commentParams) (*mcp.CallToolResult, any, error) {
+		actor := agentActor(req, p.Model)
 		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
@@ -1100,13 +1156,20 @@ func comment(dp dirPolicy) mcp.ToolHandlerFor[commentParams, any] {
 			if strings.TrimSpace(p.Body) == "" {
 				return toolError("add requires a non-empty body"), nil, nil
 			}
+			parent := ""
+			if p.ReplyTo != "" {
+				var rerr error
+				if parent, rerr = snap.ResolveCommentID(p.ReplyTo); rerr != nil {
+					return toolError("reply_to: %v", rerr), nil, nil
+				}
+			}
 			unscanned, done := parkComment(snap, p.Body, func(f []scan.Finding) (store.Parked, error) {
-				return st.QuarantineComment(id, p.Body, p.Question, p.ReplyTo, f, "agent")
+				return st.QuarantineComment(id, p.Body, p.Question, parent, f, actor, "agent")
 			})
 			if done != nil {
 				return done, nil, nil
 			}
-			cid, err := st.AddComment(id, "agent", p.Body, p.Question, p.ReplyTo)
+			cid, err := st.AddComment(id, actor, "agent", p.Body, p.Question, parent)
 			if err != nil {
 				return toolError("%v", err), nil, nil
 			}
@@ -1122,16 +1185,20 @@ func comment(dp dirPolicy) mcp.ToolHandlerFor[commentParams, any] {
 			if strings.TrimSpace(p.Body) == "" {
 				return toolError("edit requires a non-empty body"), nil, nil
 			}
+			target, terr := snap.ResolveCommentID(p.Target)
+			if terr != nil {
+				return toolError("%v", terr), nil, nil
+			}
 			unscanned, done := parkComment(snap, p.Body, func(f []scan.Finding) (store.Parked, error) {
-				return st.QuarantineEditComment(id, p.Target, p.Body, f, "agent")
+				return st.QuarantineEditComment(id, target, p.Body, f, actor, "agent")
 			})
 			if done != nil {
 				return done, nil, nil
 			}
-			if err := st.EditComment(id, p.Target, p.Body); err != nil {
+			if err := st.EditComment(id, target, p.Body); err != nil {
 				return toolError("%v", err), nil, nil
 			}
-			msg := "edited comment " + p.Target
+			msg := "edited comment " + target
 			if unscanned {
 				msg += unscannedNote
 			}
@@ -1140,49 +1207,77 @@ func comment(dp dirPolicy) mcp.ToolHandlerFor[commentParams, any] {
 			if p.Target == "" {
 				return toolError("resolve requires target (the question comment id to resolve)"), nil, nil
 			}
+			target, terr := snap.ResolveCommentID(p.Target)
+			if terr != nil {
+				return toolError("%v", terr), nil, nil
+			}
+			if tc := snap.FindComment(target); tc == nil || !tc.Question {
+				return toolError("comment %s is not a question", target), nil, nil
+			}
 			unscanned := false
 			if strings.TrimSpace(p.Note) != "" {
 				u, done := parkComment(snap, p.Note, func(f []scan.Finding) (store.Parked, error) {
-					return st.QuarantineResolveNote(id, p.Target, p.Note, f, "agent")
+					return st.QuarantineResolveNote(id, target, p.Note, f, actor, "agent")
 				})
 				if done != nil {
 					return done, nil, nil
 				}
 				unscanned = u
-				if _, err := st.AddComment(id, "agent", p.Note, false, p.Target); err != nil {
+				if _, err := st.AddComment(id, actor, "agent", p.Note, false, target); err != nil {
 					return toolError("%v", err), nil, nil
 				}
 			}
-			if err := st.ResolveComment(id, p.Target); err != nil {
+			if err := st.ResolveComment(id, target); err != nil {
 				return toolError("%v", err), nil, nil
 			}
-			msg := "resolved comment " + p.Target
+			msg := "resolved comment " + target
 			if unscanned {
 				msg += unscannedNote
 			}
 			return textResult(msg), nil, nil
+		case "unresolve":
+			if p.Target == "" {
+				return toolError("unresolve requires target (the question comment id to reopen)"), nil, nil
+			}
+			target, terr := snap.ResolveCommentID(p.Target)
+			if terr != nil {
+				return toolError("%v", terr), nil, nil
+			}
+			if tc := snap.FindComment(target); tc == nil || !tc.Question || !tc.Resolved {
+				return toolError("comment %s is not a resolved question", target), nil, nil
+			}
+			if err := st.UnresolveComment(id, target); err != nil {
+				return toolError("%v", err), nil, nil
+			}
+			return textResult("reopened comment " + target), nil, nil
 		case "delete":
 			if p.Target == "" {
 				return toolError("delete requires target (the comment id to delete)"), nil, nil
 			}
-			if err := st.DeleteComment(id, p.Target); err != nil {
+			target, terr := snap.ResolveCommentID(p.Target)
+			if terr != nil {
+				return toolError("%v", terr), nil, nil
+			}
+			if err := st.DeleteComment(id, target); err != nil {
 				return toolError("%v", err), nil, nil
 			}
-			return textResult("deleted comment " + p.Target), nil, nil
+			return textResult("deleted comment " + target), nil, nil
 		default:
-			return toolError("unknown action %q (want add|resolve|edit|delete)", p.Action), nil, nil
+			return toolError("unknown action %q (want add|resolve|unresolve|edit|delete)", p.Action), nil, nil
 		}
 	}
 }
 
 type supersedeParams struct {
 	dirParam
+	modelParam
 	Old string `json:"old"`
 	New string `json:"new"`
 }
 
 func supersede(dp dirPolicy) mcp.ToolHandlerFor[supersedeParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p supersedeParams) (*mcp.CallToolResult, any, error) {
+		actor := agentActor(req, p.Model)
 		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
@@ -1200,19 +1295,23 @@ func supersede(dp dirPolicy) mcp.ToolHandlerFor[supersedeParams, any] {
 		if err != nil {
 			return toolError("new: %v", err), nil, nil
 		}
-		if restricted {
-			for _, id := range []entity.Id{oldID, newID} {
-				snap, err := st.Get(id)
-				if err != nil {
-					return toolError("%v", err), nil, nil
-				}
-				if isPrivateTyped(snap.TierType) {
-					return toolError("%s", restrictedTierMsg), nil, nil
-				}
+		for _, id := range []entity.Id{oldID, newID} {
+			snap, err := st.Get(id)
+			if err != nil {
+				return toolError("%v", err), nil, nil
+			}
+			if restricted && isPrivateTyped(snap.TierType) {
+				return toolError("%s", restrictedTierMsg), nil, nil
+			}
+			if heldForReview(snap) {
+				return toolError(heldForReviewWriteMsg, snap.ID), nil, nil
 			}
 		}
 		if err := st.Supersede(oldID, newID); err != nil {
 			return toolError("%v", err), nil, nil
+		}
+		if err := st.RecordOrigin(oldID, actor, "agent", "", "supersede"); err != nil {
+			return nil, nil, err
 		}
 		return textResult("superseded " + oldID.String() + " by " + newID.String()), nil, nil
 	}
