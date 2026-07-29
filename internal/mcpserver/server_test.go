@@ -17,7 +17,7 @@ import (
 )
 
 var _ = Describe("kref_quarantine (read-only)", func() {
-	const secret = "ghp_012345678901234567890123456789abcdef"
+	const secret = "ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 
 	seed := func() (dir, qid string) {
 		dir = gitRepo()
@@ -534,7 +534,7 @@ var _ = Describe("kref_update and kref_supersede", func() {
 })
 
 var _ = Describe("kref_update labels and links", func() {
-	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 	BeforeEach(func() { GinkgoT().Setenv("XDG_STATE_HOME", GinkgoT().TempDir()) })
 
@@ -868,7 +868,7 @@ var _ = Describe("tool error paths", func() {
 })
 
 var _ = Describe("kref_comment", func() {
-	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 	seed := func(tier entry.Tier, body string) (string, string) {
 		GinkgoHelper()
@@ -1060,7 +1060,7 @@ var _ = Describe("kref_comment", func() {
 })
 
 var _ = Describe("kref entry-body secret scanning (fail-closed, no work lost)", func() {
-	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n"
+	const secretBody = "look: awsToken := \"ghp_012345678901234567890123456789abcdef\"\n" // DevSkim: ignore DS117838
 
 	BeforeEach(func() { GinkgoT().Setenv("XDG_STATE_HOME", GinkgoT().TempDir()) })
 

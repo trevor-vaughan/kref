@@ -16,7 +16,7 @@ import (
 // back exactly what was being withheld — and the park response and
 // kref_quarantine list both give an agent the ids to ask for.
 var _ = Describe("kref_get on a quarantine-tier id", func() {
-	const secret = "ghp_012345678901234567890123456789abcdef"
+	const secret = "ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 
 	It("refuses a held new-entry draft instead of serving its proposed body", func() {
 		dir := gitRepo()

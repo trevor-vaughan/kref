@@ -279,7 +279,7 @@ var _ = Describe("kref comment", func() {
 	})
 
 	Describe("secret scanning (fail-closed, no work lost)", func() {
-		const secretBody = "note: awsToken := \"ghp_012345678901234567890123456789abcdef\""
+		const secretBody = "note: awsToken := \"ghp_012345678901234567890123456789abcdef\"" // DevSkim: ignore DS117838
 
 		It("quarantines a secret comment on a syncable entry; the held comment is not posted", func() {
 			GinkgoT().Setenv("XDG_STATE_HOME", GinkgoT().TempDir())

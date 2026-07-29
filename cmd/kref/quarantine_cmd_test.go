@@ -337,7 +337,7 @@ var _ = Describe("kref comment quarantine paths", func() {
 // prefix, but the park notice printed the full 64-character id twice — and the
 // copy embedded in the review comment wrapped across two lines in the viewer.
 var _ = Describe("quarantine id length", func() {
-	longID := entity.Id("20d8685302071562d51de203b5651d168e24b7d6602c1823a3f04fa27c3abb84")
+	longID := entity.Id("20d8685302071562d51de203b5651d168e24b7d6602c1823a3f04fa27c3abb84") // DevSkim: ignore DS173237
 
 	It("uses a short id in the park notice", func() {
 		var out bytes.Buffer

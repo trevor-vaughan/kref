@@ -17,7 +17,7 @@ import (
 // the agent to explain itself on the review thread, and for a draft that thread
 // lives on the item itself.
 var _ = Describe("MCP writes against a quarantine-tier item", func() {
-	const secret = "ghp_012345678901234567890123456789abcdef"
+	const secret = "ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 
 	seed := func() (dir string, item entity.Id) {
 		GinkgoHelper()

@@ -6,3 +6,14 @@
 # and v2 is a breaking module-path change, so kref cannot upgrade it on its own.
 # Revisit when git-bug moves to a patched bleve.
 CVE-2022-31022
+
+# golang.org/x/crypto/openpgp is unmaintained and unsafe by design. The advisory
+# is scoped to that ONE package, but trivy and grype match at module granularity,
+# so they flag golang.org/x/crypto as a whole. kref never reaches the package:
+# `go mod why golang.org/x/crypto/openpgp` reports "main module does not need"
+# it, and the build graph pulls github.com/ProtonMail/go-crypto/openpgp — the
+# maintained fork the advisory itself recommends. govulncheck (symbol-level
+# reachability, security.yml) agrees and reports nothing. There is no fixed
+# version because the package will never be fixed, only removed; re-check if a
+# dependency ever imports it for real.
+GO-2026-5932

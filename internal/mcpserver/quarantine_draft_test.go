@@ -14,7 +14,7 @@ import (
 // kref_remember produces, so it has to name its rule too — otherwise an agent
 // whose write was held is told only that it was held, never by which rule.
 var _ = Describe("kref_quarantine on a new-entry draft", func() {
-	const secret = "ghp_012345678901234567890123456789abcdef"
+	const secret = "ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 
 	seed := func() (dir, qid string) {
 		GinkgoHelper()
