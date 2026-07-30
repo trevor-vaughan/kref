@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -31,8 +32,21 @@ var build = func() buildinfo.Info {
 	return buildinfo.Resolve(Version, Date, bi, ok)
 }()
 
+// cobraGlobals guards the two settings below, which cobra keeps in its own
+// package-level state rather than on a command: command sorting, and the
+// function map every help/usage template is rendered with. They are process-wide
+// and idempotent, so applying them once is equivalent to applying them per call —
+// and it is the only safe option, because the test suite builds root commands
+// from several goroutines at once. Writing them per call raced (a plain bool, and
+// an unsynchronized map that can fault on concurrent writes); sync.Once also
+// orders the write ahead of every later caller's reads.
+var cobraGlobals sync.Once
+
 func newRootCmd() *cobra.Command {
-	cobra.EnableCommandSorting = false
+	cobraGlobals.Do(func() {
+		cobra.EnableCommandSorting = false
+		cobra.AddTemplateFunc("aliasedName", aliasedName)
+	})
 	var dir string
 	root := &cobra.Command{
 		Use:           "kref",
@@ -166,7 +180,8 @@ func listAliasesInUsage(root *cobra.Command) {
 			width = n
 		}
 	}
-	cobra.AddTemplateFunc("aliasedName", aliasedName)
+	// aliasedName itself is registered once in newRootCmd, with the rest of the
+	// process-global cobra state; only the padding width below is per-root.
 	tmpl := strings.ReplaceAll(
 		root.UsageTemplate(),
 		"{{rpad .Name .NamePadding }} {{.Short}}",

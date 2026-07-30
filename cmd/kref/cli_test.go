@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,6 +55,31 @@ var _ = Describe("formatCLIError", func() {
 	It("emits a plain error line without --json", func() {
 		Expect(formatCLIError(errors.New("entry x not found"), false)).
 			To(Equal("error: entry x not found"))
+	})
+})
+
+// newRootCmd configures cobra state that lives in cobra's package-level
+// variables, not on the returned command. The e2e suite drives the CLI
+// in-process from more than one goroutine (the stale-todo-write spec runs a
+// concurrent writer), so rewriting those globals per call is a data race —
+// benign in value, but a real one, and for the template-function map a
+// potential "concurrent map writes" fatal. CI's -race leg caught it only
+// intermittently because the racing specs synchronize through files the race
+// detector cannot see; this spec makes it deterministic.
+var _ = Describe("newRootCmd concurrency", func() {
+	It("builds root commands from concurrent goroutines without racing", func() {
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				for range 25 {
+					_ = newRootCmd()
+				}
+			}()
+		}
+		wg.Wait()
 	})
 })
 
