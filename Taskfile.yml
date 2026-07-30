@@ -55,12 +55,20 @@ tasks:
       - task: dev:fmt
 
   check:
-    desc: Format, vet, scan for vulnerabilities, and run all suites (incl. e2e)
+    desc: Format, vet, scan for vulnerabilities, and run all suites under -race (incl. e2e)
     cmds:
       - task: dev:fmt
       - task: dev:lint
       - task: dev:vuln
+      # Mirror CI's gate. -race arms the detector; -shuffle=on varies spec order,
+      # which is what makes order-dependent and shared-state bugs reproducible.
+      # Without both, `check` passes on data races CI then fails on — and it did:
+      # the cobra process-globals race was invisible here, and even instrumented
+      # it surfaced in only 5 of 8 runs, so one clean run proves little.
+      # Coverage stays CI-only; nothing local reads the profile.
       - task: dev:test:e2e
+        vars:
+          EXTRA: "-race -shuffle=on"
 
   clean:
     desc: Remove built binaries, installed tools, and test output

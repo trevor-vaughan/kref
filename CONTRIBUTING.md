@@ -16,7 +16,7 @@ task test          # full Ginkgo suite, rendered by ginkgoleaf (task test MODE=l
 task lint          # go vet + gofmt check
 task build         # ./bin/kref with an embedded version
 task dev:test:e2e  # unit + end-to-end suites (slower)
-task check         # fmt + lint + e2e (run before pushing)
+task check         # fmt + lint + vuln + e2e under -race -shuffle (run before pushing)
 task clean         # remove ./bin, the built binary, and .test-output
 task deps:upgrade  # bump module deps to latest minor/patch, then tidy + verify
 ```

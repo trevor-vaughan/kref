@@ -18,12 +18,23 @@ import (
 
 var _ = Describe("kref end-to-end", func() {
 	Describe("version", func() {
-		It("reports a version", func() {
+		It("reports a version and the commit date it was built from", func() {
 			e := newKrefEnv("E2E Tester", "e2e@example.com")
 			// Default output is the plain `kref <version>` line (matching
-			// `kref --version`); --json switches it to a {"version": …} object.
-			Expect(e.mustRun("version")).To(MatchRegexp(`kref \S+`))
+			// `kref --version`); --json switches it to an object carrying the
+			// version and the commit date separately.
+			//
+			// The suite builds this binary with a plain `go build` from inside
+			// the checkout (e2e_suite_test.go), so the Go toolchain embeds the
+			// vcs.revision/vcs.time stamps automatically and no ldflags are
+			// needed: this is the fallback path a `go install`-from-source user
+			// gets, asserted end to end. A short commit (optionally "-dirty")
+			// stands in for the release tag a stamped build would report.
+			Expect(e.mustRun("version")).To(MatchRegexp(
+				`^kref [0-9a-f]{7}(-dirty)? \(commit \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\)\n$`))
 			Expect(e.mustRun("version", "--json")).To(ContainSubstring(`"version"`))
+			Expect(e.mustRun("version", "--json")).To(MatchRegexp(
+				`"commit_date":\s*"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"`))
 		})
 	})
 

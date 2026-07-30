@@ -143,10 +143,13 @@ func newVersionCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Match `kref --version` by default (plain `kref <version>`) and the
 			// rest of the CLI's emit() convention (human by default, JSON under
-			// --json), so the same fact has one shape per output mode.
+			// --json), so the same fact has one shape per output mode. Under
+			// --json the version and the commit date are separate keys, and
+			// commit_date is always present (empty when no build source could
+			// supply one) so a script sees a stable key set.
 			return emit(cmd,
-				func(w io.Writer, _ bool) { fmt.Fprintf(w, "kref %s\n", Version) },
-				map[string]string{"version": Version})
+				func(w io.Writer, _ bool) { fmt.Fprintf(w, "kref %s\n", build.String()) },
+				map[string]string{"version": build.Version, "commit_date": build.CommitDate})
 		},
 	}
 }
@@ -3187,7 +3190,12 @@ func newMCPCmd(dir *string) *cobra.Command {
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Example:           exampleBlock([]string{"kref mcp   # run the MCP server over stdio (for an agent host)"}),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return mcpserver.Serve(cmd.Context(), *dir, Version, allow, clientRoots)
+			// The handshake carries the bare version, not the commit
+			// parenthetical: Implementation.Version is a protocol identity field
+			// hosts log and compare, so it stays terse. Resolving it still beats
+			// the previous behaviour, which reported the literal string "dev" for
+			// anything not built with injected ldflags.
+			return mcpserver.Serve(cmd.Context(), *dir, build.Version, allow, clientRoots)
 		},
 	}
 	c.Flags().StringArrayVar(&allow, "allow", nil, "allow serving any repo under this absolute root via a per-call dir (repeatable); enables global mode")

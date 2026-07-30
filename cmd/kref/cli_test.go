@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,6 +55,31 @@ var _ = Describe("formatCLIError", func() {
 	It("emits a plain error line without --json", func() {
 		Expect(formatCLIError(errors.New("entry x not found"), false)).
 			To(Equal("error: entry x not found"))
+	})
+})
+
+// newRootCmd configures cobra state that lives in cobra's package-level
+// variables, not on the returned command. The e2e suite drives the CLI
+// in-process from more than one goroutine (the stale-todo-write spec runs a
+// concurrent writer), so rewriting those globals per call is a data race —
+// benign in value, but a real one, and for the template-function map a
+// potential "concurrent map writes" fatal. CI's -race leg caught it only
+// intermittently because the racing specs synchronize through files the race
+// detector cannot see; this spec makes it deterministic.
+var _ = Describe("newRootCmd concurrency", func() {
+	It("builds root commands from concurrent goroutines without racing", func() {
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				for range 25 {
+					_ = newRootCmd()
+				}
+			}()
+		}
+		wg.Wait()
 	})
 })
 
@@ -353,16 +379,21 @@ var _ = Describe("JSON schema", func() {
 
 var _ = Describe("kref version", func() {
 	It("reports a version (default dev under go test)", func() {
-		out := run("version")
-		Expect(out).To(ContainSubstring("kref"))
-		Expect(out).To(ContainSubstring("dev"))
+		// A test binary carries no vcs.* stamps and records Main.Version as
+		// "(devel)", so resolution falls all the way through to "dev" — and with
+		// no date to report, no commit parenthetical is printed.
+		Expect(run("version")).To(Equal("kref dev\n"))
 	})
 })
 
 var _ = Describe("version output", func() {
 	It("emits an identical one-line `kref <version>` for the flag and the subcommand", func() {
 		flag := run("--version")
-		Expect(flag).To(MatchRegexp(`^kref \S+\n$`))
+		// The line is `kref <version>` plus, on a stamped build, a
+		// ` (commit <RFC3339>)` parenthetical. Under go test only the bare
+		// version appears, but the pattern admits both so this spec documents
+		// the shipped shape rather than the test-binary shape.
+		Expect(flag).To(MatchRegexp(`^kref \S+( \(commit \S+\))?\n$`))
 		Expect(flag).NotTo(ContainSubstring("{"))
 
 		// The subcommand now follows the emit() convention: same plain text as
@@ -375,6 +406,9 @@ var _ = Describe("version output", func() {
 	It("emits JSON for the subcommand under --json", func() {
 		out := run("version", "--json")
 		Expect(out).To(ContainSubstring(`"version"`))
+		// commit_date is always present so a script sees a stable key set; it is
+		// empty when no build source could supply a date.
+		Expect(out).To(ContainSubstring(`"commit_date"`))
 	})
 })
 

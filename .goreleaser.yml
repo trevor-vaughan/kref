@@ -12,6 +12,11 @@ builds:
     binary: kref
     env:
       - CGO_ENABLED=0
+    # Pin file mtimes to the commit rather than the moment of the build. Together
+    # with stamping .CommitDate below (not .Date), two builds of one tag produce
+    # identical bytes — which is what makes the SBOM and the provenance
+    # attestations in release.yml verifiable against a rebuild.
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
       - darwin
@@ -20,7 +25,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.Version={{ .Version }}
+      - -s -w -X main.Version={{ .Version }} -X main.Date={{ .CommitDate }}
 
 archives:
   - id: kref

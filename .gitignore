@@ -21,3 +21,5 @@ docs/dev/specs/
 
 # throwaway cockpit demo repo (hands-on TUI testing)
 .cockpit-demo/
+
+.codegraph/

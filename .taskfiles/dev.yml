@@ -58,6 +58,12 @@ tasks:
     vars:
       VERSION:
         sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+      # The COMMIT date in UTC RFC3339, matching what goreleaser stamps from
+      # .CommitDate. Left empty outside a git checkout (a source tarball), which
+      # internal/buildinfo treats as "unknown" and simply omits rather than
+      # failing the build.
+      DATE:
+        sh: TZ=UTC0 git log -1 --date=iso-strict-local --format=%cd 2>/dev/null || true
     env:
       # Build through a repo-local temp dir so the linked binary inherits the
       # repo's SELinux label (container_file_t). Go's default temp is /tmp, which
@@ -67,7 +73,7 @@ tasks:
       GOTMPDIR: "{{.BIN_DIR}}/.gotmp"
     cmds:
       - mkdir -p '{{.BIN_DIR}}/.gotmp'
-      - go build -ldflags "-X main.Version={{.VERSION}}" -o {{.BIN_DIR}}/{{.BIN}} ./cmd/kref
+      - go build -ldflags "-X main.Version={{.VERSION}} -X main.Date={{.DATE}}" -o {{.BIN_DIR}}/{{.BIN}} ./cmd/kref
 
   # FORMAT selects the ginkgoleaf renderer (tree for humans, github for CI
   # annotations). EXTRA passes through extra `go test` flags (e.g. CI's

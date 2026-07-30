@@ -5,24 +5,53 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/trevor-vaughan/kref/internal/buildinfo"
 	"github.com/trevor-vaughan/kref/internal/store"
 )
 
-// Version is set at build time via -ldflags "-X main.Version=<tag>".
-var Version = "dev"
+// Version and Date are set at build time via
+// -ldflags "-X main.Version=<tag> -X main.Date=<RFC3339 commit date>".
+// A build that injects neither falls back to the VCS information the Go
+// toolchain embeds; see internal/buildinfo.
+var (
+	Version = "dev"
+	Date    = ""
+)
+
+// build is the resolved identity every version surface reports: the `version`
+// subcommand, cobra's --version, and the MCP handshake.
+var build = func() buildinfo.Info {
+	bi, ok := debug.ReadBuildInfo()
+	return buildinfo.Resolve(Version, Date, bi, ok)
+}()
+
+// cobraGlobals guards the two settings below, which cobra keeps in its own
+// package-level state rather than on a command: command sorting, and the
+// function map every help/usage template is rendered with. They are process-wide
+// and idempotent, so applying them once is equivalent to applying them per call —
+// and it is the only safe option, because the test suite builds root commands
+// from several goroutines at once. Writing them per call raced (a plain bool, and
+// an unsynchronized map that can fault on concurrent writes); sync.Once also
+// orders the write ahead of every later caller's reads.
+var cobraGlobals sync.Once
 
 func newRootCmd() *cobra.Command {
-	cobra.EnableCommandSorting = false
+	cobraGlobals.Do(func() {
+		cobra.EnableCommandSorting = false
+		cobra.AddTemplateFunc("aliasedName", aliasedName)
+	})
 	var dir string
 	root := &cobra.Command{
 		Use:           "kref",
 		Short:         "Repo-resident knowledge base over git objects",
-		Version:       Version,
+		Version:       build.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -151,7 +180,8 @@ func listAliasesInUsage(root *cobra.Command) {
 			width = n
 		}
 	}
-	cobra.AddTemplateFunc("aliasedName", aliasedName)
+	// aliasedName itself is registered once in newRootCmd, with the rest of the
+	// process-global cobra state; only the padding width below is per-root.
 	tmpl := strings.ReplaceAll(
 		root.UsageTemplate(),
 		"{{rpad .Name .NamePadding }} {{.Short}}",
