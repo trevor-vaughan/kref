@@ -326,7 +326,7 @@ task test          # full Ginkgo suite (task test MODE=llm for errors-only)
 task lint          # go vet + gofmt check + golangci-lint (same pin as CI)
 task build         # ./bin/kref with embedded version
 task dev:test:e2e  # unit + end-to-end suites (slower)
-task check         # fmt + lint + e2e
+task check         # fmt + lint + vuln + e2e under -race -shuffle
 task dev:demo      # re-render the README demo GIFs into docs/demo (needs vhs, ttyd, ffmpeg)
 task clean         # remove ./bin, the built binary, and .test-output
 task deps:upgrade  # bump module deps to latest minor/patch, then tidy + verify
