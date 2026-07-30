@@ -12,6 +12,15 @@ there is a tagged release to diff against.
 
 ### Changed
 
+- **`kref version` reports the commit date.** `kref version` and `kref --version`
+  now print `kref <version> (commit <UTC RFC3339>)`, and `--json` carries a
+  `commit_date` key alongside `version` (empty, not absent, when unknown — the
+  key set is stable). Builds with no injected version fall back to the VCS
+  information the Go toolchain embeds, so a binary built from a checkout reports
+  its short commit and date instead of a bare `dev`. Release archives stamp the
+  commit date rather than the wall-clock build time and pin file mtimes to it,
+  making them byte-for-byte reproducible and so verifiable against the published
+  SBOM and provenance attestations.
 - **Quarantine queue navigation moved from `n`/`p` to `]`/`[`.** `n`/`N` now mean
   "next/previous search match" on every interactive surface, including the
   review viewer, which also gains `/` search. Previously `n` stepped the queue
@@ -37,6 +46,18 @@ there is a tagged release to diff against.
   current section) and `O`/`C` (open/close all) bindings are retired and now do
   nothing: they were a second way to do what `space` already did, and `o` reads
   as "open the entry" in the list and quarantine cockpits.
+- **`g` jumps to the top in every viewer.** The entry viewer and the
+  `kref search`/`kref diff` pager required the vim `gg` chord while the `kref list`
+  cockpit took a single `g`, so the key a reader had just learned did nothing one
+  Enter away. Bare `g` now goes to the top everywhere; `gg` still works (the
+  second `g` is a no-op) and `<n>g` is unchanged. The help key is likewise
+  labelled `? keys` in all four viewers, matching the popup's own title.
+- **`kref purge` now skips its prompt with `-y`/`--yes`, not `--force`.** Every
+  other confirming command (`archive`, `retier`, `update --all`, `reconcile`,
+  `quarantine`) already used `-y`/`--yes`, while `--force` elsewhere means
+  "override a safety check" — the secret scan, the reconcile guard, `tier rm`'s
+  orphan check. `purge` was the one place that flag silently meant "yes, hard-delete
+  it." `kref retier` also gains the `-y` shorthand it was missing.
 
 ### Fixed
 
@@ -79,6 +100,33 @@ there is a tagged release to diff against.
   entry viewer.
 - **`j`/`k` move the status picker**, matching every other surface. It switched
   on the key type and so accepted only the arrow keys.
+- **The viewer's write keys explain themselves.** `?` advertises `r`/`e`/`d`/`x`
+  unconditionally, but on an entry with no comments — the common case for
+  `kref show` — each did nothing at all: no message, no beep. They now say why
+  ("no comment selected — this entry has none yet", "only a question can be
+  resolved"), the way the list cockpit already answered an inapplicable key.
+- **`--json` collections are always arrays.** An array-valued key is now always
+  present and always an array, so a consumer can iterate it unconditionally.
+  Previously `kref list --json` emitted `null` when nothing matched (while
+  `kref search`, `kref fav ls`, and `kref quarantine list` emitted `[]`),
+  `links`/`labels`/`provenance` were `null` on an entry that had none, and
+  `comments` disappeared entirely — three different encodings of "empty" in one
+  object, one of which crashes a naive `for` loop. The rule is recorded in
+  `AGENTS.md` and asserted across commands by the `JSON collection shape` spec.
+- **`kref new` now reads a body from piped/redirected stdin** when `--body` is
+  omitted, matching `kref update` and the documented agent guidance to pipe a
+  body on stdin. Previously `kref new … < file` silently created an entry with
+  an empty body. An interactive terminal is still never consumed (it would block
+  on an EOF that never comes), and an explicit `--body` still wins.
+- `kref bundle export <file>` reported success even when the final flush to
+  disk failed (e.g. disk full), which could leave a truncated backup bundle.
+  The file close is now checked and a failure is returned as an error.
+- Failing to append the `.kref/` line to `.git/info/exclude` during tracking
+  setup was silently ignored; it now surfaces as an error.
+- `kref update <id> --kind <kind>` (or `--title`) on an interactive terminal
+  hung forever waiting on stdin. Stdin is now read as the body source only when
+  it is actually piped or redirected; a bare interactive `kref update <id>`
+  errors with guidance instead of hanging.
 
 ### Added
 
@@ -466,51 +514,6 @@ there is a tagged release to diff against.
   <TAB>` completes the favorite names in the layer it will act on (or an
   ActiveHelp hint when there are none), and a bare `kref fav` now defaults to
   `kref fav ls`.
-
-### Changed
-
-- **`g` jumps to the top in every viewer.** The entry viewer and the
-  `kref search`/`kref diff` pager required the vim `gg` chord while the `kref list`
-  cockpit took a single `g`, so the key a reader had just learned did nothing one
-  Enter away. Bare `g` now goes to the top everywhere; `gg` still works (the
-  second `g` is a no-op) and `<n>g` is unchanged. The help key is likewise
-  labelled `? keys` in all four viewers, matching the popup's own title.
-- **`kref purge` now skips its prompt with `-y`/`--yes`, not `--force`.** Every
-  other confirming command (`archive`, `retier`, `update --all`, `reconcile`,
-  `quarantine`) already used `-y`/`--yes`, while `--force` elsewhere means
-  "override a safety check" — the secret scan, the reconcile guard, `tier rm`'s
-  orphan check. `purge` was the one place that flag silently meant "yes, hard-delete
-  it." `kref retier` also gains the `-y` shorthand it was missing.
-
-### Fixed
-
-- **The viewer's write keys explain themselves.** `?` advertises `r`/`e`/`d`/`x`
-  unconditionally, but on an entry with no comments — the common case for
-  `kref show` — each did nothing at all: no message, no beep. They now say why
-  ("no comment selected — this entry has none yet", "only a question can be
-  resolved"), the way the list cockpit already answered an inapplicable key.
-- **`--json` collections are always arrays.** An array-valued key is now always
-  present and always an array, so a consumer can iterate it unconditionally.
-  Previously `kref list --json` emitted `null` when nothing matched (while
-  `kref search`, `kref fav ls`, and `kref quarantine list` emitted `[]`),
-  `links`/`labels`/`provenance` were `null` on an entry that had none, and
-  `comments` disappeared entirely — three different encodings of "empty" in one
-  object, one of which crashes a naive `for` loop. The rule is recorded in
-  `AGENTS.md` and asserted across commands by the `JSON collection shape` spec.
-- **`kref new` now reads a body from piped/redirected stdin** when `--body` is
-  omitted, matching `kref update` and the documented agent guidance to pipe a
-  body on stdin. Previously `kref new … < file` silently created an entry with
-  an empty body. An interactive terminal is still never consumed (it would block
-  on an EOF that never comes), and an explicit `--body` still wins.
-- `kref bundle export <file>` reported success even when the final flush to
-  disk failed (e.g. disk full), which could leave a truncated backup bundle.
-  The file close is now checked and a failure is returned as an error.
-- Failing to append the `.kref/` line to `.git/info/exclude` during tracking
-  setup was silently ignored; it now surfaces as an error.
-- `kref update <id> --kind <kind>` (or `--title`) on an interactive terminal
-  hung forever waiting on stdin. Stdin is now read as the body source only when
-  it is actually piped or redirected; a bare interactive `kref update <id>`
-  errors with guidance instead of hanging.
 
 ### Security
 

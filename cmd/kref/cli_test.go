@@ -353,16 +353,21 @@ var _ = Describe("JSON schema", func() {
 
 var _ = Describe("kref version", func() {
 	It("reports a version (default dev under go test)", func() {
-		out := run("version")
-		Expect(out).To(ContainSubstring("kref"))
-		Expect(out).To(ContainSubstring("dev"))
+		// A test binary carries no vcs.* stamps and records Main.Version as
+		// "(devel)", so resolution falls all the way through to "dev" — and with
+		// no date to report, no commit parenthetical is printed.
+		Expect(run("version")).To(Equal("kref dev\n"))
 	})
 })
 
 var _ = Describe("version output", func() {
 	It("emits an identical one-line `kref <version>` for the flag and the subcommand", func() {
 		flag := run("--version")
-		Expect(flag).To(MatchRegexp(`^kref \S+\n$`))
+		// The line is `kref <version>` plus, on a stamped build, a
+		// ` (commit <RFC3339>)` parenthetical. Under go test only the bare
+		// version appears, but the pattern admits both so this spec documents
+		// the shipped shape rather than the test-binary shape.
+		Expect(flag).To(MatchRegexp(`^kref \S+( \(commit \S+\))?\n$`))
 		Expect(flag).NotTo(ContainSubstring("{"))
 
 		// The subcommand now follows the emit() convention: same plain text as
@@ -375,6 +380,9 @@ var _ = Describe("version output", func() {
 	It("emits JSON for the subcommand under --json", func() {
 		out := run("version", "--json")
 		Expect(out).To(ContainSubstring(`"version"`))
+		// commit_date is always present so a script sees a stable key set; it is
+		// empty when no build source could supply a date.
+		Expect(out).To(ContainSubstring(`"commit_date"`))
 	})
 })
 

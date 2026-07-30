@@ -53,8 +53,18 @@ Four flags are global — accepted by every command:
 
 Commands are human-readable by default and switch to JSON under `--json`.
 `kref version` follows the same rule: a plain `kref <version>` line by default
-(identical to `kref --version`), `{"version": "…"}` under `--json`. (`kref hooks
-print` emits its lefthook config directly regardless.)
+(identical to `kref --version`), `{"version": "…", "commit_date": "…"}` under
+`--json`. (`kref hooks print` emits its lefthook config directly regardless.)
+
+**What the version reports.** A released build names its tag and the UTC commit
+date it was built from — `kref v0.1.0 (commit 2026-07-28T09:14:03Z)`. A binary
+built straight from a checkout reports the short commit instead, plus `-dirty`
+when the working tree was modified, by reading the VCS information the Go
+toolchain embeds automatically; no build flags are needed for that. When no
+source can supply a date the parenthetical is omitted and `commit_date` is
+empty, so the key set under `--json` is the same either way. The date is the
+*commit* date rather than the moment of compilation, which is what lets release
+archives be byte-for-byte reproducible.
 
 **Error contract.** Under `--json`, a failure is machine-readable too: the error
 is written to stderr as a single-line `{"error": "..."}` envelope (plain

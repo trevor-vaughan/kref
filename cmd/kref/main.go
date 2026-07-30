@@ -5,16 +5,31 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/trevor-vaughan/kref/internal/buildinfo"
 	"github.com/trevor-vaughan/kref/internal/store"
 )
 
-// Version is set at build time via -ldflags "-X main.Version=<tag>".
-var Version = "dev"
+// Version and Date are set at build time via
+// -ldflags "-X main.Version=<tag> -X main.Date=<RFC3339 commit date>".
+// A build that injects neither falls back to the VCS information the Go
+// toolchain embeds; see internal/buildinfo.
+var (
+	Version = "dev"
+	Date    = ""
+)
+
+// build is the resolved identity every version surface reports: the `version`
+// subcommand, cobra's --version, and the MCP handshake.
+var build = func() buildinfo.Info {
+	bi, ok := debug.ReadBuildInfo()
+	return buildinfo.Resolve(Version, Date, bi, ok)
+}()
 
 func newRootCmd() *cobra.Command {
 	cobra.EnableCommandSorting = false
@@ -22,7 +37,7 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "kref",
 		Short:         "Repo-resident knowledge base over git objects",
-		Version:       Version,
+		Version:       build.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
