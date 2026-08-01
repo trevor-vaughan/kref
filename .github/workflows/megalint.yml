@@ -47,7 +47,7 @@ jobs:
       # scans — bump it together with the action ref. Full tree on main and the
       # weekly schedule; PR diff otherwise.
       - id: megalint
-        uses: trevor-vaughan/megalint-config@v0.2.0 # zizmor: ignore[unpinned-uses]
+        uses: trevor-vaughan/megalint-config@v0.5.0 # zizmor: ignore[unpinned-uses]
         with:
           megalinter-image: ghcr.io/trevor-vaughan/megalinter-custom-flavor:0.2.0-ml9.6.0
           validate-all-codebase: ${{ github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload SARIF to code scanning
         if: ${{ success() || failure() }}
-        uses: github/codeql-action/upload-sarif@v4 # zizmor: ignore[unpinned-uses]
+        uses: github/codeql-action/upload-sarif@v4.37.3 # zizmor: ignore[unpinned-uses]
         with:
           sarif_file: ${{ steps.megalint.outputs.sarif-file }}
           category: megalint
