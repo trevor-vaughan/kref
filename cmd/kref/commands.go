@@ -236,7 +236,7 @@ func adoptOriginRemote(cmd *cobra.Command, s *store.Store) (string, error) {
 }
 
 func newAddCmd(dir *string) *cobra.Command {
-	var kind, title, body, tier string
+	var kind, title, body, file, tier string
 	var contentType string
 	var labels []string
 	var force bool
@@ -245,12 +245,14 @@ func newAddCmd(dir *string) *cobra.Command {
 		Aliases:           []string{"create"},
 		ValidArgsFunction: noPositionalHelp("new takes no arguments — configure the entry with flags like --title, --kind, --body, --tier, --label"),
 		Short:             "Create a new entry",
-		Long: "Compose a single entry from flags. The body comes from --body or, " +
-			"when that is omitted, piped/redirected stdin. To create entries from " +
-			"existing markdown files or directories, use `kref ingest` instead.",
+		Long: "Compose a single entry from flags. The body comes from --body, else " +
+			"--file, else piped/redirected stdin. --file reads a path for its content " +
+			"only; to create entries from existing markdown files or directories and " +
+			"keep them tracked, use `kref ingest` instead.",
 		Example: exampleBlock([]string{
 			`kref new --title "Auth design" --kind spec`,
 			"kref new --body $'# Auth design\\n\\nprose'   # title derived from the H1",
+			"kref new --kind spec --file design.md       # body read from a path",
 			"kref new --kind spec < design.md            # body piped on stdin",
 			"kref new --tier shared --label area:auth --title X",
 		}),
@@ -265,11 +267,25 @@ func newAddCmd(dir *string) *cobra.Command {
 				return err
 			}
 			t := tdef.Name
-			// Body from --body, else piped/redirected stdin (never an interactive
-			// terminal — reading it would block on an EOF that never comes). This
-			// mirrors `kref update` and matches the agents_md guidance to pipe a
-			// body on stdin.
-			if !cmd.Flags().Changed("body") && !term.IsTerminal(int(os.Stdin.Fd())) {
+			// Body from --body, else --file, else piped/redirected stdin (never an
+			// interactive terminal — reading it would block on an EOF that never
+			// comes). This mirrors `kref update` and matches the agents_md guidance
+			// to pipe a body on stdin.
+			switch {
+			case cmd.Flags().Changed("body") && cmd.Flags().Changed("file"):
+				return errors.New("use one of --body or --file, not both")
+			case cmd.Flags().Changed("body"):
+				// body already set from the flag
+			case cmd.Flags().Changed("file"):
+				raw, rErr := os.ReadFile(file)
+				if rErr != nil {
+					return rErr
+				}
+				// A body lifted out of an exported entry carries the id trailer;
+				// re-creating from it must not bake that marker into the new body.
+				_, stripped := bridge.SplitMarker(raw)
+				body = string(stripped)
+			case !term.IsTerminal(int(os.Stdin.Fd())):
 				raw, rErr := io.ReadAll(cmd.InOrStdin())
 				if rErr != nil {
 					return rErr
@@ -349,6 +365,7 @@ func newAddCmd(dir *string) *cobra.Command {
 	c.Flags().StringVar(&kind, "kind", "document", "entry kind")
 	c.Flags().StringVar(&title, "title", "", "entry title")
 	c.Flags().StringVar(&body, "body", "", "entry body")
+	c.Flags().StringVar(&file, "file", "", "read the body from a file (content only — use `kref ingest` to also record the path and detect the content type)")
 	c.Flags().StringVar(&tier, "tier", "personal", "tier: private|personal|shared, or a custom tier (kref tier list)")
 	c.Flags().StringVar(&contentType, "content-type", "", "content type, e.g. application/json (default text/markdown)")
 	c.Flags().StringArrayVar(&labels, "label", nil, "label to attach (repeatable)")

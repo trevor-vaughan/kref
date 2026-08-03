@@ -954,6 +954,87 @@ var _ = Describe("add title derivation", func() {
 	})
 })
 
+var _ = Describe("kref new --file", func() {
+	setup := func() string {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		return dir
+	}
+	write := func(dir, name, content string) string {
+		p := filepath.Join(dir, name)
+		Expect(os.WriteFile(p, []byte(content), 0o644)).To(Succeed())
+		return p
+	}
+	idOf := func(jsonOut string) string {
+		GinkgoHelper()
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(jsonOut), &added)).To(Succeed())
+		return added.ID
+	}
+
+	It("takes the body from the file and derives the title from it", func() {
+		dir := setup()
+		f := write(dir, "note.md", "# From a file\n\nprose in the file\n")
+		run("--dir", dir, "new", "--file", f)
+		out := run("--dir", dir, "list")
+		Expect(out).To(ContainSubstring("From a file"))
+	})
+
+	// Same as update --file: a body lifted out of an exported entry carries the
+	// id trailer, and re-creating from it must not bake the marker into the new
+	// entry's body.
+	It("strips a kref-id trailer from the file", func() {
+		dir := setup()
+		f := write(dir, "note.md", "# T\n\nfresh\n\n<!-- kref-id: "+strings.Repeat("d", 64)+" -->\n")
+		out := run("--dir", dir, "new", "--file", f, "--json")
+		id := idOf(out)
+		body := run("--dir", dir, "show", id, "--json")
+		Expect(body).To(ContainSubstring("fresh"))
+		Expect(body).NotTo(ContainSubstring("kref-id"))
+	})
+
+	It("errors when both --body and --file are given, in update's words", func() {
+		dir := setup()
+		var buf bytes.Buffer
+		c := newRootCmd()
+		c.SetOut(&buf)
+		c.SetErr(&buf)
+		c.SetArgs([]string{"--dir", dir, "new", "--title", "T", "--body", "x", "--file", "y"})
+		Expect(c.Execute()).To(MatchError(ContainSubstring("use one of --body or --file, not both")))
+	})
+
+	It("reports the unreadable path rather than creating an empty entry", func() {
+		dir := setup()
+		missing := filepath.Join(dir, "absent.md")
+		var buf bytes.Buffer
+		c := newRootCmd()
+		c.SetOut(&buf)
+		c.SetErr(&buf)
+		c.SetArgs([]string{"--dir", dir, "new", "--title", "T", "--file", missing})
+		Expect(c.Execute()).To(MatchError(ContainSubstring(missing)))
+		Expect(run("--dir", dir, "list")).NotTo(ContainSubstring("T"))
+	})
+
+	// --file wins over stdin for the same reason --body does: an explicit flag
+	// beats an inherited pipe.
+	It("prefers --file over a piped stdin body", func() {
+		dir := setup()
+		f := write(dir, "note.md", "from the file\n")
+		var buf bytes.Buffer
+		c := newRootCmd()
+		c.SetOut(&buf)
+		c.SetErr(&buf)
+		c.SetIn(strings.NewReader("from stdin\n"))
+		c.SetArgs([]string{"--dir", dir, "new", "--title", "T", "--file", f, "--json"})
+		Expect(c.Execute()).To(Succeed())
+		body := run("--dir", dir, "show", idOf(buf.String()), "--json")
+		Expect(body).To(ContainSubstring("from the file"))
+		Expect(body).NotTo(ContainSubstring("from stdin"))
+	})
+})
+
 var _ = Describe("update command", func() {
 	add := func(dir string) string {
 		GinkgoHelper()

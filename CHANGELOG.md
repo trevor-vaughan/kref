@@ -162,6 +162,13 @@ there is a tagged release to diff against.
 
 ### Added
 
+- **`kref new --file <path>`** reads the new entry's body from a file, matching
+  `kref update --file`; it previously failed with a bare `unknown flag: --file`.
+  The body resolves as `--body`, else `--file`, else piped stdin, and the two
+  flags together are an error — the same order and rule `update` uses. A
+  `kref-id` trailer in the file is stripped, so re-creating from an exported body
+  does not bake the marker in. `--file` takes content only; `kref ingest` remains
+  the verb that records the source path and detects the content type.
 - **Horizontal scroll for wide lines** — the interactive `kref list` cockpit and
   the `kref search`/`kref diff` pager pan left/right with `←`/`h` and `→`/`l`, so
   a title or diff line wider than the window can be read without wrapping.

@@ -147,10 +147,19 @@ Two ways to create an entry:
   The title is derived from the body's H1 if `--title` is omitted. Entries
   default to the `personal` tier; pass `--tier`.
 
+  The body comes from `--body`, else `--file <path>`, else piped stdin — the
+  same order `kref update` uses. `--file` and `--body` together is an error.
+
 - **`kref ingest <path>...`** imports files you already have. A directory
   argument is walked recursively for `*.md` only; to ingest a non-markdown file,
   name it explicitly. See [The ingest bridge](#the-ingest-bridge) for the full
   secret-handling and content-type behavior.
+
+`kref new --file` and `kref ingest` are not the same thing. `--file` reads a
+path for its **content only**: no source path is recorded and the content type
+is not detected from the extension. Reach for `ingest` when the file is the
+thing you are tracking, and for `new --file` when the file is just where the
+text happens to live.
 
 `--kind <kind>` sets the kind on new entries (default `document`).
 
