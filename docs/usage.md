@@ -324,7 +324,7 @@ line-number gutter:
 | `ctrl+d`/`ctrl+u` | scroll a half page                                      |
 | `tab`/`shift+tab` | move the cursor to the next / previous item             |
 | `→`/`←` (`l`/`h`) | into a reply / out to its parent                        |
-| `g`/`G`           | jump to top / bottom                                    |
+| `g`/`G`, home/end | jump to top / bottom                                    |
 | `<n>g`            | jump to body line *n*                                   |
 | `space`           | fold the section under the cursor                       |
 | `^space`          | fold everything, or unfold it when anything is folded   |

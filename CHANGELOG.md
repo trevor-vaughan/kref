@@ -81,6 +81,11 @@ there is a tagged release to diff against.
 
 ### Fixed
 
+- **`home` jumps to the top in the entry viewer.** `end` was bound to the bottom
+  but `home` fell through to the viewport and did nothing, while the `kref list`
+  cockpit and the pager both bound the pair. A pending `<n>` count is discarded
+  by `home`, so `12` then `home` goes to the top rather than to body line 12.
+
 - **Writing the user config no longer drops settings it does not know about.**
   `config.WriteFile` renders through a canonical template that omitted
   `todo_glyphs` and `todo_default`, so any code path that rewrote the file

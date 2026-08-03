@@ -690,8 +690,8 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, a.Do(&m, msg.String())
 		}
-		// Everything else (pgup/pgdn, ctrl+d/u, home/end) scrolls the viewport by a
-		// page or half-page; the cursor follows to the item at the new top.
+		// Everything else (pgup/pgdn, ctrl+d/u) scrolls the viewport by a page or
+		// half-page; the cursor follows to the item at the new top.
 		cmd := m.sv.PassKey(msg)
 		m.syncCursorToScroll()
 		return m, cmd

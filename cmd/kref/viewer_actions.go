@@ -85,7 +85,10 @@ func viewerActionList() []action {
 			Do:    func(m *viewerModel, _ string) tea.Cmd { m.cursorOut(); return nil },
 		},
 		{
-			Keys: []string{"g"}, Display: "g/G", HelpRow: "top-bottom", Group: "nav",
+			// home rides this row rather than the viewport, matching G/end and the
+			// list cockpit's "g", "home". Update clears numBuf for every key that is
+			// neither a digit nor g, so home never arrives with a count pending.
+			Keys: []string{"g", "home"}, Display: "g/G", HelpRow: "top-bottom", Group: "nav",
 			Label: "top / bottom",
 			Do: func(m *viewerModel, _ string) tea.Cmd {
 				if m.numBuf != "" {

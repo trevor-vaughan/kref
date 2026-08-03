@@ -501,6 +501,36 @@ var _ = Describe("viewerModel cursor", func() {
 		Expect(m.cur).To(Equal(0))
 	})
 
+	// home/end only prove anything on a body that overflows the window: on the
+	// short one above, G leaves the cursor on item 0 and the assertion is vacuous.
+	tallModel := func() viewerModel {
+		return send(newViewerModel(viewerInput{
+			title: "todo", body: strings.Repeat("## section\n\nprose\n\n", 40),
+			color: false, width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		}), tea.WindowSizeMsg{Width: 80, Height: 10})
+	}
+
+	It("home jumps to the first item, as it does in the list cockpit and pager", func() {
+		m := send(tallModel(), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+		Expect(m.cur).NotTo(Equal(0)) // G really moved off the first item
+		m = send(m, tea.KeyMsg{Type: tea.KeyHome})
+		Expect(m.cur).To(Equal(0))
+		Expect(m.sv.ScrollLabel()).To(Equal("top"))
+	})
+
+	// A pending <n> is a goto-line count for g alone. home means the top
+	// whatever was typed before it, so 12home must not land on body line 12.
+	It("home ignores a pending goto-line count", func() {
+		m := send(tallModel(), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+		m = send(m,
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")},
+			tea.KeyMsg{Type: tea.KeyHome})
+		Expect(m.cur).To(Equal(0))
+		Expect(m.sv.ScrollLabel()).To(Equal("top"))
+	})
+
 	It("quits on q, and on esc once there is nothing left to dismiss", func() {
 		_, qCmd := send(newModel(), size).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 		Expect(qCmd).NotTo(BeNil())
