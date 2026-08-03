@@ -12,7 +12,7 @@ import (
 
 // secretBody carries a github-pat pattern. betterleaks filters synthetic AWS
 // keys, so a `ghp_` token is the fixture the rest of the suite uses too.
-const secretBody = "token: ghp_012345678901234567890123456789abcdef"
+const secretBody = "token: ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 
 func guardedFixture() (*store.Store, entity.Id, *guardedWriter) {
 	GinkgoHelper()
