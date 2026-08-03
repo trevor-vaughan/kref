@@ -754,6 +754,10 @@ type ShowOptions struct {
 	Width       int      // markdown wrap width; 0 = no hard wrap (pipe-safe default)
 	TrackedNote string   // preformatted "<path> [<drift>]"; empty = no Tracked row
 	Favorites   []string // favorite names pointing at this entry; empty = no row
+	// Links are the entry's typed edges, resolved by the command layer (render
+	// keeps no store dependency, exactly as TrackedNote arrives preformatted).
+	// The header shows up to maxBaseLinkRows of them.
+	Links entry.LinkView
 }
 
 // plainMarkdownStyle is a glamour style that strips heading markers and
@@ -816,8 +820,58 @@ type hdrRow struct {
 	vw           int
 }
 
-// baseHeaderRows builds the standard metadata rows (ID … Tracked).
-func baseHeaderRows(snap *entry.Snapshot, color bool, trackedNote string, favorites []string) []hdrRow {
+// maxBaseLinkRows caps the links shown in the base header. An entry with a long
+// edge list would otherwise push its body off the screen on every `kref show`;
+// the overflow line points at the expanded header, which lists them all.
+const maxBaseLinkRows = 10
+
+// linkRow formats one edge for a header: direction, type, short id, title. The
+// base and extended headers share it so the two never drift apart.
+func linkRow(dir string, l entry.LinkRef) string {
+	return fmt.Sprintf("%-4s %-12s %s  %s", dir, l.Type, ShortID(l.ID), l.Title)
+}
+
+// baseLinkRows renders an entry's edges for the base header, capped. Returns
+// nothing at all when there are no links: an absent row reads better than a
+// "no links" line on every entry that has none, and matches how Labels,
+// Favorites and Tracked already behave.
+func baseLinkRows(links entry.LinkView) []hdrRow {
+	total := len(links.Outgoing) + len(links.Incoming)
+	if total == 0 {
+		return nil
+	}
+	rc := utf8.RuneCountInString
+	var rows []hdrRow
+	add := func(label, value string) { rows = append(rows, hdrRow{label, value, rc(value)}) }
+
+	emit := func(dir string, refs []entry.LinkRef) {
+		for _, l := range refs {
+			if len(rows) >= maxBaseLinkRows {
+				return
+			}
+			label := ""
+			if len(rows) == 0 {
+				label = "Links"
+			}
+			add(label, linkRow(dir, l))
+		}
+	}
+	emit("out:", links.Outgoing)
+	emit("in:", links.Incoming)
+
+	// Bare count, deliberately: the expanded header that will carry the full list
+	// does not exist yet, and naming a key that does not do this would be worse
+	// than saying nothing. The view-options work that restores expand owns
+	// pointing at it.
+	if n := total - len(rows); n > 0 {
+		add("", fmt.Sprintf("… +%d more", n))
+	}
+	return rows
+}
+
+// baseHeaderRows builds the standard metadata rows (ID … Tracked), plus the
+// entry's links when it has any.
+func baseHeaderRows(snap *entry.Snapshot, color bool, trackedNote string, favorites []string, links entry.LinkView) []hdrRow {
 	rc := utf8.RuneCountInString
 	var rows []hdrRow
 	add := func(label, value string, vw int) { rows = append(rows, hdrRow{label, value, vw}) }
@@ -851,7 +905,7 @@ func baseHeaderRows(snap *entry.Snapshot, color bool, trackedNote string, favori
 	if trackedNote != "" {
 		add("Tracked", trackedNote, rc(trackedNote))
 	}
-	return rows
+	return append(rows, baseLinkRows(links)...)
 }
 
 // writeHeaderRows renders label-padded rows followed by a rule sized to the
@@ -874,15 +928,18 @@ func writeHeaderRows(w io.Writer, rows []hdrRow) {
 	fmt.Fprintln(w, strings.Repeat("─", ruleW))
 }
 
-func ShowHeader(w io.Writer, snap *entry.Snapshot, color bool, trackedNote string, favorites []string) {
-	writeHeaderRows(w, baseHeaderRows(snap, color, trackedNote, favorites))
+// ShowHeader writes the metadata block for one entry. It takes the same options
+// as Show — the fields it reads are exactly a subset — rather than a growing
+// list of positional arguments.
+func ShowHeader(w io.Writer, snap *entry.Snapshot, opts ShowOptions) {
+	writeHeaderRows(w, baseHeaderRows(snap, opts.Color, opts.TrackedNote, opts.Favorites, opts.Links))
 }
 
 // Show renders the full detail view of one entry per opts. The full id is
 // intentional: Show is the canonical reference surface.
 func Show(w io.Writer, snap *entry.Snapshot, opts ShowOptions) {
 	if !opts.NoHeader {
-		ShowHeader(w, snap, opts.Color, opts.TrackedNote, opts.Favorites)
+		ShowHeader(w, snap, opts)
 		if opts.HeaderOnly {
 			return
 		}

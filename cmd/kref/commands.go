@@ -835,7 +835,7 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 			return nil
 		}
 		var hb bytes.Buffer
-		render.ShowHeader(&hb, sn, o.Color, o.TrackedNote, o.Favorites)
+		render.ShowHeader(&hb, sn, o)
 		return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
 	}
 	reload := func() ([]string, []entry.Comment, error) {
@@ -847,6 +847,12 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 			snap2.Merged = m
 		}
 		o2 := opts
+		// Links are recomputed too: one may have been added from elsewhere since
+		// the viewer opened, and a refresh that showed a stale edge list would be
+		// worse than not showing one.
+		if lv, lerr := s.Links(id); lerr == nil {
+			o2.Links = lv
+		}
 		o2.TrackedNote = ""
 		if snap2.Tracked {
 			drift2, dErr := bridge.DriftState(s, snap2)
@@ -884,6 +890,9 @@ func openEntry(cmd *cobra.Command, dir *string, s *store.Store, snap *entry.Snap
 		Color:     useColor(cmd),
 		Width:     ttyWidth(),
 		Favorites: favoritesFor(s.Favorites(), snap.ID),
+	}
+	if links, err := s.Links(snap.ID); err == nil {
+		opts.Links = links
 	}
 	if snap.Tracked {
 		if drift, err := bridge.DriftState(s, snap); err == nil {
@@ -950,6 +959,12 @@ func newShowCmd(dir *string) *cobra.Command {
 				Color:      useColor(cmd),
 				Width:      ttyWidth(),
 				Favorites:  favNames,
+			}
+			// An entry's edges have no other human surface: `kref links` was
+			// retired, and --json is not one. Resolving them here is a walk of the
+			// excerpt cache, the same one `kref list` already does.
+			if links, lerr := s.Links(id); lerr == nil {
+				opts.Links = links
 			}
 			if snap.Tracked {
 				opts.TrackedNote = snap.TrackedPath + " [" + drift + "]"

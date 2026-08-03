@@ -521,6 +521,12 @@ there is a tagged release to diff against.
 
 ### Added
 
+- **`kref show` displays an entry's links.** Outgoing and incoming typed edges
+  appear in the metadata header with their type, short id and title. They were
+  previously reachable only through `show --json`: `kref links` had been retired
+  on the grounds that links live in the expanded header, and the expanded header
+  is what the viewer rework deferred. Long edge lists are capped at ten so a
+  hub entry cannot push its own body off the screen.
 - **Start a comment thread from the viewer.** `a` posts a comment and `A` raises
   a question on the entry itself. Previously `r` could only reply to an existing
   comment, so raising the first question on an entry meant leaving the viewer for
