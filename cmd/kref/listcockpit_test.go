@@ -444,11 +444,34 @@ var _ = Describe("list cockpit key feedback", func() {
 		Expect(m.err).To(BeEmpty())
 	})
 
-	It("toggles colour on t, as the entry viewer does", func() {
+	It("toggles colour from the view-options menu and persists it", func() {
+		m, _ := twoEntryModel()
+		before := m.sv.Plain()
+		m.Update(key(','))
+		Expect(m.View()).To(ContainSubstring("view options"))
+		Expect(m.View()).To(ContainSubstring("colour"))
+
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.sv.Plain()).NotTo(Equal(before))
+		_, uc, err := loadUserConfigForEdit()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(uc.Color).NotTo(BeNil())
+		Expect(*uc.Color).To(Equal(m.color))
+
+		// The menu stays open, so changing your mind is one more keypress.
+		Expect(m.View()).To(ContainSubstring("view options"))
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.sv.Plain()).To(Equal(before))
+		m.Update(key(','))
+		Expect(m.View()).NotTo(ContainSubstring("view options"))
+	})
+
+	It("no longer treats t as a key", func() {
+		// Colour is a saved preference now; it lives behind `,` on every surface.
 		m, _ := twoEntryModel()
 		before := m.sv.Plain()
 		m.Update(key('t'))
-		Expect(m.sv.Plain()).NotTo(Equal(before))
+		Expect(m.sv.Plain()).To(Equal(before))
 	})
 })
 

@@ -107,6 +107,8 @@ type listModel struct {
 	statusIdx int
 	err       string // transient footer message
 
+	settings viewSettings // the `,` view-options overlay
+
 	search pagerSearch // shared incremental search (/, n/N) — same as the viewer and pager
 
 	noteApprove bool       // note mode: approve (true) vs reject
@@ -282,6 +284,16 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sv.CloseHelp()
 			return m, nil
 		}
+		if m.settings.isOpen() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if id := m.settings.key(msg); id != "" {
+				m.toggleSetting(id)
+				m.settings.refresh(m.settingRows())
+			}
+			return m, nil
+		}
 		if m.mode == listModeNone {
 			switch msg.String() {
 			case "j", "down":
@@ -367,9 +379,8 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "N":
 				m.jumpMatch(-1)
 				return m, nil
-			case "t":
-				m.color = !m.color
-				m.sv.SetPlain(!m.color)
+			case ",":
+				m.settings.open(m.settingRows())
 				return m, nil
 			case "?":
 				m.sv.ToggleHelp()
@@ -559,6 +570,29 @@ func (m *listModel) statusPicker() string {
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(b.String())
 }
 
+// settingRows and toggleSetting are the cockpit's half of the `,` menu. Colour
+// is the only display setting here: the rows are one line each, so there is no
+// gutter to hide.
+func (m *listModel) settingRows() []tui.MenuRow { return []tui.MenuRow{colorRow(m.color)} }
+
+// toggleSetting applies a setting to the live view and saves it to the user
+// config. A failed write is a footer notice, not a crash — the view has already
+// changed, and losing the preference is not worth losing the session over.
+func (m *listModel) toggleSetting(id string) {
+	if id != settingColor {
+		return
+	}
+	m.color = !m.color
+	m.sv.SetPlain(!m.color)
+	// The rows carry their own colour, so they have to be rebuilt: chrome alone
+	// would leave a plain frame around coloured tier glyphs.
+	m.opts.Color = m.color
+	m.reload()
+	if err := setUserColor(m.color); err != nil {
+		m.err = "preference not saved: " + err.Error()
+	}
+}
+
 // overlayBox renders the active modal (note / favorite input).
 func (m *listModel) overlayBox() string {
 	var title string
@@ -577,6 +611,9 @@ func (m *listModel) overlayBox() string {
 }
 
 func (m *listModel) View() string {
+	if m.settings.isOpen() {
+		return m.sv.RenderOverlay(m.footer(), m.settings.render(m.sv.Width(), m.color))
+	}
 	switch m.mode {
 	case listModeNote, listModeFav:
 		return m.sv.RenderOverlay(m.footer(), m.overlayBox())
@@ -626,7 +663,7 @@ func listHelpRows() []string {
 		"a / r     approve/reject   e       edit ($EDITOR)",
 		"x / u     archive/restore  s       status",
 		"f         alias            /       search   n/N next/prev",
-		"t         toggle colour",
+		",         view options",
 		"? q esc   keys / quit",
 	}
 }

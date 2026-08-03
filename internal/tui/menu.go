@@ -26,6 +26,7 @@ type MenuRow struct {
 	ID      string
 	Key     string
 	Label   string
+	Value   string // current setting for a toggle row ("on"/"off"/…); "" for actions
 	Detail  string
 	Enabled bool
 }
@@ -47,6 +48,18 @@ func NewMenu(title string) *Menu { return &Menu{title: title} }
 func (m *Menu) SetRows(rows []MenuRow) {
 	m.rows = rows
 	m.resetCursor()
+}
+
+// RefreshRows replaces the rows and keeps the selection where it is — for a menu
+// whose rows carry live values and are re-rendered after every change. Resetting
+// there would send the next keypress to a row the reader never chose. The
+// selection falls back to the first enabled row if the refresh dropped or
+// disabled the one it was on.
+func (m *Menu) RefreshRows(rows []MenuRow) {
+	m.rows = rows
+	if _, ok := m.Selected(); !ok {
+		m.resetCursor()
+	}
 }
 
 func (m *Menu) SetSubtitle(s string) { m.subtitle = s }
@@ -141,12 +154,25 @@ func (m *Menu) ByKey(k string) (MenuRow, bool) {
 // deterministic for tests and pipes.
 func (m *Menu) Render(width int, color bool) string {
 	rows := m.Rows()
-	keyW := 0
+	keyW, labelW := 0, 0
+	valued := false
 	for _, r := range rows {
 		if n := utf8.RuneCountInString(r.Key); n > keyW {
 			keyW = n
 		}
+		if n := utf8.RuneCountInString(r.Label); n > labelW {
+			labelW = n
+		}
+		if r.Value != "" {
+			valued = true
+		}
 	}
+
+	// Rows are truncated to the box rather than left to wrap: a long reason that
+	// wraps mid-phrase splits across lines and breaks the frame, the same trap
+	// the help overlay already avoids.
+	boxW := max(20, min(width-4, 72))
+	inner := max(1, boxW-2)
 
 	var b strings.Builder
 	b.WriteString(styled(menuTitleStyle, m.title, color))
@@ -163,10 +189,18 @@ func (m *Menu) Render(width int, color bool) string {
 		if i == m.cur && r.Enabled {
 			marker = cursorMark + " "
 		}
-		line := marker + pad(r.Key, keyW) + "  " + r.Label
+		label := r.Label
+		if valued {
+			label = pad(label, labelW) // line the value column up
+		}
+		line := marker + pad(r.Key, keyW) + "  " + label
+		if r.Value != "" {
+			line += "  " + r.Value
+		}
 		if r.Detail != "" {
 			line += "  " + r.Detail
 		}
+		line = truncate(line, inner)
 		if !r.Enabled {
 			line = styled(menuDimStyle, line, color)
 		}
@@ -177,7 +211,7 @@ func (m *Menu) Render(width int, color bool) string {
 	}
 	b.WriteString(styled(menuHintStyle(), "↑↓ choose · enter do · esc cancel", color))
 
-	return menuBoxStyle.Width(max(20, min(width-4, 72))).Render(b.String())
+	return menuBoxStyle.Width(boxW).Render(b.String())
 }
 
 // cursorMark flags the highlighted row, matching the cockpits' selection marker.

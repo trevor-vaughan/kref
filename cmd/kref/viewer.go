@@ -35,6 +35,25 @@ type HeaderProvider interface {
 	Reload() (header []string, comments []entry.Comment, err error)
 }
 
+// ExpandableHeader is the optional capability a provider advertises when its
+// header has an expanded form — the entry view's op-log and full link list. The
+// viewer type-asserts for it: a todo cockpit header has no expansion, and the
+// action that offers it is disabled rather than absent, so the reader learns the
+// capability exists and why it does not apply here.
+type ExpandableHeader interface {
+	ExpandHeader() ([]string, error)
+}
+
+// GlyphThemedHeader is the optional capability a provider advertises when its
+// header is drawn with a glyph theme the reader can cycle. Only the todo cockpit
+// has one, so the `,` row is absent in the entry viewer rather than shown inert:
+// an entry header has no glyphs for the setting to act on. The header is
+// pre-rendered with the theme baked in, so setting it returns the new rows.
+type GlyphThemedHeader interface {
+	GlyphTheme() string
+	SetGlyphTheme(theme string) []string
+}
+
 type viewerInput struct {
 	title       string
 	body        string
@@ -46,7 +65,11 @@ type viewerInput struct {
 	entryID     entity.Id
 	actor       string
 	actorKind   string
-	provider    HeaderProvider
+	// hideGutter is inverted deliberately: the line-number gutter defaults to ON,
+	// so the zero value of viewerInput must mean "shown". A showGutter field
+	// would make every caller that forgets it silently lose the numbers.
+	hideGutter bool
+	provider   HeaderProvider
 }
 
 const (
@@ -75,6 +98,7 @@ const (
 	modeNewComment
 	modeNewQuestion
 	modePalette
+	modeSettings
 )
 
 // commentWriter is the guarded contract the viewer writes comments through. It
@@ -140,13 +164,17 @@ type viewerModel struct {
 	ta            textarea.Model
 	target        string
 	notice        string
-	spilled       string      // where a ctrl+c-interrupted draft was preserved
-	search        pagerSearch // shared incremental search (/, n/N)
-	menu          *tui.Menu   // action overlay, live while mode is modeCommentMenu or modePalette
-	menuActions   []action    // the actions behind the overlay's rows, addressed by MenuRow.ID
-	bodyStartLine int         // content-line index where the body zone begins (for <n>g)
-	bodyLineCount int         // rendered body line count (for <n>g clamping)
-	contentRaw    []string    // gutter-free content lines, parallel to the ScrollView content (for search)
+	spilled       string         // where a ctrl+c-interrupted draft was preserved
+	search        pagerSearch    // shared incremental search (/, n/N)
+	menu          *tui.Menu      // action overlay, live while mode is modeCommentMenu or modePalette
+	menuActions   []action       // the actions behind the overlay's rows, addressed by MenuRow.ID
+	showGutter    bool           // line-number gutter; off gives clean copy-paste
+	provider      HeaderProvider // kept for the optional ExpandableHeader capability
+	expandedRows  []string       // extended header, rendered as a content block while expanded
+	expanded      bool           // header currently showing the extended form
+	bodyStartLine int            // content-line index where the body zone begins (for <n>g)
+	bodyLineCount int            // rendered body line count (for <n>g clamping)
+	contentRaw    []string       // gutter-free content lines, parallel to the ScrollView content (for search)
 }
 
 func newViewerModel(in viewerInput) viewerModel {
@@ -180,6 +208,8 @@ func newViewerModel(in viewerInput) viewerModel {
 		actor:         in.actor,
 		actorKind:     in.actorKind,
 		reload:        in.provider.Reload,
+		provider:      in.provider,
+		showGutter:    !in.hideGutter,
 		ta:            ta,
 	}
 }
@@ -240,6 +270,9 @@ func gutterFor(isCursor bool) string {
 // line number followed by " │ " for a body line (lineNo >= 1), or gutterW spaces
 // for a non-body line (comments, preamble, separators). gutterW is numDigits+3.
 func numberCol(lineNo, gutterW int) string {
+	if gutterW == 0 {
+		return "" // gutter off: no column at all, so the text copies clean
+	}
 	if lineNo < 1 {
 		return strings.Repeat(" ", gutterW)
 	}
@@ -323,6 +356,9 @@ func (m *viewerModel) renderContent() {
 		d = nd
 	}
 	gutterW := d + 3
+	if !m.showGutter {
+		gutterW = 0 // no number column: the cursor gutter alone, clean to copy
+	}
 
 	var lines []string
 	m.contentRaw = m.contentRaw[:0]
@@ -332,6 +368,14 @@ func (m *viewerModel) renderContent() {
 	emit := func(raw string, isCursor bool, bodyLineNo int) {
 		m.contentRaw = append(m.contentRaw, raw)
 		lines = append(lines, gutterFor(isCursor)+numberCol(bodyLineNo, gutterW)+raw)
+	}
+
+	// Expanded header: a block at the very top, un-numbered, above the discussion.
+	if m.expanded {
+		for _, h := range m.expandedRows {
+			emit(h, false, 0)
+		}
+		emit("", false, 0)
 	}
 
 	// Discussion zone: comment nodes, un-numbered (bodyLineNo 0), blank separators.
@@ -518,6 +562,26 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeSettings {
+			switch msg.String() {
+			case "esc", ",", "q":
+				m.mode, m.menu = modeNone, nil
+				m.applyViewport()
+				return m, nil
+			case "up", "k":
+				m.menu.Move(-1)
+				return m, nil
+			case "down", "j":
+				m.menu.Move(1)
+				return m, nil
+			case "enter", " ":
+				if row, ok := m.menu.Selected(); ok {
+					m.toggleSetting(row.ID)
+				}
+				return m, nil
+			}
+			return m, nil
+		}
 		if m.mode == modePalette {
 			// Letters type into the filter here rather than firing rows: a palette
 			// is search-first, which is what makes it useful when you do not know
@@ -651,7 +715,7 @@ func (m viewerModel) View() string {
 	if m.notice != "" {
 		footer = m.notice + "  ·  " + footer
 	}
-	if m.mode == modeCommentMenu || m.mode == modePalette {
+	if m.mode == modeCommentMenu || m.mode == modePalette || m.mode == modeSettings {
 		return m.sv.RenderOverlay(footer, m.menu.Render(m.width, m.color))
 	}
 	if m.mode != modeNone {
@@ -925,6 +989,105 @@ func (m *viewerModel) openPalette() {
 	m.applyViewport()
 }
 
+// settingRow ids. Settings are not action-table entries: they carry a value and
+// persist, where actions fire and are done.
+const (
+	settingGutter = "gutter"
+	settingColor  = "colour"
+	settingGlyphs = "glyphs"
+)
+
+// openSettings builds the `,` view-options overlay. Unlike the comment menu and
+// the palette it stays open after a choice: changing two settings should be one
+// visit, not two.
+func (m *viewerModel) openSettings() {
+	menu := tui.NewMenu("view options")
+	menu.SetRows(m.settingRows())
+	m.menu = menu
+	m.mode = modeSettings
+	m.applyViewport()
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+func (m *viewerModel) settingRows() []tui.MenuRow {
+	rows := []tui.MenuRow{
+		{ID: settingGutter, Label: "line numbers", Value: onOff(m.showGutter), Enabled: true},
+		{ID: settingColor, Label: "colour", Value: onOff(m.color), Enabled: true},
+	}
+	// The glyph theme is only a setting where the header actually draws glyphs —
+	// the todo cockpit. Elsewhere the row is absent, not inert.
+	if th, ok := m.provider.(GlyphThemedHeader); ok {
+		rows = append(rows, tui.MenuRow{ID: settingGlyphs, Label: "glyphs", Value: th.GlyphTheme(), Enabled: true})
+	}
+	return rows
+}
+
+// toggleSetting flips a setting, applies it to the live view and persists it to
+// the user config. A failed write is a notice, not a crash: the view has already
+// changed, and losing the preference is not worth losing the session over.
+func (m *viewerModel) toggleSetting(id string) {
+	var err error
+	switch id {
+	case settingGutter:
+		m.showGutter = !m.showGutter
+		err = setUserLineNumbers(m.showGutter)
+	case settingColor:
+		m.color = !m.color
+		err = setUserColor(m.color)
+	case settingGlyphs:
+		th, ok := m.provider.(GlyphThemedHeader)
+		if !ok {
+			return
+		}
+		next := "emoji"
+		if th.GlyphTheme() == "emoji" {
+			next = "geometric"
+		}
+		// The theme is baked into the rendered header rows, so the provider hands
+		// back a fresh set: saving the preference alone would leave the glyphs on
+		// screen contradicting the value in this very menu until the next launch.
+		m.header = th.SetGlyphTheme(next)
+		err = setUserGlyphTheme(next)
+	default:
+		return
+	}
+	if err != nil {
+		m.notice = "preference not saved: " + err.Error()
+	}
+	m.menu.RefreshRows(m.settingRows())
+	m.applyViewport()
+}
+
+// toggleExpandHeader shows or hides the extended header. It renders as a block
+// at the top of the scrollable content, NOT into the sticky title line: that
+// line joins its rows with " · " into a single strip, so a multi-row header
+// pushed through it is truncated at the terminal edge and effectively invisible.
+func (m *viewerModel) toggleExpandHeader() {
+	if m.expanded {
+		m.expandedRows, m.expanded = nil, false
+		m.applyViewport()
+		return
+	}
+	exp, ok := m.provider.(ExpandableHeader)
+	if !ok {
+		return
+	}
+	rows, err := exp.ExpandHeader()
+	if err != nil {
+		m.notice = "could not expand the header: " + err.Error()
+		m.applyViewport()
+		return
+	}
+	m.expandedRows, m.expanded = rows, true
+	m.applyViewport()
+}
+
 // menuTarget names what the menu will act on. The delete confirm already learned
 // this lesson: an overlay floats over the very comment it is asking about, so it
 // has to say which one or the reader is choosing blind.
@@ -1158,6 +1321,17 @@ func (m *viewerModel) doReload(note string) {
 		return
 	}
 	m.header, m.comments = header, comments
+	// A refresh must not leave a stale expansion on screen: re-derive it so the
+	// op-log and links match what was just reloaded.
+	if m.expanded {
+		if exp, ok := m.provider.(ExpandableHeader); ok {
+			if rows, eerr := exp.ExpandHeader(); eerr == nil {
+				m.expandedRows = rows
+			} else {
+				m.expandedRows, m.expanded = nil, false
+			}
+		}
+	}
 	m.notice = note
 	m.applyViewport()
 }

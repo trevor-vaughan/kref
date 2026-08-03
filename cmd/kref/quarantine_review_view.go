@@ -47,6 +47,8 @@ type reviewModel struct {
 	noteApprove bool
 	err         string
 
+	settings viewSettings // the `,` view-options overlay
+
 	result reviewResult
 }
 
@@ -59,7 +61,7 @@ func newReviewModel(acts listActions, queue []store.QuarantineItem, startIndex i
 		"o       open the target entry",
 		"j/k     scroll          g/G  top / bottom",
 		"/ n/N   search / next / prev",
-		"t       toggle colour",
+		",       view options",
 		"? q esc keys / back",
 	})
 	m := &reviewModel{
@@ -152,6 +154,16 @@ func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sv.CloseHelp()
 			return m, nil
 		}
+		if m.settings.isOpen() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if id := m.settings.key(msg); id != "" {
+				m.toggleSetting(id)
+				m.settings.refresh(m.settingRows())
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "a", "r":
 			if len(m.queue) == 0 {
@@ -189,10 +201,8 @@ func (m *reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.result = reviewResult{action: "open", target: m.target()}
 			return m, tea.Quit
-		case "t":
-			m.color = !m.color
-			m.sv.SetPlain(!m.color)
-			m.sv.SetContent(m.content()) // the held payload is colour-rendered
+		case ",":
+			m.settings.open(m.settingRows())
 			return m, nil
 		case "g", "home":
 			m.sv.GotoTop()
@@ -245,7 +255,29 @@ func (m *reviewModel) updateNote(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// settingRows and toggleSetting are the review view's half of the `,` menu.
+// Colour is the only display setting here: the payload is a rendered diff, with
+// no gutter of its own.
+func (m *reviewModel) settingRows() []tui.MenuRow { return []tui.MenuRow{colorRow(m.color)} }
+
+// toggleSetting applies a setting to the live view and saves it to the user
+// config. A failed write is a footer notice, not a crash.
+func (m *reviewModel) toggleSetting(id string) {
+	if id != settingColor {
+		return
+	}
+	m.color = !m.color
+	m.sv.SetPlain(!m.color)
+	m.sv.SetContent(m.content()) // the held payload is colour-rendered
+	if err := setUserColor(m.color); err != nil {
+		m.err = "preference not saved: " + err.Error()
+	}
+}
+
 func (m *reviewModel) View() string {
+	if m.settings.isOpen() {
+		return m.sv.RenderOverlay(m.footer(), m.settings.render(m.sv.Width(), m.color))
+	}
 	if m.mode == listModeNote {
 		title := "approve — optional note"
 		if !m.noteApprove {

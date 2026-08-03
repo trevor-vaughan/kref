@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/trevor-vaughan/kref/internal/bridge"
+	"github.com/trevor-vaughan/kref/internal/config"
 )
 
 var _ = Describe("useColor KREF_COLOR override", func() {
@@ -49,6 +50,44 @@ var _ = Describe("useColor KREF_COLOR override", func() {
 		GinkgoT().Setenv("NO_COLOR", "1")
 		GinkgoT().Setenv("KREF_COLOR", "")
 		Expect(useColor(newCmd(false))).To(BeFalse())
+	})
+})
+
+var _ = Describe("resolveColor", func() {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{}
+		cmd.Flags().Bool("json", false, "")
+		return cmd
+	}
+	pref := func(on bool) *config.Config { return &config.Config{Color: &on} }
+
+	It("honors the saved preference when no env signal forces a choice", func() {
+		// Under `go test` stdout is not a terminal, so auto-detection would say
+		// false: a true here can only be the saved preference.
+		GinkgoT().Setenv("NO_COLOR", "")
+		GinkgoT().Setenv("KREF_COLOR", "")
+		Expect(resolveColor(newCmd(), pref(true))).To(BeTrue())
+		Expect(resolveColor(newCmd(), pref(false))).To(BeFalse())
+	})
+
+	It("lets the env force win over the saved preference", func() {
+		// KREF_COLOR is per-invocation intent; the saved pref is a default.
+		GinkgoT().Setenv("KREF_COLOR", "0")
+		Expect(resolveColor(newCmd(), pref(true))).To(BeFalse())
+		GinkgoT().Setenv("KREF_COLOR", "1")
+		Expect(resolveColor(newCmd(), pref(false))).To(BeTrue())
+	})
+
+	It("keeps NO_COLOR ahead of the saved preference", func() {
+		GinkgoT().Setenv("KREF_COLOR", "")
+		GinkgoT().Setenv("NO_COLOR", "1")
+		Expect(resolveColor(newCmd(), pref(true))).To(BeFalse())
+	})
+
+	It("falls through to auto-detection when nothing is saved", func() {
+		GinkgoT().Setenv("NO_COLOR", "")
+		GinkgoT().Setenv("KREF_COLOR", "")
+		Expect(resolveColor(newCmd(), &config.Config{})).To(BeFalse()) // not a tty under go test
 	})
 })
 

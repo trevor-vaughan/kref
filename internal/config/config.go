@@ -33,6 +33,14 @@ type Config struct {
 	// no argument is given and several kind:todo entries exist. Resolve with
 	// DefaultTodo.
 	TodoDefault *string `yaml:"todo_default,omitempty" json:"todo_default,omitempty"`
+	// LineNumbers shows the viewer's line-number gutter. Off gives clean
+	// copy-paste. Pointer so a sparse layer does not clobber a lower one; resolve
+	// with LineNumbersOn. Render-only; user-file scoped.
+	LineNumbers *bool `yaml:"line_numbers,omitempty" json:"line_numbers,omitempty"`
+	// Color is the saved colour preference. Unset means "auto" — the caller
+	// decides from the terminal. Env forces (KREF_COLOR, NO_COLOR) still win over
+	// it, since those express per-invocation intent. Resolve with ColorPref.
+	Color *bool `yaml:"color,omitempty" json:"color,omitempty"`
 }
 
 // WarnUnscannedOn resolves the optional flag: an unset (nil) value takes the
@@ -47,6 +55,14 @@ func (c *Config) GlyphTheme() string {
 	}
 	return "geometric"
 }
+
+// LineNumbersOn resolves the gutter preference; unset defaults to on, which is
+// what the viewer has always done.
+func (c *Config) LineNumbersOn() bool { return c.LineNumbers == nil || *c.LineNumbers }
+
+// ColorPref returns the saved colour preference, or nil when the user has never
+// expressed one — nil means "auto-detect", not "off".
+func (c *Config) ColorPref() *bool { return c.Color }
 
 // DefaultTodo resolves the configured default todo target ("" when unset).
 func (c *Config) DefaultTodo() string {
@@ -88,6 +104,12 @@ func Merge(project, user *Config) *Config {
 		if c.TodoDefault != nil {
 			v := *c.TodoDefault
 			out.TodoDefault = &v
+		}
+		if c.LineNumbers != nil {
+			out.LineNumbers = new(*c.LineNumbers)
+		}
+		if c.Color != nil {
+			out.Color = new(*c.Color)
 		}
 		maps.Copy(out.Favorites, c.Favorites)
 		if trusted && len(c.TrustedKeys) > 0 {

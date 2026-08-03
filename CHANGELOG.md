@@ -12,10 +12,26 @@ there is a tagged release to diff against.
 
 ### Changed
 
-- **The viewer's `t` colour hotkey is gone.** Toggling colour now lives in the
-  command palette (`:`, then type "colour"). Nothing else changed about it. The
-  key was dropped rather than reassigned: the viewer's hotkeys need a considered
-  pass, and until then the palette is where an action lives.
+- **The `t` colour hotkey is gone from every viewer.** Toggling colour lives in
+  the view-options menu (`,`), which each interactive surface now has: the entry
+  viewer, the `kref list` cockpit, the `kref search`/`kref diff` pager and the
+  quarantine review. The key was dropped rather than reassigned — the hotkey set
+  needs a considered pass, and a menu is where a setting lives until a key is
+  earned. Colour is a saved preference now, so it also survives the session
+  instead of resetting on the next launch.
+- **The saved colour preference is applied, not just written.** `color:` in
+  `~/.config/kref/config.yaml` was recorded by the menu and then ignored by every
+  command — the resolution order still ran env, then terminal detection, with no
+  step that read it. Interactive surfaces now resolve colour as: `KREF_COLOR` or
+  `NO_COLOR` (per-invocation intent) → the saved preference → terminal
+  detection. Static and piped output is unchanged and still ignores the file, so
+  a redirect's bytes never depend on a preference.
+- **The `kref search`/`kref diff` pager honors colour at all.** It hardcoded
+  colour on for its own chrome, so `NO_COLOR` and `--plain` styled the frame
+  anyway; and turning colour off left the body's ANSI in place, because the lines
+  arrive pre-rendered. The pager now takes its initial colour from the caller and
+  strips the body's escapes while colour is off, restoring them when it goes back
+  on.
 - **`kref version` reports the commit date.** `kref version` and `kref --version`
   now print `kref <version> (commit <UTC RFC3339>)`, and `--json` carries a
   `commit_date` key alongside `version` (empty, not absent, when unknown — the
@@ -64,6 +80,13 @@ there is a tagged release to diff against.
   it." `kref retier` also gains the `-y` shorthand it was missing.
 
 ### Fixed
+
+- **Writing the user config no longer drops settings it does not know about.**
+  `config.WriteFile` renders through a canonical template that omitted
+  `todo_glyphs` and `todo_default`, so any code path that rewrote the file
+  silently deleted them — now reachable, since toggling a display preference in
+  the viewer rewrites the file. All settable keys round-trip, with a spec that
+  fails if a future field is added to the struct but not the template.
 
 - **Agent writes through the `kref todo` cockpit are attributed correctly.** The
   cockpit resolved the actor but dropped the name, so a reply made under
@@ -535,6 +558,19 @@ there is a tagged release to diff against.
   new verbs, each with its accelerator beside it. Actions that cannot run right
   now stay visible with the reason attached, instead of the key appearing to do
   nothing until you press it.
+- **`,` opens view options** on every interactive surface, each offering only what
+  it can act on: the entry viewer has the line-number gutter (turn it off for
+  clean copy-paste) and colour; `kref todo` adds the cockpit glyph theme, which
+  cycles between the geometric and emoji sets and redraws the header on the spot;
+  the `kref list` cockpit and the quarantine review have colour; the `kref diff`
+  pager has colour and its own line numbers, which `kref search` omits rather
+  than showing inert — it has no gutter to hide. Every setting persists to
+  `~/.config/kref/config.yaml`, and the menu stays open on the row you just
+  changed, so changing two settings, or changing your mind about one, is a single
+  visit.
+- **Expanding the header is back**, as a command in the palette. It shows the
+  entry's op-log — created, edited, editors, recent body versions — plus the
+  complete link list the header caps.
 - **`:` opens the commands that have no hotkey**, filtered as you type. It is
   not a second help popup: `?` tells you what the keys are, `:` tells you what
   else there is, and nothing appears in both. Actions can now live in the palette

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,37 @@ import (
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/scan"
 	"github.com/trevor-vaughan/kref/internal/store"
+	"github.com/trevor-vaughan/kref/internal/todo"
 )
+
+// expandableStub is a stubProvider that also advertises ExpandableHeader, so the
+// palette's expand command is enabled. A plain stubProvider deliberately does
+// not: the todo cockpit has no expanded header either, and the row is disabled
+// there rather than hidden.
+type expandableStub struct {
+	stubProvider
+	rows []string
+	err  error
+}
+
+func (e expandableStub) ExpandHeader() ([]string, error) { return e.rows, e.err }
+
+// themedStub is a stubProvider that also advertises GlyphThemedHeader, the todo
+// cockpit's capability. A plain stubProvider does not: an entry header carries
+// no glyphs, so the row is absent there rather than shown inert. The pointer
+// receiver is the point — the theme has to survive the toggle.
+type themedStub struct {
+	stubProvider
+	theme string
+}
+
+func (t *themedStub) GlyphTheme() string { return t.theme }
+
+func (t *themedStub) SetGlyphTheme(theme string) []string {
+	t.theme = theme
+	t.header = []string{"header " + theme}
+	return t.header
+}
 
 // stubProvider is a test HeaderProvider: static header + fold, canned reload.
 type stubProvider struct {
@@ -36,6 +68,48 @@ func (p stubProvider) Reload() ([]string, []entry.Comment, error) {
 	}
 	return p.reload()
 }
+
+var _ = Describe("todoHeaderProvider", func() {
+	newProvider := func() *todoHeaderProvider {
+		render := func(c todo.Cockpit, theme string) []string {
+			return []string{fmt.Sprintf("%s open=%d", theme, c.Open)}
+		}
+		return &todoHeaderProvider{
+			theme:  "geometric",
+			counts: todo.Cockpit{Open: 2},
+			header: render(todo.Cockpit{Open: 2}, "geometric"),
+			render: render,
+			fetch: func() (todo.Cockpit, []entry.Comment, error) {
+				return todo.Cockpit{Open: 5}, nil, nil
+			},
+		}
+	}
+
+	It("re-renders the header under a new theme without re-reading the todo", func() {
+		// A display toggle must not move the numbers: the counts are the ones
+		// already on screen, drawn with different glyphs.
+		p := newProvider()
+		Expect(p.SetGlyphTheme("emoji")).To(Equal([]string{"emoji open=2"}))
+		Expect(p.HeaderLines()).To(Equal([]string{"emoji open=2"}))
+		Expect(p.GlyphTheme()).To(Equal("emoji"))
+	})
+
+	It("keeps the chosen theme across a reload", func() {
+		p := newProvider()
+		p.SetGlyphTheme("emoji")
+		h, _, err := p.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(h).To(Equal([]string{"emoji open=5"}))
+		Expect(p.HeaderLines()).To(Equal([]string{"emoji open=5"}))
+	})
+
+	It("renders a theme chosen after a reload against the reloaded counts", func() {
+		p := newProvider()
+		_, _, err := p.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.SetGlyphTheme("emoji")).To(Equal([]string{"emoji open=5"}))
+	})
+})
 
 var _ = Describe("todoInitialFold", func() {
 	It("collapses Done unless --full", func() {
@@ -451,9 +525,9 @@ var _ = Describe("viewerModel cursor", func() {
 		Expect(big.View()).To(ContainSubstring("top"))    // at the top
 	})
 
-	It("toggles content colour off from the palette", func() {
-		// Colour has no hotkey: `t` was dropped rather than reassigned, so the
-		// palette is the way in until use shows the action has earned a key.
+	It("toggles content colour off from the view-options menu", func() {
+		// Colour is a saved display preference, so it lives behind `,` rather than
+		// in the palette: `,` is settings, `:` is keyless commands.
 		q := []entry.Comment{{ID: "q", Author: "ada", Body: "q?", Question: true}} // open ◉ = red glyph
 		m := send(newViewerModel(viewerInput{
 			title: "todo",
@@ -462,8 +536,8 @@ var _ = Describe("viewerModel cursor", func() {
 		}), size)
 		Expect(m.View()).To(ContainSubstring("\x1b[31m")) // red content (glyph + header) when on
 		Expect(m.sv.Plain()).To(BeFalse())                // chrome styled when colour on
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("colour")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // gutter → colour
 		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
 		Expect(m.color).To(BeFalse())
 		Expect(m.View()).NotTo(ContainSubstring("\x1b[31m")) // no red content when off
@@ -1385,7 +1459,10 @@ var _ = Describe("viewerModel command palette", func() {
 			title: "spec", body: "## Open\n\n- [ ] a\n",
 			color: false, width: 90, comments: nil,
 			writer: &fakeWriter{}, entryID: "deadbeef", actorKind: "human",
-			provider: stubProvider{header: []string{"h"}},
+			provider: expandableStub{
+				stubProvider: stubProvider{header: []string{"h"}},
+				rows:         []string{"h", "Created  2026-07-01 by ada"},
+			},
 		})
 	}
 	typeRunes := func(m viewerModel, s string) viewerModel {
@@ -1399,7 +1476,7 @@ var _ = Describe("viewerModel command palette", func() {
 		m := send(newModel(), size)
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
 		Expect(m.mode).To(Equal(modePalette))
-		Expect(m.View()).To(ContainSubstring("toggle colour"))
+		Expect(m.View()).To(ContainSubstring("expand header"))
 	})
 
 	It("omits anything that already has a key", func() {
@@ -1445,10 +1522,9 @@ var _ = Describe("viewerModel command palette", func() {
 	It("filters as you type and fires the match", func() {
 		m := send(newModel(), size)
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
-		m = typeRunes(m, "colour")
+		m = typeRunes(m, "expand")
 		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
-		Expect(m.mode).To(Equal(modeNone))
-		Expect(m.color).To(BeTrue()) // colour toggled from false
+		Expect(m.mode).To(Equal(modeNone)) // fired and closed
 	})
 
 	It("takes a whole burst of runes in one key message", func() {
@@ -1457,8 +1533,8 @@ var _ = Describe("viewerModel command palette", func() {
 		// one-rune-at-a-time spec cannot catch.
 		m := send(newModel(), size)
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("colour")})
-		Expect(m.View()).To(ContainSubstring("toggle colour"))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("expand")})
+		Expect(m.View()).To(ContainSubstring("expand header"))
 
 		m2 := send(newModel(), size)
 		m2 = send(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
@@ -1469,7 +1545,7 @@ var _ = Describe("viewerModel command palette", func() {
 	It("backspaces the filter", func() {
 		m := send(newModel(), size)
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
-		m = typeRunes(m, "colourx")
+		m = typeRunes(m, "expandx")
 		Expect(m.View()).To(ContainSubstring("no matches"))
 		m = send(m, tea.KeyMsg{Type: tea.KeyBackspace})
 		Expect(m.View()).NotTo(ContainSubstring("no matches"))
@@ -1480,6 +1556,182 @@ var _ = Describe("viewerModel command palette", func() {
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
 		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
 		Expect(m.mode).To(Equal(modeNone))
+	})
+})
+
+var _ = Describe("viewerModel view options", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	newModel := func(gutter bool) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nline one\n", color: false, width: 90,
+			hideGutter: !gutter,
+			provider:   stubProvider{header: []string{"h"}},
+		})
+	}
+	newThemedModel := func(theme string) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nline one\n", color: false, width: 90,
+			provider: &themedStub{stubProvider: stubProvider{header: []string{"h"}}, theme: theme},
+		})
+	}
+	It("opens on , and shows each setting's current value", func() {
+		m := send(newModel(true), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		Expect(m.mode).To(Equal(modeSettings))
+		view := m.View()
+		Expect(view).To(ContainSubstring("line numbers"))
+		Expect(view).To(ContainSubstring("colour"))
+		Expect(view).To(ContainSubstring("on"))
+	})
+
+	It("stays open across several toggles", func() {
+		// Changing two settings should be one visit, not two — unlike the comment
+		// menu and palette, which close on fire.
+		m := send(newModel(true), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeSettings))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeSettings))
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(m.mode).To(Equal(modeNone))
+	})
+
+	It("hides the line-number column when the gutter is off", func() {
+		on := send(newModel(true), size)
+		Expect(on.View()).To(ContainSubstring("│"))
+
+		off := send(newModel(true), size)
+		off = send(off, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		off = send(off, tea.KeyMsg{Type: tea.KeyEnter}) // toggle line numbers
+		Expect(off.showGutter).To(BeFalse())
+		off = send(off, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(off.View()).NotTo(ContainSubstring("│"))
+	})
+
+	It("leaves the selection on the row just toggled", func() {
+		// The menu stays open so several settings are one visit; if the selection
+		// snapped back to the top, the obvious "changed my mind" second enter would
+		// silently toggle a different setting.
+		m := send(newModel(true), size,
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.color).To(BeTrue())
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
 		Expect(m.color).To(BeFalse())
+		Expect(m.showGutter).To(BeTrue())
+	})
+
+	It("starts with the gutter off when the config says so", func() {
+		Expect(send(newModel(false), size).View()).NotTo(ContainSubstring("│"))
+	})
+
+	It("offers the glyph theme only where the header has one", func() {
+		entryView := send(newModel(true), size, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		Expect(entryView.View()).NotTo(ContainSubstring("glyphs"))
+
+		todoView := send(newThemedModel("geometric"), size, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		Expect(todoView.View()).To(ContainSubstring("glyphs"))
+		Expect(todoView.View()).To(ContainSubstring("geometric"))
+	})
+
+	It("cycles the glyph theme, re-renders the header and persists it", func() {
+		p := &themedStub{stubProvider: stubProvider{header: []string{"header geometric"}}, theme: "geometric"}
+		m := send(newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nline one\n", color: false, width: 90,
+			provider: p,
+		}), size,
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(p.theme).To(Equal("emoji"))
+		// The header is pre-rendered with the theme baked in, so the toggle has to
+		// re-render it — not just save the preference for next launch.
+		Expect(m.header).To(Equal([]string{"header emoji"}))
+		Expect(m.View()).To(ContainSubstring("emoji"))
+		_, uc, err := loadUserConfigForEdit()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(uc.TodoGlyphs).NotTo(BeNil())
+		Expect(*uc.TodoGlyphs).To(Equal("emoji"))
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(p.theme).To(Equal("geometric"))
+		Expect(m.header).To(Equal([]string{"header geometric"}))
+	})
+})
+
+var _ = Describe("viewerModel expand header", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	expandable := func() viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nx\n", color: false, width: 90,
+			provider: expandableStub{
+				stubProvider: stubProvider{header: []string{"base header"}},
+				rows:         []string{"base header", "Created  2026-07-01 by ada"},
+			},
+		})
+	}
+
+	It("swaps in the extended header and back", func() {
+		m := send(expandable(), size)
+		Expect(m.View()).NotTo(ContainSubstring("Created"))
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeTrue())
+		// It renders as a content block, not into the sticky title line: that line
+		// joins its rows with " · " and would truncate a multi-row header away.
+		Expect(m.View()).To(ContainSubstring("Created"))
+		Expect(m.sv.Title()).NotTo(ContainSubstring("Created"))
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeFalse())
+		Expect(m.View()).NotTo(ContainSubstring("Created"))
+	})
+
+	It("is offered but disabled on a view with no expanded header", func() {
+		m := send(newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nx\n", color: false, width: 90,
+			provider: stubProvider{header: []string{"h"}},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(view).To(ContainSubstring("expand header"))
+		Expect(view).To(ContainSubstring("no expanded header")) // the reason, not silence
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeFalse()) // disabled rows cannot be selected
+	})
+
+	It("reports a failure to expand rather than swallowing it", func() {
+		m := send(newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nx\n", color: false, width: 90,
+			provider: expandableStub{
+				stubProvider: stubProvider{header: []string{"h"}},
+				err:          errors.New("store unreachable"),
+			},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeFalse())
+		Expect(m.View()).To(ContainSubstring("could not expand"))
 	})
 })

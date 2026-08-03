@@ -69,6 +69,7 @@ var _ = Describe("viewer help rows", func() {
 			"c             comment actions",
 			":             commands without a key",
 			"ctrl+r        refresh",
+			",             view options",
 			"? q esc       help / quit",
 		}))
 	})
@@ -91,8 +92,10 @@ var _ = Describe("viewer help rows", func() {
 })
 
 var _ = Describe("keyless actions", func() {
-	It("keeps colour out of the help popup now that t is gone", func() {
-		Expect(strings.Join(helpRows(), "\n")).NotTo(ContainSubstring("toggle colour"))
+	It("keeps keyless actions out of the help popup", func() {
+		// Help lists keys; a keyless action has none to list, and the palette
+		// (which help does list) is how it is found.
+		Expect(strings.Join(helpRows(), "\n")).NotTo(ContainSubstring("expand header"))
 	})
 
 	It("leaves t unbound", func() {

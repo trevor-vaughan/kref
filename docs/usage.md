@@ -92,6 +92,11 @@ under `NO_COLOR`. `KREF_COLOR=1` forces it on and `KREF_COLOR=0` forces it off,
 overriding both (handy for recording demos, or colorizing a pipe into a pager).
 `--json` output is never colored.
 
+The interactive viewers add one step: the `color:` preference saved by their `,`
+menu sits between the environment and auto-detection — `KREF_COLOR`/`NO_COLOR`
+still win, and if nothing is saved the terminal decides. Static and piped output
+ignores the preference file entirely, so a redirect's bytes do not depend on it.
+
 **Help depth.** `kref help` and `kref --help` adapt to where output goes. On an
 interactive terminal you get the concise, grouped command list. When stdout is a
 pipe or redirect (what an automated agent sees), `kref` prints the full
@@ -176,7 +181,8 @@ and act on the selected row without leaving the view. `Enter` opens it (the
 `kref todo` cockpit for a todo, the `kref show` pager otherwise) and returns you
 to where you were; `e` edits it in `$EDITOR`; `a`/`r` approve/reject a quarantine
 row; `x`/`u` archive/restore; `s` sets status; `f` sets or clears an alias
-(favorite name); `/` (with `n`/`N`) searches; `?` shows the keys; `q` quits.
+(favorite name); `/` (with `n`/`N`) searches; `,` opens view options; `?` shows
+the keys; `q` quits.
 `--no-pager`, `--plain`, and `--json` keep the static, scriptable output shown
 below (with the review-queue banner).
 
@@ -257,8 +263,9 @@ by visibility. `kref search` takes the same flag plus `matches` (default
 
 On an interactive terminal the table opens in a lean pager: the same scrolling
 and `/` search as `kref show`, but with no line-number gutter and no `<n>g` line
-jumps. Piped or redirected output prints straight through; `--plain` and
-`--json` never page; `--no-pager` opts out on a terminal.
+jumps. `,` opens view options, which here is colour alone — with no gutter there
+is nothing to hide. Piped or redirected output prints straight through;
+`--plain` and `--json` never page; `--no-pager` opts out on a terminal.
 
 ### Other flags
 
@@ -308,22 +315,33 @@ bytes.
 Omit the id to show the most-recently-touched entry. Address an entry by the
 file it came from: `kref show ./docs/note.md`.
 
-On an interactive terminal a full-screen pager opens automatically with a
+On an interactive terminal a full-screen viewer opens automatically with a
 line-number gutter:
 
 | Key               | Action                                                  |
 |-------------------|---------------------------------------------------------|
-| `j`/`k`, arrows   | scroll                                                  |
-| `ctrl+d`/`ctrl+u` | page                                                    |
+| `j`/`k`, arrows   | scroll a line                                           |
+| `ctrl+d`/`ctrl+u` | scroll a half page                                      |
+| `tab`/`shift+tab` | move the cursor to the next / previous item             |
+| `→`/`←` (`l`/`h`) | into a reply / out to its parent                        |
 | `g`/`G`           | jump to top / bottom                                    |
-| `<n>g`            | jump to line *n*                                        |
+| `<n>g`            | jump to body line *n*                                   |
+| `space`           | fold the section under the cursor                       |
+| `^space`          | fold everything, or unfold it when anything is folded   |
 | `/`               | search (`n`/`N` for next / previous match)              |
-| `r`               | re-read the entry from the store and re-render in place |
+| `a`/`A`           | new comment / new question on the entry                 |
+| `r`/`e`/`d`/`x`   | reply / edit / delete / resolve ↔ reopen a comment      |
+| `c`               | the comment menu — the four above, with their reasons   |
+| `:`               | the commands that have no key (expand header)           |
+| `,`               | view options: the line-number gutter, colour            |
+| `ctrl+r`          | re-read the entry from the store and re-render in place |
 | `?`               | toggle the key-binding help                             |
-| `q`               | quit                                                    |
+| `q`, `esc`        | quit (`esc` first dismisses a modal, popup or search)   |
 
-`r` is handy when an agent or a sync is updating the entry you are reading. When
-output is piped or redirected, paging is skipped.
+`ctrl+r` is handy when an agent or a sync is updating the entry you are reading.
+`,` saves what you change to `~/.config/kref/config.yaml`, so the gutter and
+colour stay as you left them. When output is piped or redirected, paging is
+skipped.
 
 Four flags control the output:
 
@@ -822,6 +840,21 @@ when betterleaks is absent. It only quiets the advisory; it never relaxes the
 `kref sync push` secret boundary, which always scans and fails closed regardless
 of config.
 
+### Display preferences
+
+Three keys record how the interactive viewers look. They are user-file-scoped —
+how you like a viewer to look travels with you, not with the repository, and a
+synced entry must never dictate another machine's rendering.
+
+| Key            | Effect                                                          |
+|----------------|-----------------------------------------------------------------|
+| `line_numbers` | the viewer's line-number gutter (default on; off is clean copy-paste) |
+| `color`        | colour, between the environment and terminal detection (see **Color** above) |
+| `todo_glyphs`  | the `kref todo` cockpit glyph theme: `geometric` (default) or `emoji`    |
+
+Editing the file by hand works, but `,` in any viewer is the shorter path: it
+applies the change on the spot and writes it here.
+
 ### Favorites
 
 Favorites give an entry a memorable name usable anywhere an id is accepted
@@ -918,9 +951,10 @@ and in the todo cockpit badge (`⚠ N awaiting review (M stale)`). When at least
 one held write is stale, a mutating command also prints a throttled reminder to
 stderr (at most once per 24h) pointing you at `kref quarantine`. Bare `kref
 quarantine` on a terminal opens the review queue interactively: it walks the
-pending items with `n`/`p` (next/prev), `a`/`r` approve/reject the current item
-with an optional note, `o` opens its target entry, and `q` backs out; deciding an
-item advances to the next. Off a terminal (a pipe, `--plain`, or `--json`) it
+pending items with `]`/`[` (next/prev), `a`/`r` approve/reject the current item
+with an optional note, `o` opens its target entry, `/` (with `n`/`N`) searches
+the held payload, `,` opens view options, and `q` backs out; deciding an item
+advances to the next. Off a terminal (a pipe, `--plain`, or `--json`) it
 prints the static queue instead, and a cleared queue prints a "review queue is
 clear" line.
 

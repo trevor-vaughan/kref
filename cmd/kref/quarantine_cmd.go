@@ -39,7 +39,7 @@ func newQuarantineCmd(dir *string) *cobra.Command {
 			// otherwise print the static queue (or --json).
 			if usePager(cmd) && !plainMode(cmd) && !jsonMode(cmd) {
 				actor, actorKind := resolveActor(cmd, s)
-				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, 0, useColor(cmd), ttyWidth(), actor, actorKind)
+				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, 0, resolveColor(cmd, s.EffectiveConfig()), ttyWidth(), actor, actorKind)
 				if rerr != nil {
 					return rerr
 				}
@@ -103,7 +103,7 @@ func newQuarantineShowCmd(dir *string) *cobra.Command {
 					}
 				}
 				actor, actorKind := resolveActor(cmd, s)
-				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, start, useColor(cmd), ttyWidth(), actor, actorKind)
+				res, rerr := runReviewModel(listCockpitActions{s: s, filter: store.ListFilter{}}, queue, start, resolveColor(cmd, s.EffectiveConfig()), ttyWidth(), actor, actorKind)
 				if rerr != nil {
 					return rerr
 				}

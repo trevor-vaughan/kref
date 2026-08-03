@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -819,11 +820,17 @@ func numDigits(n int) int {
 type showHeaderProvider struct {
 	header []string
 	reload func() (header []string, comments []entry.Comment, err error)
+	expand func() ([]string, error)
 }
 
 func (p showHeaderProvider) HeaderLines() []string                      { return p.header }
 func (p showHeaderProvider) InitialFold() map[string]bool               { return map[string]bool{} }
 func (p showHeaderProvider) Reload() ([]string, []entry.Comment, error) { return p.reload() }
+
+// ExpandHeader satisfies ExpandableHeader: the entry view has an extended header
+// (op-log, editors, body versions, and the complete link list the base header
+// caps). Providers without one simply do not implement this.
+func (p showHeaderProvider) ExpandHeader() ([]string, error) { return p.expand() }
 
 // showViewer runs the interactive entry viewer for one entry on the already-open
 // store s: read + fold + search + numbered gutter AND the comment writer. The
@@ -863,6 +870,23 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		}
 		return renderHeader(snap2, o2), snap2.Comments, nil
 	}
+	expand := func() ([]string, error) {
+		sn, err := s.Get(id)
+		if err != nil {
+			return nil, err
+		}
+		log, err := s.Log(id)
+		if err != nil {
+			return nil, err
+		}
+		links, err := s.Links(id)
+		if err != nil {
+			return nil, err
+		}
+		var hb bytes.Buffer
+		render.ExtendedHeader(&hb, sn, time.Now(), log, links, opts.Color, opts.TrackedNote, opts.Favorites)
+		return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n"), nil
+	}
 	actor, actorKind := resolveActor(cmd, s)
 	in := viewerInput{
 		title:       render.ShortID(snap.ID) + "  " + snap.Title,
@@ -875,7 +899,8 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		entryID:     snap.ID,
 		actor:       actor,
 		actorKind:   actorKind,
-		provider:    showHeaderProvider{header: renderHeader(snap, opts), reload: reload},
+		hideGutter:  !s.EffectiveConfig().LineNumbersOn(),
+		provider:    showHeaderProvider{header: renderHeader(snap, opts), reload: reload, expand: expand},
 	}
 	return RunViewer(in)
 }
@@ -972,6 +997,10 @@ func newShowCmd(dir *string) *cobra.Command {
 			// --header is a chrome-free metadata peek: no body, and never paged
 			// (the block is short by design).
 			if usePager(cmd) && !noPager && !headerOnly {
+				// The saved colour preference applies to the interactive surfaces
+				// only; static output stays on useColor so a pipe's bytes never
+				// depend on a preference file.
+				opts.Color = resolveColor(cmd, s.EffectiveConfig())
 				return showViewer(cmd, s, snap, opts)
 			}
 			var buf bytes.Buffer
@@ -1159,9 +1188,10 @@ func newListCmd(dir *string) *cobra.Command {
 			if usePager(cmd) && !noPager && !plain && !jsonOut && !check {
 				acts := listCockpitActions{s: s, filter: lf}
 				actor, actorKind := resolveActor(cmd, s)
+				color := resolveColor(cmd, s.EffectiveConfig())
 				return runListCockpit(acts,
-					render.ListOptions{Columns: cols, Color: useColor(cmd), ShowAll: all, Sort: sortSpec, Favorites: favIDs},
-					useColor(cmd), lf, actor, actorKind,
+					render.ListOptions{Columns: cols, Color: color, ShowAll: all, Sort: sortSpec, Favorites: favIDs},
+					color, lf, actor, actorKind,
 					func(res listResult) error {
 						switch res.action {
 						case "review":
@@ -1176,7 +1206,7 @@ func newListCmd(dir *string) *cobra.Command {
 									break
 								}
 							}
-							rr, rerr := runReviewModel(acts, queue, start, useColor(cmd), ttyWidth(), actor, actorKind)
+							rr, rerr := runReviewModel(acts, queue, start, color, ttyWidth(), actor, actorKind)
 							if rerr != nil {
 								return rerr
 							}
@@ -1274,11 +1304,13 @@ func newSearchCmd(dir *string) *cobra.Command {
 				render.SearchResults(w, hits, color)
 			}
 			if usePager(cmd) && !noPager {
+				pagerColor := resolveColor(cmd, s.EffectiveConfig())
 				var buf bytes.Buffer
-				human(&buf, useColor(cmd))
+				human(&buf, pagerColor)
 				return Page(pagerContent{
 					title: "kref search — " + args[0],
 					body:  strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"),
+					color: pagerColor,
 				})
 			}
 			return emit(cmd, human, results)
@@ -3034,6 +3066,7 @@ func newDiffCmd(dir *string) *cobra.Command {
 					body:    lines,
 					number:  true,
 					gutterW: numDigits(len(lines)) + 3,
+					color:   resolveColor(cmd, s.EffectiveConfig()),
 				})
 			}
 			fmt.Fprint(cmd.OutOrStdout(), buf.String())

@@ -195,6 +195,20 @@ func viewerActionList() []action {
 			Do:      func(m *viewerModel, _ string) tea.Cmd { m.openCommentMenu(); return nil },
 		},
 		{
+			// Keyless, so it lives in the palette: expanding is a session action,
+			// not a saved preference, which is what separates it from the settings
+			// menu. It is also where the base header's "… +N more" link overflow
+			// resolves.
+			HelpRow: "expand", Group: "view",
+			Label: "expand header", MenuLabel: "expand header (op-log + links)",
+			Enabled: func(m *viewerModel) bool {
+				_, ok := m.provider.(ExpandableHeader)
+				return ok
+			},
+			Detail: func(_ *viewerModel) string { return "no expanded header here" },
+			Do:     func(m *viewerModel, _ string) tea.Cmd { m.toggleExpandHeader(); return nil },
+		},
+		{
 			// `/` is already incremental search over the body, so the palette takes
 			// `:` — the other half of the vim pair, and free.
 			Keys: []string{":"}, HelpRow: "palette", Group: "view",
@@ -211,15 +225,12 @@ func viewerActionList() []action {
 			},
 		},
 		{
-			// Keyless: reachable from the palette, not from a hotkey. `t` was
-			// dropped rather than reassigned — the palette is where an action
-			// lives until use shows it has earned a key of its own.
-			HelpRow: "colour", Group: "view", Label: "toggle colour",
-			Do: func(m *viewerModel, _ string) tea.Cmd {
-				m.color = !m.color
-				m.applyViewport()
-				return nil
-			},
+			// Colour is a saved display preference, so it lives in the settings
+			// menu, not the palette: `,` is settings, `:` is keyless commands, and
+			// nothing belongs in both.
+			Keys: []string{","}, HelpRow: "settings", Group: "view",
+			Label: "view options",
+			Do:    func(m *viewerModel, _ string) tea.Cmd { m.openSettings(); return nil },
 		},
 		{
 			Keys: []string{"?"}, Display: "? q esc", HelpRow: "meta", Group: "view",
