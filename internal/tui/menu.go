@@ -19,7 +19,11 @@ var (
 // empty Key means the row is reachable only from here. A disabled row stays
 // visible and carries its reason in Detail: showing why something is unavailable
 // beats hiding it and leaving the reader to guess.
+//
+// ID is the host's opaque handle for the row. It exists because Key cannot serve
+// as identity: a keyless row still has to be firable once selected.
 type MenuRow struct {
+	ID      string
 	Key     string
 	Label   string
 	Detail  string

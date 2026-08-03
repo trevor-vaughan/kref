@@ -451,7 +451,9 @@ var _ = Describe("viewerModel cursor", func() {
 		Expect(big.View()).To(ContainSubstring("top"))    // at the top
 	})
 
-	It("toggles content colour off and on with t", func() {
+	It("toggles content colour off from the palette", func() {
+		// Colour has no hotkey: `t` was dropped rather than reassigned, so the
+		// palette is the way in until use shows the action has earned a key.
 		q := []entry.Comment{{ID: "q", Author: "ada", Body: "q?", Question: true}} // open ◉ = red glyph
 		m := send(newViewerModel(viewerInput{
 			title: "todo",
@@ -460,10 +462,21 @@ var _ = Describe("viewerModel cursor", func() {
 		}), size)
 		Expect(m.View()).To(ContainSubstring("\x1b[31m")) // red content (glyph + header) when on
 		Expect(m.sv.Plain()).To(BeFalse())                // chrome styled when colour on
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("colour")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
 		Expect(m.color).To(BeFalse())
 		Expect(m.View()).NotTo(ContainSubstring("\x1b[31m")) // no red content when off
 		Expect(m.sv.Plain()).To(BeTrue())                    // chrome goes plain too
+	})
+
+	It("no longer treats t as a key", func() {
+		m := send(newViewerModel(viewerInput{
+			title: "todo", body: body, color: true, width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+		Expect(m.color).To(BeTrue()) // unchanged: t falls through to the viewport
 	})
 })
 
@@ -1226,5 +1239,247 @@ var _ = Describe("viewerModel exit echo", func() {
 		fm := out.(viewerModel)
 		Expect(fm.sv.VisibleWindow()).To(ContainElement(ContainSubstring(cursorMarker)))
 		Expect(strings.Join(fm.echoLines(), "\n")).NotTo(ContainSubstring(cursorMarker))
+	})
+})
+
+var _ = Describe("viewerModel comment menu", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	withComments := func(fw *fakeWriter, cs []entry.Comment) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\n- [ ] a\n",
+			color: false, width: 90, comments: cs,
+			writer: fw, entryID: "deadbeef", actorKind: "human",
+			provider: stubProvider{
+				header: []string{"h"},
+				reload: func() ([]string, []entry.Comment, error) { return []string{"h"}, cs, nil },
+			},
+		})
+	}
+	question := []entry.Comment{{ID: "q", Author: "ada", Body: "root q?", Question: true}}
+
+	It("opens on c and lists every comment action", func() {
+		m := send(withComments(&fakeWriter{}, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		Expect(m.mode).To(Equal(modeCommentMenu))
+		view := m.View()
+		for _, want := range []string{"new comment", "new question", "reply", "edit", "delete", "resolve"} {
+			Expect(view).To(ContainSubstring(want))
+		}
+	})
+
+	It("names the comment it will act on", func() {
+		m := send(withComments(&fakeWriter{}, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		Expect(m.View()).To(ContainSubstring("ada"))
+	})
+
+	It("closes on esc without writing", func() {
+		fw := &fakeWriter{}
+		m := send(withComments(fw, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(m.mode).To(Equal(modeNone))
+		Expect(fw.added).To(BeFalse())
+	})
+
+	It("fires a row by its own accelerator from inside the menu", func() {
+		m := send(withComments(&fakeWriter{}, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		Expect(m.mode).To(Equal(modeReply)) // same path as pressing r outside
+	})
+
+	It("dims the cursor-dependent rows on an entry with no comments", func() {
+		m := send(withComments(&fakeWriter{}, nil), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		// enter takes the first *enabled* row, which must be new comment — not
+		// reply, which has nothing to reply to.
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeNewComment))
+	})
+
+	It("refuses a disabled row pressed by its accelerator", func() {
+		fw := &fakeWriter{}
+		m := send(withComments(fw, nil), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		Expect(m.mode).To(Equal(modeCommentMenu)) // still open, nothing fired
+		Expect(fw.added).To(BeFalse())
+	})
+})
+
+var _ = Describe("viewerModel new comment and question", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	newModel := func(fw *fakeWriter) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\n- [ ] a\n",
+			color: false, width: 90, comments: nil,
+			writer: fw, entryID: "deadbeef", actorKind: "human",
+			provider: stubProvider{
+				header: []string{"h"},
+				reload: func() ([]string, []entry.Comment, error) { return []string{"h"}, nil, nil },
+			},
+		})
+	}
+
+	It("a starts a root comment, not a reply", func() {
+		fw := &fakeWriter{}
+		m := send(newModel(fw), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		Expect(m.mode).To(Equal(modeNewComment))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(fw.added).To(BeTrue())
+		Expect(fw.addBody).To(Equal("hi"))
+		Expect(fw.addReplyTo).To(BeEmpty()) // root, not a reply
+		Expect(fw.addQuestion).To(BeFalse())
+	})
+
+	It("A raises a question", func() {
+		fw := &fakeWriter{}
+		m := send(newModel(fw), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+		Expect(m.mode).To(Equal(modeNewQuestion))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("why?")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(fw.added).To(BeTrue())
+		Expect(fw.addQuestion).To(BeTrue())
+		Expect(fw.addReplyTo).To(BeEmpty())
+	})
+
+	It("discards an empty body", func() {
+		fw := &fakeWriter{}
+		m := send(newModel(fw), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(fw.added).To(BeFalse())
+		Expect(m.mode).To(Equal(modeNone))
+	})
+})
+
+var _ = Describe("viewerModel command palette", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	newModel := func() viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\n- [ ] a\n",
+			color: false, width: 90, comments: nil,
+			writer: &fakeWriter{}, entryID: "deadbeef", actorKind: "human",
+			provider: stubProvider{header: []string{"h"}},
+		})
+	}
+	typeRunes := func(m viewerModel, s string) viewerModel {
+		for _, r := range s {
+			m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		return m
+	}
+
+	It("opens on : and lists the commands that have no key", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		Expect(m.mode).To(Equal(modePalette))
+		Expect(m.View()).To(ContainSubstring("toggle colour"))
+	})
+
+	It("omits anything that already has a key", func() {
+		// The palette is not a second help popup: ? answers "what are the keys",
+		// : answers "what else is there", and nothing appears in both.
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(view).NotTo(ContainSubstring("new comment"))     // has a
+		Expect(view).NotTo(ContainSubstring("reply"))           // has r
+		Expect(view).NotTo(ContainSubstring("comment actions")) // has c
+	})
+
+	It("omits keys the viewport owns, which it cannot fire", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		Expect(m.View()).NotTo(ContainSubstring("scroll a half page"))
+	})
+
+	It("lists exactly the keyless actions, whatever they come to be", func() {
+		// Pinned as a relationship rather than a fixed list, so this keeps
+		// holding as actions land keyless and later graduate to a key.
+		var want []string
+		for _, a := range viewerActionList() {
+			if a.Hidden || a.Passthrough || a.Do == nil || len(a.Keys) > 0 {
+				continue
+			}
+			label := a.MenuLabel
+			if label == "" {
+				label = a.Label
+			}
+			want = append(want, label)
+		}
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(want).NotTo(BeEmpty())
+		for _, label := range want {
+			Expect(view).To(ContainSubstring(label))
+		}
+	})
+
+	It("filters as you type and fires the match", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = typeRunes(m, "colour")
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeNone))
+		Expect(m.color).To(BeTrue()) // colour toggled from false
+	})
+
+	It("takes a whole burst of runes in one key message", func() {
+		// A terminal delivers fast typing as a single multi-rune KeyMsg; handling
+		// only the one-rune case drops most of what was typed, which a
+		// one-rune-at-a-time spec cannot catch.
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("colour")})
+		Expect(m.View()).To(ContainSubstring("toggle colour"))
+
+		m2 := send(newModel(), size)
+		m2 = send(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m2 = send(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzzz")})
+		Expect(m2.View()).To(ContainSubstring("no matches"))
+	})
+
+	It("backspaces the filter", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = typeRunes(m, "colourx")
+		Expect(m.View()).To(ContainSubstring("no matches"))
+		m = send(m, tea.KeyMsg{Type: tea.KeyBackspace})
+		Expect(m.View()).NotTo(ContainSubstring("no matches"))
+	})
+
+	It("closes on esc without acting", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(m.mode).To(Equal(modeNone))
+		Expect(m.color).To(BeFalse())
 	})
 })

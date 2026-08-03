@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -70,6 +71,10 @@ const (
 	modeEdit
 	modeResolveNote
 	modeConfirmDelete
+	modeCommentMenu
+	modeNewComment
+	modeNewQuestion
+	modePalette
 )
 
 // commentWriter is the guarded contract the viewer writes comments through. It
@@ -137,6 +142,8 @@ type viewerModel struct {
 	notice        string
 	spilled       string      // where a ctrl+c-interrupted draft was preserved
 	search        pagerSearch // shared incremental search (/, n/N)
+	menu          *tui.Menu   // action overlay, live while mode is modeCommentMenu or modePalette
+	menuActions   []action    // the actions behind the overlay's rows, addressed by MenuRow.ID
 	bodyStartLine int         // content-line index where the body zone begins (for <n>g)
 	bodyLineCount int         // rendered body line count (for <n>g clamping)
 	contentRaw    []string    // gutter-free content lines, parallel to the ScrollView content (for search)
@@ -511,6 +518,66 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modePalette {
+			// Letters type into the filter here rather than firing rows: a palette
+			// is search-first, which is what makes it useful when you do not know
+			// the key. The comment menu is the opposite — small, fixed, and keyed.
+			switch msg.String() {
+			case "esc":
+				m.mode, m.menu = modeNone, nil
+				m.applyViewport()
+				return m, nil
+			case "up":
+				m.menu.Move(-1)
+				return m, nil
+			case "down":
+				m.menu.Move(1)
+				return m, nil
+			case "enter":
+				if row, ok := m.menu.Selected(); ok {
+					return m, m.fireMenuRow(row.ID)
+				}
+				return m, nil
+			case "backspace":
+				if f := m.menu.Filter(); f != "" {
+					m.menu.SetFilter(f[:len(f)-1])
+				}
+				return m, nil
+			}
+			// Append every rune in the message, not just a lone one: a terminal
+			// delivers fast typing as a single multi-rune key, so a one-rune-only
+			// branch silently drops most of what was typed.
+			if len(msg.Runes) > 0 {
+				m.menu.SetFilter(m.menu.Filter() + string(msg.Runes))
+			}
+			return m, nil
+		}
+		if m.mode == modeCommentMenu {
+			switch msg.String() {
+			case "esc":
+				m.mode, m.menu = modeNone, nil
+				m.applyViewport()
+				return m, nil
+			case "up", "k":
+				m.menu.Move(-1)
+				return m, nil
+			case "down", "j":
+				m.menu.Move(1)
+				return m, nil
+			case "enter":
+				if row, ok := m.menu.Selected(); ok {
+					return m, m.fireMenuRow(row.ID)
+				}
+				return m, nil
+			}
+			// A row's own letter fires it from in here too, so the menu teaches
+			// the accelerator rather than replacing it. A disabled row's key is
+			// ignored: ByKey only returns rows that can act.
+			if row, ok := m.menu.ByKey(msg.String()); ok {
+				return m, m.fireMenuRow(row.ID)
+			}
+			return m, nil
+		}
 		if m.mode != modeNone {
 			switch msg.String() {
 			case "esc":
@@ -550,6 +617,11 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a, ok := actionForKey(msg.String()); ok && !a.Passthrough {
 			if a.Enabled != nil && !a.Enabled(&m) {
+				// The key is real but cannot act here. Say why, in the same words
+				// the menu would have dimmed the row with.
+				if a.Detail != nil {
+					m.notice = a.Detail(&m)
+				}
 				return m, nil
 			}
 			return m, a.Do(&m, msg.String())
@@ -578,6 +650,9 @@ func (m viewerModel) View() string {
 	}
 	if m.notice != "" {
 		footer = m.notice + "  ·  " + footer
+	}
+	if m.mode == modeCommentMenu || m.mode == modePalette {
+		return m.sv.RenderOverlay(footer, m.menu.Render(m.width, m.color))
 	}
 	if m.mode != modeNone {
 		return m.sv.RenderOverlay(footer, m.inputBox())
@@ -612,6 +687,10 @@ func (m *viewerModel) inputBox() string {
 		title, hint = "Edit comment", "ctrl+s save · ctrl+o editor · esc cancel"
 	case modeResolveNote:
 		title, hint = "Resolve — optional closing note", "ctrl+s resolve · ctrl+o editor · esc cancel"
+	case modeNewComment:
+		title, hint = "New comment", "ctrl+s post · ctrl+o editor · esc cancel"
+	case modeNewQuestion:
+		title, hint = "New question", "ctrl+s ask · ctrl+o editor · esc cancel"
 	}
 	return modalStyle.Render(
 		modalTitleStyle.Render(title) + "\n\n" + m.ta.View() + "\n\n" + modalHintStyle.Render(hint))
@@ -654,11 +733,28 @@ func (m *viewerModel) selectedCommentID() string {
 // have to explain themselves rather than look broken; verb names the action the
 // reader was reaching for ("reply to", "edit", "delete", "resolve").
 func (m *viewerModel) noComment(verb string) {
-	if len(m.comments) == 0 {
-		m.notice = "no comment selected — this entry has none yet; r replies once there is one"
-		return
+	m.notice = m.noCommentReason(verb)
+}
+
+// liveComment returns the non-deleted comment under the cursor, or nil. Edit
+// and delete both need one, and both the menu row and the key press ask through
+// this so they cannot disagree.
+func (m *viewerModel) liveComment() *entry.Comment {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil || c.Deleted {
+		return nil
 	}
-	m.notice = "no comment selected — tab to a comment to " + verb + " it"
+	return c
+}
+
+// noCommentReason is the same explanation as a string, so the comment menu can
+// show it as a disabled row's reason *before* the key is pressed while the bare
+// keypress still reports it after. One wording, two surfaces.
+func (m *viewerModel) noCommentReason(verb string) string {
+	if len(m.comments) == 0 {
+		return "no comment selected — this entry has none yet; a starts one"
+	}
+	return "no comment selected — tab to a comment to " + verb + " it"
 }
 
 // editorFinishedMsg carries the result of the $EDITOR escape back into the event
@@ -745,6 +841,29 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 		m.ta.Reset()
 		m.doReload(writeNote("edited", res))
 		return m, nil
+	case modeNewComment, modeNewQuestion:
+		if strings.TrimSpace(body) == "" {
+			m.notice = "empty — nothing posted"
+			m.mode = modeNone
+			m.ta.Reset()
+			m.applyViewport()
+			return m, nil
+		}
+		question := m.mode == modeNewQuestion
+		verb := "commented"
+		if question {
+			verb = "asked"
+		}
+		// Empty replyTo: this starts its own thread rather than answering one.
+		res, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, question, "")
+		if err != nil {
+			m.notice = "write failed: " + err.Error()
+			return m, nil
+		}
+		m.mode = modeNone
+		m.ta.Reset()
+		m.doReload(writeNote(verb, res))
+		return m, nil
 	case modeResolveNote:
 		res, err := m.writer.ResolveWithNote(m.entryID, m.target, body)
 		if err != nil {
@@ -760,6 +879,116 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 		m.applyViewport()
 		return m, nil
 	}
+}
+
+// openCommentMenu builds the comment overlay from the action table, so the menu
+// and the accelerators can never disagree about what is available: both read the
+// same Enabled and the same Detail.
+func (m *viewerModel) openCommentMenu() {
+	menu := tui.NewMenu("comment")
+	menu.SetSubtitle(m.menuTarget())
+	var rows []tui.MenuRow
+	m.menuActions = nil
+	for _, a := range viewerActionList() {
+		if a.Group != "comment" || a.Hidden {
+			continue
+		}
+		rows = append(rows, m.menuRow(a, a.MenuLabel))
+	}
+	menu.SetRows(rows)
+	m.menu = menu
+	m.mode = modeCommentMenu
+	m.applyViewport()
+}
+
+// openPalette lists the commands that have no hotkey. It is deliberately not a
+// second help popup: `?` answers "what are the keys", `:` answers "what else is
+// there", and nothing appears in both. An action listed here graduates out of
+// the palette the day it earns a key.
+func (m *viewerModel) openPalette() {
+	menu := tui.NewMenu("commands")
+	var rows []tui.MenuRow
+	m.menuActions = nil
+	for _, a := range viewerActionList() {
+		if a.Hidden || a.Passthrough || a.Do == nil || len(a.Keys) > 0 {
+			continue
+		}
+		label := a.MenuLabel
+		if label == "" {
+			label = a.Label
+		}
+		rows = append(rows, m.menuRow(a, label))
+	}
+	menu.SetRows(rows)
+	m.menu = menu
+	m.mode = modePalette
+	m.applyViewport()
+}
+
+// menuTarget names what the menu will act on. The delete confirm already learned
+// this lesson: an overlay floats over the very comment it is asking about, so it
+// has to say which one or the reader is choosing blind.
+func (m *viewerModel) menuTarget() string {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil {
+		return "on this entry"
+	}
+	first := strings.TrimSpace(strings.SplitN(c.Body, "\n", 2)[0])
+	return "on " + ansi.Truncate(render.CommentAuthor(*c)+": "+first, 44, "…")
+}
+
+// menuRow turns an action into an overlay row, recording the action so the row
+// can be fired by ID. Enablement and the dim reason come from the action itself,
+// which is what keeps a row and its accelerator in agreement.
+func (m *viewerModel) menuRow(a action, label string) tui.MenuRow {
+	row := tui.MenuRow{ID: strconv.Itoa(len(m.menuActions)), Label: label, Enabled: true}
+	if len(a.Keys) > 0 {
+		row.Key = a.Keys[0]
+	}
+	if a.Enabled != nil {
+		row.Enabled = a.Enabled(m)
+	}
+	if !row.Enabled && a.Detail != nil {
+		row.Detail = a.Detail(m)
+	}
+	m.menuActions = append(m.menuActions, a)
+	return row
+}
+
+// fireMenuRow runs the action behind a row and closes the overlay. Rows are
+// addressed by ID rather than key: a keyless action still has to be firable once
+// it is selected, which is the whole point of the palette.
+func (m *viewerModel) fireMenuRow(id string) tea.Cmd {
+	m.mode = modeNone
+	m.menu = nil
+	i, err := strconv.Atoi(id)
+	if err != nil || i < 0 || i >= len(m.menuActions) {
+		m.applyViewport()
+		return nil
+	}
+	a := m.menuActions[i]
+	if a.Do == nil {
+		m.applyViewport()
+		return nil
+	}
+	key := ""
+	if len(a.Keys) > 0 {
+		key = a.Keys[0]
+	}
+	return a.Do(m, key)
+}
+
+// startNewComment opens the modal for a comment that starts its own thread —
+// the gesture the viewer had no key for, which forced you out to `kref comment`.
+func (m *viewerModel) startNewComment(question bool) {
+	m.target = "" // root: no parent
+	m.mode = modeNewComment
+	if question {
+		m.mode = modeNewQuestion
+	}
+	m.ta.Reset()
+	m.ta.Focus()
+	m.applyViewport()
 }
 
 // startReply opens the reply modal for the comment under the cursor.

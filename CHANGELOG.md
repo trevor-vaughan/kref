@@ -12,6 +12,10 @@ there is a tagged release to diff against.
 
 ### Changed
 
+- **The viewer's `t` colour hotkey is gone.** Toggling colour now lives in the
+  command palette (`:`, then type "colour"). Nothing else changed about it. The
+  key was dropped rather than reassigned: the viewer's hotkeys need a considered
+  pass, and until then the palette is where an action lives.
 - **`kref version` reports the commit date.** `kref version` and `kref --version`
   now print `kref <version> (commit <UTC RFC3339>)`, and `--json` carries a
   `commit_date` key alongside `version` (empty, not absent, when unknown — the
@@ -514,6 +518,22 @@ there is a tagged release to diff against.
   <TAB>` completes the favorite names in the layer it will act on (or an
   ActiveHelp hint when there are none), and a bare `kref fav` now defaults to
   `kref fav ls`.
+
+### Added
+
+- **Start a comment thread from the viewer.** `a` posts a comment and `A` raises
+  a question on the entry itself. Previously `r` could only reply to an existing
+  comment, so raising the first question on an entry meant leaving the viewer for
+  `kref comment`.
+- **`c` opens a comment menu** listing reply, edit, delete, resolve and the two
+  new verbs, each with its accelerator beside it. Actions that cannot run right
+  now stay visible with the reason attached, instead of the key appearing to do
+  nothing until you press it.
+- **`:` opens the commands that have no hotkey**, filtered as you type. It is
+  not a second help popup: `?` tells you what the keys are, `:` tells you what
+  else there is, and nothing appears in both. Actions can now live in the palette
+  without a key of their own, so a key is something an action earns by being
+  reached for rather than something assigned when it is written.
 
 ### Security
 

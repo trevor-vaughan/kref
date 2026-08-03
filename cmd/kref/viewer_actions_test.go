@@ -10,7 +10,7 @@ import (
 var _ = Describe("viewer action table", func() {
 	It("binds every key exactly once", func() {
 		seen := map[string]string{}
-		for _, a := range viewerActions {
+		for _, a := range viewerActionList() {
 			for _, k := range a.Keys {
 				Expect(seen).NotTo(HaveKey(k), "key %q is bound by both %q and %q", k, seen[k], a.Label)
 				seen[k] = a.Label
@@ -18,15 +18,20 @@ var _ = Describe("viewer action table", func() {
 		}
 	})
 
-	It("gives every action at least one key and a label", func() {
-		for _, a := range viewerActions {
-			Expect(a.Keys).NotTo(BeEmpty(), "an action has no keys: %q", a.Label)
+	It("gives every action a label, and a keyless one a way to be reached", func() {
+		for _, a := range viewerActionList() {
 			Expect(a.Label).NotTo(BeEmpty(), "action %v has no label", a.Keys)
+			if len(a.Keys) == 0 {
+				// No hotkey means the palette is the only way in, so it must be
+				// dispatchable and not a viewport passthrough.
+				Expect(a.Do).NotTo(BeNil(), "keyless action %q has no handler", a.Label)
+				Expect(a.Passthrough).To(BeFalse(), "keyless action %q is a passthrough", a.Label)
+			}
 		}
 	})
 
 	It("indexes every key to its action", func() {
-		for _, a := range viewerActions {
+		for _, a := range viewerActionList() {
 			for _, k := range a.Keys {
 				got, ok := actionForKey(k)
 				Expect(ok).To(BeTrue(), "key %q is not indexed", k)
@@ -38,7 +43,7 @@ var _ = Describe("viewer action table", func() {
 	It("marks handler-less actions as viewport passthroughs", func() {
 		// A row with no Do documents a key the viewport handles. It must not be
 		// dispatched, or the viewer would swallow a scroll key and do nothing.
-		for _, a := range viewerActions {
+		for _, a := range viewerActionList() {
 			if a.Do == nil {
 				Expect(a.Passthrough).To(BeTrue(), "%q has no handler but is not a passthrough", a.Label)
 			}
@@ -59,17 +64,19 @@ var _ = Describe("viewer help rows", func() {
 			"space         fold the current section",
 			"^space        fold / unfold everything",
 			"/ n/N         search / next / prev",
+			"a/A           new comment / question",
 			"r/e/d/x       reply / edit / delete / resolve↔reopen",
+			"c             comment actions",
+			":             commands without a key",
 			"ctrl+r        refresh",
-			"t             toggle colour",
 			"? q esc       help / quit",
 		}))
 	})
 
 	It("advertises every non-hidden action", func() {
 		joined := strings.Join(helpRows(), "\n")
-		for _, a := range viewerActions {
-			if a.Hidden {
+		for _, a := range viewerActionList() {
+			if a.Hidden || a.display() == "" {
 				continue
 			}
 			Expect(joined).To(ContainSubstring(a.display()),
@@ -80,5 +87,16 @@ var _ = Describe("viewer help rows", func() {
 	It("never advertises a hidden action", func() {
 		joined := strings.Join(helpRows(), "\n")
 		Expect(joined).NotTo(ContainSubstring("retired"))
+	})
+})
+
+var _ = Describe("keyless actions", func() {
+	It("keeps colour out of the help popup now that t is gone", func() {
+		Expect(strings.Join(helpRows(), "\n")).NotTo(ContainSubstring("toggle colour"))
+	})
+
+	It("leaves t unbound", func() {
+		_, ok := actionForKey("t")
+		Expect(ok).To(BeFalse())
 	})
 })
