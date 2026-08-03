@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -145,22 +144,7 @@ type viewerModel struct {
 
 func newViewerModel(in viewerInput) viewerModel {
 	sv := tui.NewScrollView(in.title)
-	sv.SetHelpRows([]string{
-		"j/k ↑/↓       scroll a line",
-		"pgup/pgdn     scroll a page",
-		"ctrl+d/u      scroll a half page",
-		"tab/S-tab     next/prev item",
-		"→/← l/h       into a reply / out to parent",
-		"g/G           top / bottom",
-		"<n>g          goto body line n",
-		"space         fold the current section",
-		"^space        fold / unfold everything",
-		"/ n/N         search / next / prev",
-		"r/e/d/x       reply / edit / delete / resolve↔reopen",
-		"ctrl+r        refresh",
-		"t             toggle colour",
-		"? q esc       help / quit",
-	})
+	sv.SetHelpRows(helpRows())
 	col := in.provider.InitialFold()
 	if col == nil {
 		col = map[string]bool{}
@@ -564,165 +548,11 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !isDigit(msg.String()) && msg.String() != "g" {
 			m.numBuf = ""
 		}
-		switch msg.String() {
-		case "esc":
-			// Layered dismiss. A modal and the help popup are handled above, so
-			// by here the only thing left to step back from is a committed
-			// search; with nothing to dismiss, esc quits — as it already did in
-			// the pager, the list cockpit and the review viewer.
-			if m.search.footer() != "" {
-				m.search = pagerSearch{}
-				if m.foldSnapshot != nil {
-					m.collapsed, m.foldSnapshot = m.foldSnapshot, nil
-				}
-				m.applyViewport()
+		if a, ok := actionForKey(msg.String()); ok && !a.Passthrough {
+			if a.Enabled != nil && !a.Enabled(&m) {
 				return m, nil
 			}
-			return m, tea.Quit
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "?":
-			m.sv.ToggleHelp()
-			return m, nil
-		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			m.numBuf += msg.String()
-			return m, nil
-		case "g":
-			if m.numBuf != "" {
-				n, _ := strconv.Atoi(m.numBuf)
-				m.numBuf = ""
-				m.gotoBodyLine(n)
-			} else {
-				// Bare g goes to the top, and gg lands there too (the second g
-				// is a no-op) — so the vim chord and the list cockpit's single
-				// g both work, in every viewer.
-				m.gotoItem(0)
-			}
-			return m, nil
-		case "G", "end":
-			m.gotoBottom()
-			return m, nil
-		case "up", "k":
-			m.scrollLines(-1)
-			return m, nil
-		case "down", "j":
-			m.scrollLines(1)
-			return m, nil
-		case "tab":
-			m.moveCursor(1)
-			return m, nil
-		case "shift+tab":
-			m.moveCursor(-1)
-			return m, nil
-		case "right", "l":
-			m.cursorInto()
-			return m, nil
-		case "left", "h":
-			m.cursorOut()
-			return m, nil
-		case " ":
-			m.toggleFold()
-			return m, nil
-		case "r":
-			if m.writer == nil {
-				return m, nil
-			}
-			id := m.selectedCommentID()
-			if id == "" {
-				m.noComment("reply to")
-				return m, nil
-			}
-			m.target = id
-			m.mode = modeReply
-			m.ta.Reset()
-			m.ta.Focus()
-			m.applyViewport()
-			return m, nil
-		case "e":
-			if m.writer == nil {
-				return m, nil
-			}
-			c := m.commentByID(m.selectedCommentID())
-			if c == nil || c.Deleted {
-				m.noComment("edit")
-				return m, nil
-			}
-			m.target = c.ID
-			m.mode = modeEdit
-			m.ta.Reset()
-			m.ta.SetValue(c.Body)
-			m.ta.Focus()
-			m.applyViewport()
-			return m, nil
-		case "d":
-			if m.writer == nil {
-				return m, nil
-			}
-			c := m.commentByID(m.selectedCommentID())
-			if c == nil || c.Deleted {
-				m.noComment("delete")
-				return m, nil
-			}
-			m.target = c.ID
-			m.mode = modeConfirmDelete
-			m.applyViewport()
-			return m, nil
-		case "x":
-			if m.writer == nil {
-				return m, nil
-			}
-			root := m.selectedThreadRoot()
-			if root == nil {
-				m.noComment("resolve")
-				return m, nil
-			}
-			if !root.Question {
-				m.notice = "only a question can be resolved — this thread is a plain comment"
-				return m, nil
-			}
-			if root.Resolved {
-				if err := m.writer.UnresolveComment(m.entryID, root.ID); err != nil {
-					m.notice = "reopen failed: " + err.Error()
-					m.applyViewport()
-					return m, nil
-				}
-				m.nodeCollapsed[root.ID] = false // show the reopened thread
-				m.doReload("reopened")
-				return m, nil
-			}
-			m.target = root.ID
-			m.mode = modeResolveNote
-			m.ta.Reset()
-			m.ta.Focus()
-			m.applyViewport()
-			return m, nil
-		case "ctrl+r":
-			if m.reload != nil {
-				m.doReload("refreshed")
-			}
-			return m, nil
-		case "ctrl+@": // ^space — terminals send NUL for ctrl+space
-			m.toggleFoldAll()
-			return m, nil
-		case "o", "c", "O", "C":
-			// Retired fold keys, held inert rather than dropped: space folds the
-			// section under the cursor and ^space folds everything, so a stale
-			// finger must not fall through to the viewport (and `o` stays free
-			// for the open-an-entry gesture the other cockpits give it).
-			return m, nil
-		case "t":
-			m.color = !m.color
-			m.applyViewport()
-			return m, nil
-		case "/":
-			m.search.start()
-			return m, nil
-		case "n":
-			m.search.cycle(1, &m.sv)
-			return m, nil
-		case "N":
-			m.search.cycle(-1, &m.sv)
-			return m, nil
+			return m, a.Do(&m, msg.String())
 		}
 		// Everything else (pgup/pgdn, ctrl+d/u, home/end) scrolls the viewport by a
 		// page or half-page; the cursor follows to the item at the new top.
@@ -930,6 +760,93 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 		m.applyViewport()
 		return m, nil
 	}
+}
+
+// startReply opens the reply modal for the comment under the cursor.
+func (m *viewerModel) startReply() {
+	id := m.selectedCommentID()
+	if id == "" {
+		m.noComment("reply to")
+		return
+	}
+	m.target = id
+	m.mode = modeReply
+	m.ta.Reset()
+	m.ta.Focus()
+	m.applyViewport()
+}
+
+// startEdit opens the edit modal for the live comment under the cursor.
+func (m *viewerModel) startEdit() {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil || c.Deleted {
+		m.noComment("edit")
+		return
+	}
+	m.target = c.ID
+	m.mode = modeEdit
+	m.ta.Reset()
+	m.ta.SetValue(c.Body)
+	m.ta.Focus()
+	m.applyViewport()
+}
+
+// startDelete opens the delete confirm for the live comment under the cursor.
+func (m *viewerModel) startDelete() {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil || c.Deleted {
+		m.noComment("delete")
+		return
+	}
+	m.target = c.ID
+	m.mode = modeConfirmDelete
+	m.applyViewport()
+}
+
+// startResolve resolves an open question, or reopens a resolved one — x is a
+// toggle because the two states are one gesture to the reader.
+func (m *viewerModel) startResolve() tea.Cmd {
+	root := m.selectedThreadRoot()
+	if root == nil {
+		m.noComment("resolve")
+		return nil
+	}
+	if !root.Question {
+		m.notice = "only a question can be resolved — this thread is a plain comment"
+		return nil
+	}
+	if root.Resolved {
+		if err := m.writer.UnresolveComment(m.entryID, root.ID); err != nil {
+			m.notice = "reopen failed: " + err.Error()
+			m.applyViewport()
+			return nil
+		}
+		m.nodeCollapsed[root.ID] = false // show the reopened thread
+		m.doReload("reopened")
+		return nil
+	}
+	m.target = root.ID
+	m.mode = modeResolveNote
+	m.ta.Reset()
+	m.ta.Focus()
+	m.applyViewport()
+	return nil
+}
+
+// dismiss is esc's layered step-back. A modal and the help popup are handled
+// before dispatch, so by here the only thing left to dismiss is a committed
+// search; with nothing to dismiss, esc quits — as it already did in the pager,
+// the list cockpit and the review viewer.
+func (m *viewerModel) dismiss() tea.Cmd {
+	if m.search.footer() != "" {
+		m.search = pagerSearch{}
+		if m.foldSnapshot != nil {
+			m.collapsed, m.foldSnapshot = m.foldSnapshot, nil
+		}
+		m.applyViewport()
+		return nil
+	}
+	return tea.Quit
 }
 
 // writeNote turns a guarded write's outcome into the footer notice. A parked
