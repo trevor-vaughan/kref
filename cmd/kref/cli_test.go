@@ -16,10 +16,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/git-bug/git-bug/entity"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/spf13/cobra"
 
+	"github.com/trevor-vaughan/kref/internal/entry"
+	"github.com/trevor-vaughan/kref/internal/render"
 	"github.com/trevor-vaughan/kref/internal/store"
 )
 
@@ -3647,5 +3650,49 @@ var _ = Describe("TUI vim-key convention", func() {
 		ra.Update(arrowDown)
 		Expect(rr.sv.YOffset()).To(Equal(ra.sv.YOffset()))
 		Expect(rr.sv.YOffset()).To(BeNumerically(">", 0))
+	})
+})
+
+var _ = Describe("show viewer strip fields", func() {
+	newEntry := func() (string, *entry.Snapshot, *store.Store) {
+		GinkgoHelper()
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		out := run("--dir", dir, "new", "--title", "Auth design", "--body", "b", "--json")
+		var added struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(out), &added)).To(Succeed())
+		s, err := store.Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		snap, err := s.Get(entity.Id(added.ID))
+		Expect(err).NotTo(HaveOccurred())
+		return added.ID, snap, s
+	}
+
+	It("gives the viewer strip fields, not the metadata block", func() {
+		id, snap, s := newEntry()
+		defer s.Close()
+
+		fields := render.StripFields(snap, entry.LinkView{}, false)
+		Expect(fields).NotTo(BeEmpty())
+		for _, f := range fields {
+			Expect(f).NotTo(ContainSubstring(id))       // never the 64-char id
+			Expect(f).NotTo(ContainSubstring("Author")) // never a block label
+			Expect(f).NotTo(ContainSubstring("Title"))
+		}
+		Expect(fields[0]).To(ContainSubstring("personal"))
+	})
+
+	// The short id belongs to the viewer title (commands.go builds it as
+	// ShortID + "  " + Title). A field carrying it too would render it twice.
+	It("leaves the short id to the title rather than duplicating it", func() {
+		_, snap, s := newEntry()
+		defer s.Close()
+
+		short := render.ShortID(snap.ID)
+		title := short + "  " + snap.Title
+		joined := title + "  ·  " + strings.Join(render.StripFields(snap, entry.LinkView{}, false), "  ·  ")
+		Expect(strings.Count(joined, short)).To(Equal(1))
 	})
 })

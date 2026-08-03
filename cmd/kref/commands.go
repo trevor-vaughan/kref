@@ -858,9 +858,10 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		if o.NoHeader {
 			return nil
 		}
-		var hb bytes.Buffer
-		render.ShowHeader(&hb, sn, o)
-		return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
+		// The sticky strip's fields — NOT render.ShowHeader's block, whose
+		// 64-character ID row would consume the strip on its own. The full
+		// block stays reachable through `:` (expand header).
+		return render.StripFields(sn, o.Links, o.Color)
 	}
 	reload := func() ([]string, []entry.Comment, error) {
 		snap2, err := s.Get(id)

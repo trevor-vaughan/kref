@@ -325,7 +325,16 @@ Omit the id to show the most-recently-touched entry. Address an entry by the
 file it came from: `kref show ./docs/note.md`.
 
 On an interactive terminal a full-screen viewer opens automatically with a
-line-number gutter:
+line-number gutter.
+
+Its sticky top line shows the entry's short id and title, then as much metadata
+as the terminal is wide enough for — tier and status first, then version, link
+count and unresolved-question count. Narrow the window and the rightmost fields
+drop; the title is shortened before any of them are, because the title is also
+in the body and the status line while the fields are not. The complete metadata
+block, including every link, is on `:` (expand header).
+
+The viewer's keys:
 
 | Key               | Action                                                  |
 |-------------------|---------------------------------------------------------|

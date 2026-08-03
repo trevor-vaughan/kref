@@ -10,6 +10,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/trevor-vaughan/kref/internal/render"
+	"github.com/trevor-vaughan/kref/internal/todo"
 )
 
 // newTodo creates a kind:todo entry with the given body and returns its id.
@@ -463,5 +466,23 @@ var _ = Describe("kref update --kind todo guard", func() {
 		// neither was converted
 		Expect(run("--dir", dir, "show", good, "--json")).To(ContainSubstring(`"kind": "document"`))
 		Expect(run("--dir", dir, "show", bad, "--json")).To(ContainSubstring(`"kind": "document"`))
+	})
+})
+
+var _ = Describe("todo cockpit strip fields", func() {
+	It("ranks alerts above counts so a narrow strip keeps them", func() {
+		c := todo.Cockpit{Open: 12, Done: 3, Awaiting: 1, ToReview: 2, Changed: -1, Version: 83}
+		f := render.TodoStripFields(c, "geometric", false)
+		Expect(f[0]).To(ContainSubstring("1 awaiting you"))
+		Expect(f[1]).To(ContainSubstring("2 to review"))
+		Expect(f).To(ContainElement("open 12 \u00b7 done 3"))
+	})
+
+	It("keeps the static --no-pager view rendering through TodoCockpit", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		newTodo(dir, "## Open\n\n- [ ] a\n")
+		out := run("--dir", dir, "todo", "--no-pager")
+		Expect(out).To(ContainSubstring("awaiting you"))
 	})
 })

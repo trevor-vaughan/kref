@@ -25,11 +25,18 @@ import (
 )
 
 // HeaderProvider supplies the viewer's dynamic, entry-semantic inputs: the
-// sticky header signal lines, the sections collapsed on first render (by outline
+// sticky strip's fields, the sections collapsed on first render (by outline
 // heading Path), and the ctrl+r refresh. The comment write path uses the
-// separate commentWriter interface. An optional ExpandableHeader capability
-// (type-asserted) for the show e-expand is deferred to the config-menu work.
+// separate commentWriter interface. Optional ExpandableHeader and
+// GlyphThemedHeader capabilities are type-asserted.
 type HeaderProvider interface {
+	// HeaderLines returns the sticky strip's fields, most important first.
+	// The viewer joins them with · and drops from the TAIL when the width
+	// runs out, so element 0 survives longest.
+	//
+	// These are strip fields, NOT a metadata block. A value long enough to
+	// fill the strip on its own — a full 64-character id, say — starves
+	// every field after it. Use render.StripFields / render.TodoStripFields.
 	HeaderLines() []string
 	InitialFold() map[string]bool
 	Reload() (header []string, comments []entry.Comment, err error)
@@ -480,23 +487,55 @@ func (m *viewerModel) linesBelowCursor() int {
 	return max(0, m.contentLines-m.offsets[m.cur]-1)
 }
 
-// globalContext joins the entry identity and the non-empty header signal lines
-// into the single sticky title line (awaiting-you count, open/done, version).
+// stripSep separates the sticky strip's fields.
+const stripSep = "  ·  "
+
+// globalContext builds the sticky title strip: the entry title followed by the
+// provider's fields, joined with stripSep.
+//
+// The strip is fitted rather than truncated. ScrollView.Fit takes variants from
+// richest to poorest and returns the first that fits; its fallback is the LAST
+// variant, which chromeRow then truncates from the right — which would starve
+// the fields exactly as an unfitted join does. So the poorest variant elides the
+// title to whatever the never-dropped field leaves, spending the title's tail to
+// keep the metadata. That is the intended trade: the title is also in the body's
+// H1 and the status line, while the fields appear nowhere else in the viewer.
 func (m *viewerModel) globalContext() string {
-	parts := []string{}
-	if m.title != "" {
-		parts = append(parts, m.title)
-	}
+	fields := []string{}
 	for _, h := range m.header {
 		if s := strings.TrimSpace(h); s != "" {
-			parts = append(parts, s)
+			fields = append(fields, s)
 		}
 	}
-	line := strings.Join(parts, "  ·  ")
-	if !m.color {
-		line = ansiRe.ReplaceAllString(line, "") // the header is pre-rendered; strip color when off
+	strip := func(title string, n int) string {
+		parts := []string{}
+		if title != "" {
+			parts = append(parts, title)
+		}
+		parts = append(parts, fields[:n]...)
+		line := strings.Join(parts, stripSep)
+		if !m.color {
+			line = ansiRe.ReplaceAllString(line, "") // the header is pre-rendered; strip color when off
+		}
+		return line
 	}
-	return line
+
+	if len(fields) == 0 {
+		return m.sv.Fit(strip(m.title, 0))
+	}
+	// Richest first, then one fewer field each time — but never below one.
+	// Dropping to the title alone would fit at widths where field 0 still had
+	// room, and Fit takes the first variant that fits, so a bare-title variant
+	// would win and the strip would lose its metadata all over again.
+	variants := make([]string, 0, len(fields)+1)
+	for n := len(fields); n >= 1; n-- {
+		variants = append(variants, strip(m.title, n))
+	}
+	// The fallback: keep field 0 and pay for it out of the title.
+	budget := max(m.sv.Width()-2, 0) // the chrome styles add Padding(0, 1)
+	cost := ansi.StringWidth(strip("", 1)) + ansi.StringWidth(stripSep)
+	variants = append(variants, strip(ansi.Truncate(m.title, max(budget-cost, 0), "…"), 1))
+	return m.sv.Fit(variants...)
 }
 
 // ansiRe matches SGR color escape sequences, for stripping color from the

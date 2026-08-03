@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/git-bug/git-bug/entity"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -529,6 +530,63 @@ var _ = Describe("viewerModel cursor", func() {
 			tea.KeyMsg{Type: tea.KeyHome})
 		Expect(m.cur).To(Equal(0))
 		Expect(m.sv.ScrollLabel()).To(Equal("top"))
+	})
+
+	// The strip must spend its width on metadata and elide the title, not the
+	// other way round: the title is also in the body's H1 and the status line,
+	// but the fields appear nowhere else in the viewer.
+	Describe("sticky strip width fitting", func() {
+		fields := []string{"◐ personal / open", "v12", "14 links", "2 open"}
+		stripWith := func(width int, title string) string {
+			m := newViewerModel(viewerInput{
+				title: title, body: "## S\n\nprose\n", color: false, width: width,
+				provider: stubProvider{header: fields},
+			})
+			return send(m, tea.WindowSizeMsg{Width: width, Height: 20}).sv.Title()
+		}
+		longTitle := "81be409e4ef8  Auth design — token rotation and refresh semantics"
+
+		It("shows every field when the terminal is wide", func() {
+			out := stripWith(140, longTitle)
+			for _, f := range fields {
+				Expect(out).To(ContainSubstring(f))
+			}
+			Expect(out).To(ContainSubstring("refresh semantics")) // title intact
+		})
+
+		It("drops from the tail as the terminal narrows", func() {
+			out := stripWith(100, longTitle)
+			Expect(out).To(ContainSubstring("◐ personal / open"))
+			Expect(out).NotTo(ContainSubstring("2 open"))
+		})
+
+		It("keeps the first field at 80 and elides the title instead", func() {
+			out := stripWith(80, longTitle)
+			Expect(out).To(ContainSubstring("◐ personal / open"))
+			Expect(out).To(ContainSubstring("81be409e4ef8")) // the id survives
+			Expect(out).To(ContainSubstring("…"))            // the title paid
+			Expect(ansi.StringWidth(out)).To(BeNumerically("<=", 78))
+		})
+
+		It("never lets a long title push the first field off the strip", func() {
+			out := stripWith(80, "81be409e4ef8  "+strings.Repeat("x", 70))
+			// The width assertion is what discriminates: SetTitle stores the
+			// strip unfitted and chromeRow truncates it at render, so without
+			// fitting the substring checks below pass on a 100-column string
+			// whose tail the reader never sees.
+			Expect(ansi.StringWidth(out)).To(BeNumerically("<=", 78))
+			Expect(out).To(ContainSubstring("◐ personal / open"))
+			Expect(out).To(ContainSubstring("81be409e4ef8"))
+		})
+
+		It("renders a provider with no fields as the title alone", func() {
+			m := newViewerModel(viewerInput{
+				title: longTitle, body: "## S\n\nprose\n", color: false, width: 80,
+				provider: stubProvider{},
+			})
+			Expect(send(m, tea.WindowSizeMsg{Width: 80, Height: 20}).sv.Title()).
+				To(ContainSubstring("Auth design"))
+		})
 	})
 
 	It("quits on q, and on esc once there is nothing left to dismiss", func() {
@@ -1763,5 +1821,40 @@ var _ = Describe("viewerModel expand header", func() {
 		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
 		Expect(m.expanded).To(BeFalse())
 		Expect(m.View()).To(ContainSubstring("could not expand"))
+	})
+})
+
+var _ = Describe("sticky strip golden layout", func() {
+	fields := []string{"◐ personal / open", "v12", "14 links", "2 open"}
+	title := "81be409e4ef8  Auth design — token rotation and refresh semantics"
+
+	stripAt := func(width int) string {
+		m := newViewerModel(viewerInput{
+			title: title, body: "## S\n\nprose\n", color: false, width: width,
+			provider: stubProvider{header: fields},
+		})
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+		return mm.(viewerModel).sv.Title()
+	}
+
+	DescribeTable("spends the width it has",
+		func(width int, want string) {
+			Expect(stripAt(width)).To(Equal(want))
+		},
+		Entry("140 shows everything", 140,
+			"81be409e4ef8  Auth design — token rotation and refresh semantics  ·  ◐ personal / open  ·  v12  ·  14 links  ·  2 open"),
+		Entry("100 drops the link and open-question counts", 100,
+			"81be409e4ef8  Auth design — token rotation and refresh semantics  ·  ◐ personal / open  ·  v12"),
+		Entry("80 keeps tier/status and elides the title", 80,
+			"81be409e4ef8  Auth design — token rotation and refresh …  ·  ◐ personal / open"),
+		Entry("60 elides the title harder, but still keeps tier/status", 60,
+			"81be409e4ef8  Auth design — token r…  ·  ◐ personal / open"),
+	)
+
+	It("never exceeds the width it was given", func() {
+		for _, w := range []int{60, 80, 100, 140} {
+			Expect(ansi.StringWidth(stripAt(w))).To(BeNumerically("<=", w-2),
+				"strip overflows at %d columns", w)
+		}
 	})
 })

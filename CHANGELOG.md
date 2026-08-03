@@ -81,6 +81,17 @@ there is a tagged release to diff against.
 
 ### Fixed
 
+- **The viewer's sticky top line shows metadata again.** It was built by joining
+  the static header block into one line, and that block's first row is the
+  entry's full 64-character id — which consumed the whole strip at 140 columns,
+  let alone 80, hiding tier, status, labels, origin and links from the one
+  surface a human actually reads. The strip now carries purpose-built fields
+  (tier/status, version, link count, open questions) and fits itself to the
+  terminal, dropping the rightmost fields as the window narrows and shortening
+  the title before dropping any of them. `kref todo`'s strip gained the same
+  treatment, with its alert signals ranked above its counts. Static `--header`,
+  `--plain` and `--json` output is unchanged.
+
 - **`home` jumps to the top in the entry viewer.** `end` was bound to the bottom
   but `home` fell through to the viewport and did nothing, while the `kref list`
   cockpit and the pager both bound the pair. A pending `<n>` count is discarded

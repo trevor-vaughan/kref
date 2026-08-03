@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -156,10 +154,10 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 		// static path below keeps the list — it has no discussion zone).
 		hc := c
 		hc.Questions = nil
+		// The interactive strip's fields. The static --no-pager path below
+		// still renders through render.TodoCockpit, which is unchanged.
 		renderCockpit := func(cc todo.Cockpit, th string) []string {
-			var hb bytes.Buffer
-			render.TodoCockpit(&hb, cc, th, color)
-			return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
+			return render.TodoStripFields(cc, th, color)
 		}
 		if _, kind := resolveActor(cmd, s); kind == "human" {
 			if serr := watermark.Set(key, snap.Body); serr != nil {

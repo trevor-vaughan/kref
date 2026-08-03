@@ -84,3 +84,54 @@ func TodoCockpit(w io.Writer, c todo.Cockpit, theme string, color bool) {
 	}
 	fmt.Fprintln(w)
 }
+
+// TodoStripFields returns the cockpit's sticky-strip fields, most important
+// first, so the viewer can drop from the tail as the terminal narrows.
+//
+// The alert signals outrank the bookkeeping deliberately. TodoCockpit prints
+// them on lines AFTER the counts, so porting that order would shed exactly the
+// fields that exist to demand attention. Counts, version and edited-time are
+// recoverable from `kref show --json`; an unseen alert is not.
+//
+// The fields are built here rather than split out of TodoCockpit's output:
+// splitting would break the SGR pairs the coloured segments are wrapped in, and
+// `kref todo --no-pager` still renders through TodoCockpit unchanged.
+func TodoStripFields(c todo.Cockpit, theme string, color bool) []string {
+	paint := func(code, s string) string {
+		if !color {
+			return s
+		}
+		return code + s + ansiReset
+	}
+	fields := []string{
+		paint(ansiRed, fmt.Sprintf("%s %d awaiting you", signalGlyph(theme, "awaiting"), c.Awaiting)),
+	}
+	if c.ToReview >= 0 {
+		fields = append(fields, paint(ansiYellow, fmt.Sprintf("%s %d to review", signalGlyph(theme, "review"), c.ToReview)))
+	}
+	if c.Changed >= 0 {
+		fields = append(fields, paint(ansiGreen, fmt.Sprintf("%s %d changed", signalGlyph(theme, "changed"), c.Changed)))
+	}
+	if c.QuarantinePending > 0 {
+		label := fmt.Sprintf("⚠ %d awaiting review", c.QuarantinePending)
+		if c.QuarantineStale > 0 {
+			label = fmt.Sprintf("⚠ %d awaiting review (%d stale)", c.QuarantinePending, c.QuarantineStale)
+		}
+		fields = append(fields, paint(ansiYellow, label))
+	}
+	fields = append(fields, fmt.Sprintf("open %d · done %d", c.Open, c.Done))
+	if c.Version > 0 {
+		// The head version doubles as the CAS token: --if-version / kref_update's
+		// if_version.
+		fields = append(fields, fmt.Sprintf("v%d", c.Version))
+	}
+	if !c.Edited.IsZero() {
+		abs := c.Edited.Format("2006-01-02")
+		if rel := RelTime(time.Now(), c.Edited); rel != "" {
+			fields = append(fields, fmt.Sprintf("edited %s (%s)", rel, abs))
+		} else {
+			fields = append(fields, "edited "+abs)
+		}
+	}
+	return fields
+}

@@ -908,6 +908,37 @@ func baseHeaderRows(snap *entry.Snapshot, color bool, trackedNote string, favori
 	return append(rows, baseLinkRows(links)...)
 }
 
+// StripFields returns the interactive viewer's sticky-strip fields for one
+// entry, most important first, so the viewer can drop from the tail as the
+// terminal narrows. These are NOT the header block: baseHeaderRows builds
+// label-padded rows for a vertical layout, and its 64-character ID row would
+// consume a horizontal strip on its own.
+//
+// The short id is absent deliberately — the viewer title already carries it
+// (cmd/kref/commands.go), and elision cuts the title's tail, so an id at its
+// head survives every width.
+func StripFields(snap *entry.Snapshot, links entry.LinkView, color bool) []string {
+	fields := []string{Tier(snap.Tier, snap.TierType, color) + " / " + snap.Status}
+	if snap.Version > 0 {
+		fields = append(fields, fmt.Sprintf("v%d", snap.Version))
+	}
+	if n := len(links.Outgoing) + len(links.Incoming); n > 0 {
+		fields = append(fields, fmt.Sprintf("%d links", n))
+	}
+	open := 0
+	for _, c := range snap.Comments {
+		// The same predicate store.hasOpenQuestion uses for
+		// `kref list --open-questions`.
+		if c.Question && !c.Resolved {
+			open++
+		}
+	}
+	if open > 0 {
+		fields = append(fields, fmt.Sprintf("%d open", open))
+	}
+	return fields
+}
+
 // writeHeaderRows renders label-padded rows followed by a rule sized to the
 // widest rendered row.
 func writeHeaderRows(w io.Writer, rows []hdrRow) {
