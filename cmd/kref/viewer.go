@@ -73,12 +73,15 @@ const (
 	modeConfirmDelete
 )
 
-// commentWriter is the subset of *store.Store the cockpit uses to write comments.
+// commentWriter is the guarded contract the viewer writes comments through. It
+// is deliberately NOT *store.Store's method set: the secret policy lives above
+// the store, so the viewer takes an adapter that applies it (guardedWriter) and
+// reports the outcome as a writeResult.
 type commentWriter interface {
-	AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (string, error)
-	ResolveComment(id entity.Id, target string) error
+	AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (writeResult, error)
+	EditComment(id entity.Id, target, body string) (writeResult, error)
+	ResolveWithNote(id entity.Id, target, note string) (writeResult, error)
 	UnresolveComment(id entity.Id, target string) error
-	EditComment(id entity.Id, target, body string) error
 	DeleteComment(id entity.Id, target string) error
 }
 
@@ -886,13 +889,14 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 			m.applyViewport()
 			return m, nil
 		}
-		if _, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, false, m.target); err != nil {
+		res, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, false, m.target)
+		if err != nil {
 			m.notice = "write failed: " + err.Error()
 			return m, nil
 		}
 		m.mode = modeNone
 		m.ta.Reset()
-		m.doReload("replied")
+		m.doReload(writeNote("replied", res))
 		return m, nil
 	case modeEdit:
 		if strings.TrimSpace(body) == "" {
@@ -902,33 +906,45 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 			m.applyViewport()
 			return m, nil
 		}
-		if err := m.writer.EditComment(m.entryID, m.target, body); err != nil {
+		res, err := m.writer.EditComment(m.entryID, m.target, body)
+		if err != nil {
 			m.notice = "write failed: " + err.Error()
 			return m, nil
 		}
 		m.mode = modeNone
 		m.ta.Reset()
-		m.doReload("edited")
+		m.doReload(writeNote("edited", res))
 		return m, nil
 	case modeResolveNote:
-		if strings.TrimSpace(body) != "" {
-			if _, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, false, m.target); err != nil {
-				m.notice = "write failed: " + err.Error()
-				return m, nil
-			}
-		}
-		if err := m.writer.ResolveComment(m.entryID, m.target); err != nil {
+		res, err := m.writer.ResolveWithNote(m.entryID, m.target, body)
+		if err != nil {
 			m.notice = "write failed: " + err.Error()
 			return m, nil
 		}
 		m.mode = modeNone
 		m.ta.Reset()
-		m.doReload("resolved")
+		m.doReload(writeNote("resolved", res))
 		return m, nil
 	default:
 		m.mode = modeNone
 		m.applyViewport()
 		return m, nil
+	}
+}
+
+// writeNote turns a guarded write's outcome into the footer notice. A parked
+// write must not read as success: it was held, not applied — and the review
+// thread the park opened is already visible in the discussion above, because
+// reload runs right after this. An unscanned write carries the CLI's warning.
+func writeNote(verb string, res writeResult) string {
+	switch {
+	case res.Parked != nil:
+		return fmt.Sprintf("held for review — %d finding(s), not applied; see the review thread above",
+			len(res.Parked.Findings))
+	case res.Unscanned:
+		return verb + " — stored UNSCANNED (betterleaks not found)"
+	default:
+		return verb
 	}
 }
 

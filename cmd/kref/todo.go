@@ -173,7 +173,7 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 			color:       color,
 			width:       ttyWidth(),
 			comments:    snap.Comments,
-			writer:      s,
+			writer:      newGuardedWriter(s, actor, actorKind),
 			entryID:     snap.ID,
 			actor:       actor,
 			actorKind:   actorKind,

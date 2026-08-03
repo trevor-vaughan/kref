@@ -10,6 +10,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/trevor-vaughan/kref/internal/entry"
+	"github.com/trevor-vaughan/kref/internal/scan"
+	"github.com/trevor-vaughan/kref/internal/store"
 )
 
 // stubProvider is a test HeaderProvider: static header + fold, canned reload.
@@ -467,28 +469,34 @@ var _ = Describe("viewerModel cursor", func() {
 
 type fakeWriter struct {
 	addKind, addBody, addReplyTo string
+	addQuestion                  bool
 	added                        bool
 	editTarget, editBody         string
 	edited                       bool
 	deleteTarget                 string
 	deleted                      bool
-	resolveTarget                string
+	resolveTarget, resolveNote   string
 	resolved                     bool
 	unresolved                   bool
 	unresolveTarget              string
+	result                       writeResult // outcome the next body-bearing write returns
 }
 
-func (f *fakeWriter) AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (string, error) {
-	f.added, f.addKind, f.addBody, f.addReplyTo = true, actorKind, body, replyTo
-	return "newid", nil
+func (f *fakeWriter) AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (writeResult, error) {
+	f.added, f.addKind, f.addBody, f.addReplyTo, f.addQuestion = true, actorKind, body, replyTo, question
+	res := f.result
+	if res.CommentID == "" && res.Parked == nil {
+		res.CommentID = "newid"
+	}
+	return res, nil
 }
-func (f *fakeWriter) ResolveComment(id entity.Id, target string) error {
-	f.resolved, f.resolveTarget = true, target
-	return nil
+func (f *fakeWriter) ResolveWithNote(id entity.Id, target, note string) (writeResult, error) {
+	f.resolved, f.resolveTarget, f.resolveNote = true, target, note
+	return f.result, nil
 }
-func (f *fakeWriter) EditComment(id entity.Id, target, body string) error {
+func (f *fakeWriter) EditComment(id entity.Id, target, body string) (writeResult, error) {
 	f.edited, f.editTarget, f.editBody = true, target, body
-	return nil
+	return f.result, nil
 }
 func (f *fakeWriter) DeleteComment(id entity.Id, target string) error {
 	f.deleted, f.deleteTarget = true, target
@@ -597,19 +605,42 @@ var _ = Describe("viewerModel reply", func() {
 		send(m, tea.KeyMsg{Type: tea.KeyCtrlS}) // empty note → just resolve
 		Expect(fw.resolved).To(BeTrue())
 		Expect(fw.resolveTarget).To(Equal("q"))
-		Expect(fw.added).To(BeFalse()) // no note reply
+		Expect(fw.resolveNote).To(BeEmpty())
+		Expect(fw.added).To(BeFalse()) // the note never goes through AddComment
 	})
 
-	It("posts a note reply before resolving when the note is non-empty", func() {
+	It("passes a non-empty note to the writer with the resolve", func() {
 		fw := &fakeWriter{}
 		m := send(newModel(fw, base), size)
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ok")})
 		send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
-		Expect(fw.added).To(BeTrue()) // note posted as a reply first
-		Expect(fw.addReplyTo).To(Equal("q"))
-		Expect(fw.addBody).To(Equal("ok"))
 		Expect(fw.resolved).To(BeTrue())
+		Expect(fw.resolveTarget).To(Equal("q"))
+		Expect(fw.resolveNote).To(Equal("ok"))
+		Expect(fw.added).To(BeFalse()) // one guarded call, not note-then-resolve
+	})
+
+	It("reports a parked write as held for review and does not claim success", func() {
+		fw := &fakeWriter{result: writeResult{Parked: &store.Parked{
+			ItemID:   "abcd1234abcd",
+			Findings: []scan.Finding{{RuleID: "github-pat", StartLine: 1, Description: "token"}},
+		}}}
+		m := send(newModel(fw, base), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(m.notice).To(ContainSubstring("held for review"))
+		Expect(m.notice).NotTo(ContainSubstring("replied"))
+	})
+
+	It("flags an unscanned write in the notice", func() {
+		fw := &fakeWriter{result: writeResult{CommentID: "newid", Unscanned: true}}
+		m := send(newModel(fw, base), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(m.notice).To(ContainSubstring("UNSCANNED"))
 	})
 
 	It("x reopens a resolved question and expands its thread", func() {

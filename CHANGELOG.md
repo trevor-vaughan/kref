@@ -518,6 +518,15 @@ there is a tagged release to diff against.
 ### Security
 
 - betterleaks scans every ingest and push to keep secrets out of syncable tiers.
+- **Comments written in the interactive viewer are scanned.** `kref comment` and
+  the MCP tool already diverted a secret-bearing comment into the quarantine
+  review queue, but replies, edits and resolve notes typed in the viewer went
+  straight to the DAG unscanned — the one comment-writing surface outside the
+  policy. They now park like every other surface: the footer reports the write as
+  held rather than applied, and the review thread the park opens is visible in
+  the discussion you are already reading. A flagged closing note parks the
+  resolve as a single held operation instead of storing the note and resolving
+  anyway.
 - Scratch files (editor buffers for `kref edit`, bundle export/import staging,
   betterleaks reports) are created under `$XDG_CACHE_HOME/kref/tmp`
   (`~/.cache/kref/tmp`, mode 0700) instead of the shared system temp dir —

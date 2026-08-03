@@ -865,7 +865,7 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		color:       opts.Color,
 		width:       opts.Width,
 		comments:    snap.Comments,
-		writer:      s,
+		writer:      newGuardedWriter(s, actor, actorKind),
 		entryID:     snap.ID,
 		actor:       actor,
 		actorKind:   actorKind,
