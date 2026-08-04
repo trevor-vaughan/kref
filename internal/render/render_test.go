@@ -947,3 +947,82 @@ var _ = Describe("comment markdown rendering", func() {
 		Expect(joinedOff).To(ContainSubstring("**bold**")) // raw when colour off
 	})
 })
+
+var _ = Describe("StripFields", func() {
+	base := func() *entry.Snapshot {
+		return &entry.Snapshot{
+			// TierType is a built-in tier NAME, not a class — it selects the
+			// glyph in tierGlyph. "personal" is what yields ◐.
+			Tier: "personal", TierType: string(entry.TierPersonal), Status: "open",
+			Title: "Auth design", Version: 12,
+		}
+	}
+
+	It("returns tier/status then version, most important first", func() {
+		Expect(render.StripFields(base(), entry.LinkView{}, false)).To(Equal([]string{
+			"◐ personal / open",
+			"v12",
+		}))
+	})
+
+	It("never emits the full 64-character id", func() {
+		snap := base()
+		snap.ID = entity.Id(strings.Repeat("a", 64))
+		for _, f := range render.StripFields(snap, entry.LinkView{}, false) {
+			Expect(f).NotTo(ContainSubstring(strings.Repeat("a", 64)))
+		}
+	})
+
+	It("counts links across both directions", func() {
+		links := entry.LinkView{
+			Outgoing: []entry.LinkRef{{}, {}, {}},
+			Incoming: []entry.LinkRef{{}},
+		}
+		Expect(render.StripFields(base(), links, false)).To(ContainElement("4 links"))
+	})
+
+	It("omits the link field entirely when there are none", func() {
+		for _, f := range render.StripFields(base(), entry.LinkView{}, false) {
+			Expect(f).NotTo(ContainSubstring("links"))
+		}
+	})
+
+	It("counts only unresolved question comments as open", func() {
+		snap := base()
+		snap.Comments = []entry.Comment{
+			{Question: true, Resolved: false},
+			{Question: true, Resolved: true},   // resolved: not open
+			{Question: false, Resolved: false}, // a plain comment: not a question
+		}
+		Expect(render.StripFields(snap, entry.LinkView{}, false)).To(ContainElement("1 open"))
+	})
+
+	It("omits the open-question field when nothing is unresolved", func() {
+		snap := base()
+		snap.Comments = []entry.Comment{{Question: true, Resolved: true}}
+		for _, f := range render.StripFields(snap, entry.LinkView{}, false) {
+			// Match the COUNT, not the bare word: the status field is itself
+			// "◐ personal / open", so a substring check always fires.
+			Expect(f).NotTo(MatchRegexp(`\d+ open`))
+		}
+	})
+
+	It("omits the version field for an entry with no body versions", func() {
+		snap := base()
+		snap.Version = 0
+		for _, f := range render.StripFields(snap, entry.LinkView{}, false) {
+			Expect(f).NotTo(HavePrefix("v"))
+		}
+	})
+
+	// The strip must not be able to change piped output.
+	It("leaves ShowHeader's rows untouched", func() {
+		var b bytes.Buffer
+		render.ShowHeader(&b, base(), render.ShowOptions{})
+		render.StripFields(base(), entry.LinkView{}, false)
+		var b2 bytes.Buffer
+		render.ShowHeader(&b2, base(), render.ShowOptions{})
+		Expect(b2.String()).To(Equal(b.String()))
+		Expect(b.String()).To(ContainSubstring("Title"))
+	})
+})

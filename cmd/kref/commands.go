@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -235,7 +236,7 @@ func adoptOriginRemote(cmd *cobra.Command, s *store.Store) (string, error) {
 }
 
 func newAddCmd(dir *string) *cobra.Command {
-	var kind, title, body, tier string
+	var kind, title, body, file, tier string
 	var contentType string
 	var labels []string
 	var force bool
@@ -244,12 +245,14 @@ func newAddCmd(dir *string) *cobra.Command {
 		Aliases:           []string{"create"},
 		ValidArgsFunction: noPositionalHelp("new takes no arguments — configure the entry with flags like --title, --kind, --body, --tier, --label"),
 		Short:             "Create a new entry",
-		Long: "Compose a single entry from flags. The body comes from --body or, " +
-			"when that is omitted, piped/redirected stdin. To create entries from " +
-			"existing markdown files or directories, use `kref ingest` instead.",
+		Long: "Compose a single entry from flags. The body comes from --body, else " +
+			"--file, else piped/redirected stdin. --file reads a path for its content " +
+			"only; to create entries from existing markdown files or directories and " +
+			"keep them tracked, use `kref ingest` instead.",
 		Example: exampleBlock([]string{
 			`kref new --title "Auth design" --kind spec`,
 			"kref new --body $'# Auth design\\n\\nprose'   # title derived from the H1",
+			"kref new --kind spec --file design.md       # body read from a path",
 			"kref new --kind spec < design.md            # body piped on stdin",
 			"kref new --tier shared --label area:auth --title X",
 		}),
@@ -264,11 +267,25 @@ func newAddCmd(dir *string) *cobra.Command {
 				return err
 			}
 			t := tdef.Name
-			// Body from --body, else piped/redirected stdin (never an interactive
-			// terminal — reading it would block on an EOF that never comes). This
-			// mirrors `kref update` and matches the agents_md guidance to pipe a
-			// body on stdin.
-			if !cmd.Flags().Changed("body") && !term.IsTerminal(int(os.Stdin.Fd())) {
+			// Body from --body, else --file, else piped/redirected stdin (never an
+			// interactive terminal — reading it would block on an EOF that never
+			// comes). This mirrors `kref update` and matches the agents_md guidance
+			// to pipe a body on stdin.
+			switch {
+			case cmd.Flags().Changed("body") && cmd.Flags().Changed("file"):
+				return errors.New("use one of --body or --file, not both")
+			case cmd.Flags().Changed("body"):
+				// body already set from the flag
+			case cmd.Flags().Changed("file"):
+				raw, rErr := os.ReadFile(file)
+				if rErr != nil {
+					return rErr
+				}
+				// A body lifted out of an exported entry carries the id trailer;
+				// re-creating from it must not bake that marker into the new body.
+				_, stripped := bridge.SplitMarker(raw)
+				body = string(stripped)
+			case !term.IsTerminal(int(os.Stdin.Fd())):
 				raw, rErr := io.ReadAll(cmd.InOrStdin())
 				if rErr != nil {
 					return rErr
@@ -348,6 +365,7 @@ func newAddCmd(dir *string) *cobra.Command {
 	c.Flags().StringVar(&kind, "kind", "document", "entry kind")
 	c.Flags().StringVar(&title, "title", "", "entry title")
 	c.Flags().StringVar(&body, "body", "", "entry body")
+	c.Flags().StringVar(&file, "file", "", "read the body from a file (content only — use `kref ingest` to also record the path and detect the content type)")
 	c.Flags().StringVar(&tier, "tier", "personal", "tier: private|personal|shared, or a custom tier (kref tier list)")
 	c.Flags().StringVar(&contentType, "content-type", "", "content type, e.g. application/json (default text/markdown)")
 	c.Flags().StringArrayVar(&labels, "label", nil, "label to attach (repeatable)")
@@ -819,11 +837,17 @@ func numDigits(n int) int {
 type showHeaderProvider struct {
 	header []string
 	reload func() (header []string, comments []entry.Comment, err error)
+	expand func() ([]string, error)
 }
 
 func (p showHeaderProvider) HeaderLines() []string                      { return p.header }
 func (p showHeaderProvider) InitialFold() map[string]bool               { return map[string]bool{} }
 func (p showHeaderProvider) Reload() ([]string, []entry.Comment, error) { return p.reload() }
+
+// ExpandHeader satisfies ExpandableHeader: the entry view has an extended header
+// (op-log, editors, body versions, and the complete link list the base header
+// caps). Providers without one simply do not implement this.
+func (p showHeaderProvider) ExpandHeader() ([]string, error) { return p.expand() }
 
 // showViewer runs the interactive entry viewer for one entry on the already-open
 // store s: read + fold + search + numbered gutter AND the comment writer. The
@@ -834,9 +858,10 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		if o.NoHeader {
 			return nil
 		}
-		var hb bytes.Buffer
-		render.ShowHeader(&hb, sn, o.Color, o.TrackedNote, o.Favorites)
-		return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
+		// The sticky strip's fields — NOT render.ShowHeader's block, whose
+		// 64-character ID row would consume the strip on its own. The full
+		// block stays reachable through `:` (expand header).
+		return render.StripFields(sn, o.Links, o.Color)
 	}
 	reload := func() ([]string, []entry.Comment, error) {
 		snap2, err := s.Get(id)
@@ -847,6 +872,12 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 			snap2.Merged = m
 		}
 		o2 := opts
+		// Links are recomputed too: one may have been added from elsewhere since
+		// the viewer opened, and a refresh that showed a stale edge list would be
+		// worse than not showing one.
+		if lv, lerr := s.Links(id); lerr == nil {
+			o2.Links = lv
+		}
 		o2.TrackedNote = ""
 		if snap2.Tracked {
 			drift2, dErr := bridge.DriftState(s, snap2)
@@ -857,6 +888,23 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		}
 		return renderHeader(snap2, o2), snap2.Comments, nil
 	}
+	expand := func() ([]string, error) {
+		sn, err := s.Get(id)
+		if err != nil {
+			return nil, err
+		}
+		log, err := s.Log(id)
+		if err != nil {
+			return nil, err
+		}
+		links, err := s.Links(id)
+		if err != nil {
+			return nil, err
+		}
+		var hb bytes.Buffer
+		render.ExtendedHeader(&hb, sn, time.Now(), log, links, opts.Color, opts.TrackedNote, opts.Favorites)
+		return strings.Split(strings.TrimRight(hb.String(), "\n"), "\n"), nil
+	}
 	actor, actorKind := resolveActor(cmd, s)
 	in := viewerInput{
 		title:       render.ShortID(snap.ID) + "  " + snap.Title,
@@ -865,11 +913,12 @@ func showViewer(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, opts r
 		color:       opts.Color,
 		width:       opts.Width,
 		comments:    snap.Comments,
-		writer:      s,
+		writer:      newGuardedWriter(s, actor, actorKind),
 		entryID:     snap.ID,
 		actor:       actor,
 		actorKind:   actorKind,
-		provider:    showHeaderProvider{header: renderHeader(snap, opts), reload: reload},
+		hideGutter:  !s.EffectiveConfig().LineNumbersOn(),
+		provider:    showHeaderProvider{header: renderHeader(snap, opts), reload: reload, expand: expand},
 	}
 	return RunViewer(in)
 }
@@ -884,6 +933,9 @@ func openEntry(cmd *cobra.Command, dir *string, s *store.Store, snap *entry.Snap
 		Color:     useColor(cmd),
 		Width:     ttyWidth(),
 		Favorites: favoritesFor(s.Favorites(), snap.ID),
+	}
+	if links, err := s.Links(snap.ID); err == nil {
+		opts.Links = links
 	}
 	if snap.Tracked {
 		if drift, err := bridge.DriftState(s, snap); err == nil {
@@ -951,12 +1003,22 @@ func newShowCmd(dir *string) *cobra.Command {
 				Width:      ttyWidth(),
 				Favorites:  favNames,
 			}
+			// An entry's edges have no other human surface: `kref links` was
+			// retired, and --json is not one. Resolving them here is a walk of the
+			// excerpt cache, the same one `kref list` already does.
+			if links, lerr := s.Links(id); lerr == nil {
+				opts.Links = links
+			}
 			if snap.Tracked {
 				opts.TrackedNote = snap.TrackedPath + " [" + drift + "]"
 			}
 			// --header is a chrome-free metadata peek: no body, and never paged
 			// (the block is short by design).
 			if usePager(cmd) && !noPager && !headerOnly {
+				// The saved colour preference applies to the interactive surfaces
+				// only; static output stays on useColor so a pipe's bytes never
+				// depend on a preference file.
+				opts.Color = resolveColor(cmd, s.EffectiveConfig())
 				return showViewer(cmd, s, snap, opts)
 			}
 			var buf bytes.Buffer
@@ -1144,9 +1206,10 @@ func newListCmd(dir *string) *cobra.Command {
 			if usePager(cmd) && !noPager && !plain && !jsonOut && !check {
 				acts := listCockpitActions{s: s, filter: lf}
 				actor, actorKind := resolveActor(cmd, s)
+				color := resolveColor(cmd, s.EffectiveConfig())
 				return runListCockpit(acts,
-					render.ListOptions{Columns: cols, Color: useColor(cmd), ShowAll: all, Sort: sortSpec, Favorites: favIDs},
-					useColor(cmd), lf, actor, actorKind,
+					render.ListOptions{Columns: cols, Color: color, ShowAll: all, Sort: sortSpec, Favorites: favIDs},
+					color, lf, actor, actorKind,
 					func(res listResult) error {
 						switch res.action {
 						case "review":
@@ -1161,7 +1224,7 @@ func newListCmd(dir *string) *cobra.Command {
 									break
 								}
 							}
-							rr, rerr := runReviewModel(acts, queue, start, useColor(cmd), ttyWidth(), actor, actorKind)
+							rr, rerr := runReviewModel(acts, queue, start, color, ttyWidth(), actor, actorKind)
 							if rerr != nil {
 								return rerr
 							}
@@ -1259,11 +1322,13 @@ func newSearchCmd(dir *string) *cobra.Command {
 				render.SearchResults(w, hits, color)
 			}
 			if usePager(cmd) && !noPager {
+				pagerColor := resolveColor(cmd, s.EffectiveConfig())
 				var buf bytes.Buffer
-				human(&buf, useColor(cmd))
+				human(&buf, pagerColor)
 				return Page(pagerContent{
 					title: "kref search — " + args[0],
 					body:  strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"),
+					color: pagerColor,
 				})
 			}
 			return emit(cmd, human, results)
@@ -3019,6 +3084,7 @@ func newDiffCmd(dir *string) *cobra.Command {
 					body:    lines,
 					number:  true,
 					gutterW: numDigits(len(lines)) + 3,
+					color:   resolveColor(cmd, s.EffectiveConfig()),
 				})
 			}
 			fmt.Fprint(cmd.OutOrStdout(), buf.String())
@@ -3183,7 +3249,6 @@ func newTidyCmd(dir *string) *cobra.Command {
 
 func newMCPCmd(dir *string) *cobra.Command {
 	var allow []string
-	var clientRoots bool
 	c := &cobra.Command{
 		Use:               "mcp",
 		Short:             "Run an MCP server exposing kref tools over stdio",
@@ -3195,10 +3260,9 @@ func newMCPCmd(dir *string) *cobra.Command {
 			// hosts log and compare, so it stays terse. Resolving it still beats
 			// the previous behaviour, which reported the literal string "dev" for
 			// anything not built with injected ldflags.
-			return mcpserver.Serve(cmd.Context(), *dir, build.Version, allow, clientRoots)
+			return mcpserver.Serve(cmd.Context(), *dir, build.Version, allow)
 		},
 	}
 	c.Flags().StringArrayVar(&allow, "allow", nil, "allow serving any repo under this absolute root via a per-call dir (repeatable); enables global mode")
-	c.Flags().BoolVar(&clientRoots, "client-roots", false, "confine each call to the client's advertised MCP roots (mutually exclusive with --allow)")
 	return c
 }

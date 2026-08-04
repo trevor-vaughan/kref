@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"reflect"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -123,5 +125,109 @@ var _ = Describe("todo config keys", func() {
 		d := "myfav"
 		merged := config.Merge(nil, &config.Config{TodoDefault: &d})
 		Expect(merged.DefaultTodo()).To(Equal("myfav"))
+	})
+})
+
+var _ = Describe("display preferences", func() {
+	It("defaults line numbers on when unset", func() {
+		Expect((&config.Config{}).LineNumbersOn()).To(BeTrue())
+	})
+
+	It("honours an explicit line-number setting", func() {
+		Expect((&config.Config{LineNumbers: new(false)}).LineNumbersOn()).To(BeFalse())
+		Expect((&config.Config{LineNumbers: new(true)}).LineNumbersOn()).To(BeTrue())
+	})
+
+	It("reports no colour preference when unset, so the caller may auto-detect", func() {
+		Expect((&config.Config{}).ColorPref()).To(BeNil())
+	})
+
+	It("reports an explicit colour preference", func() {
+		p := (&config.Config{Color: new(false)}).ColorPref()
+		Expect(p).NotTo(BeNil())
+		Expect(*p).To(BeFalse())
+	})
+
+	It("carries both pointers through Merge from a sparse user layer", func() {
+		out := config.Merge(nil, &config.Config{LineNumbers: new(false), Color: new(true)})
+		Expect(out.LineNumbersOn()).To(BeFalse())
+		Expect(out.ColorPref()).NotTo(BeNil())
+		Expect(*out.ColorPref()).To(BeTrue())
+	})
+
+	It("does not let a sparse layer clobber a lower one", func() {
+		out := config.Merge(&config.Config{LineNumbers: new(false)}, &config.Config{})
+		Expect(out.LineNumbersOn()).To(BeFalse()) // user layer set neither
+	})
+})
+
+// fullConfig is a Config with EVERY field set — the fixture the reflection guard
+// below polices, so a new field cannot be added without being considered here.
+func fullConfig() *config.Config {
+	return &config.Config{
+		Version:       config.CurrentVersion,
+		WarnUnscanned: new(false),
+		Favorites:     map[string]string{"todo": "abcd1234abcd"},
+		TrustedKeys:   []string{"favorites"},
+		TodoGlyphs:    new("emoji"),
+		TodoDefault:   new("abcd1234abcd"),
+		LineNumbers:   new(false),
+		Color:         new(true),
+	}
+}
+
+var _ = Describe("Template round-trip", func() {
+	// WriteFile renders through Template, so a field Template forgets is silently
+	// dropped when any code path rewrites the file — a user could lose an
+	// unrelated setting by toggling a display preference. Every settable field
+	// must survive the round-trip.
+	It("preserves every field a user can set", func() {
+		in := fullConfig()
+		b, err := config.Template(in)
+		Expect(err).NotTo(HaveOccurred())
+
+		out, err := config.Parse(b)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.WarnUnscannedOn()).To(BeFalse())
+		Expect(out.Favorites).To(HaveKeyWithValue("todo", "abcd1234abcd"))
+		Expect(out.TrustedKeys).To(ContainElement("favorites"))
+		Expect(out.GlyphTheme()).To(Equal("emoji"))
+		Expect(out.DefaultTodo()).To(Equal("abcd1234abcd"))
+		Expect(out.LineNumbersOn()).To(BeFalse())
+		Expect(out.ColorPref()).NotTo(BeNil())
+		Expect(*out.ColorPref()).To(BeTrue())
+	})
+
+	It("fails when a new Config field is not carried through Template", func() {
+		// The guard the hand-written round-trip above cannot provide: reflect over
+		// the fixture and demand every field be set, so adding a field to Config
+		// forces this test to be updated — at which point the round-trip below
+		// catches a Template that forgot to render it.
+		in := fullConfig()
+		v := reflect.ValueOf(*in)
+		for i := range v.NumField() {
+			name := v.Type().Field(i).Name
+			Expect(v.Field(i).IsZero()).To(BeFalse(),
+				"config.Config.%s is not set in fullConfig(): add it there AND to Template, "+
+					"or WriteFile will silently drop it", name)
+		}
+
+		b, err := config.Template(in)
+		Expect(err).NotTo(HaveOccurred())
+		out, err := config.Parse(b)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reflect.DeepEqual(*out, *in)).To(BeTrue(),
+			"a field did not survive Template -> Parse:\n got %+v\nwant %+v", *out, *in)
+	})
+
+	It("leaves unset fields unset, so the file stays a sparse override", func() {
+		b, err := config.Template(&config.Config{Version: config.CurrentVersion})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := config.Parse(b)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.LineNumbers).To(BeNil())
+		Expect(out.Color).To(BeNil())
+		Expect(out.TodoGlyphs).To(BeNil())
+		Expect(out.TodoDefault).To(BeNil())
 	})
 })

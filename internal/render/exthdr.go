@@ -14,8 +14,12 @@ import (
 // ExtendedHeader renders the show header expanded with the entry's history and
 // links: the base rows plus Created, Edited, Editors, the last ten body
 // versions, and outgoing/incoming links. now anchors the relative Edited time.
+//
+// The base rows are built with no links of their own: the base header caps its
+// link list, and expanding is precisely what shows the whole set, so the links
+// here are the complete, uncapped one and appear exactly once.
 func ExtendedHeader(w io.Writer, snap *entry.Snapshot, now time.Time, log []entry.LogEntry, links entry.LinkView, color bool, trackedNote string, favorites []string) {
-	rows := baseHeaderRows(snap, color, trackedNote, favorites)
+	rows := baseHeaderRows(snap, color, trackedNote, favorites, entry.LinkView{})
 	rows = append(rows, extHeaderRows(now, log, links)...)
 	writeHeaderRows(w, rows)
 }
@@ -105,7 +109,7 @@ func extHeaderRows(now time.Time, log []entry.LogEntry, links entry.LinkView) []
 					label = "Links"
 					first = false
 				}
-				add(label, fmt.Sprintf("%-4s %-12s %s  %s", dir, l.Type, ShortID(l.ID), l.Title))
+				add(label, linkRow(dir, l))
 			}
 		}
 		emit("out:", links.Outgoing)

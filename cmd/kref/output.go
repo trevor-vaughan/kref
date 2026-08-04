@@ -9,6 +9,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/trevor-vaughan/kref/internal/bridge"
+	"github.com/trevor-vaughan/kref/internal/config"
 	"github.com/trevor-vaughan/kref/internal/render"
 )
 
@@ -51,6 +52,31 @@ func useColor(cmd *cobra.Command) bool {
 	}
 	if os.Getenv("NO_COLOR") != "" {
 		return false
+	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// resolveColor is useColor plus the colour preference saved by the viewer's `,`
+// menu. The saved value sits BELOW the env signals — KREF_COLOR and NO_COLOR
+// express intent for this invocation and must still win — and ABOVE terminal
+// detection, which is only a guess at what the reader wants. Interactive
+// surfaces resolve colour this way; static output keeps useColor, so a pipe's
+// bytes never depend on a preference file.
+func resolveColor(cmd *cobra.Command, eff *config.Config) bool {
+	if jsonMode(cmd) || plainMode(cmd) {
+		return false
+	}
+	switch os.Getenv("KREF_COLOR") {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if p := eff.ColorPref(); p != nil {
+		return *p
 	}
 	return term.IsTerminal(int(os.Stdout.Fd()))
 }

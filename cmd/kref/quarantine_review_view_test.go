@@ -105,6 +105,25 @@ var _ = Describe("reviewModel", func() {
 		Expect(m.idx).To(Equal(2))
 	})
 
+	It("toggles colour from the view-options menu, not t", func() {
+		f, q := setup("q111")
+		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")
+		m.sv.Resize(80, 24)
+		before := m.sv.Plain()
+
+		m.Update(key('t'))
+		Expect(m.sv.Plain()).To(Equal(before)) // t no longer means anything
+
+		m.Update(key(','))
+		Expect(m.View()).To(ContainSubstring("view options"))
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.sv.Plain()).NotTo(Equal(before))
+		_, uc, err := loadUserConfigForEdit()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(uc.Color).NotTo(BeNil())
+		Expect(*uc.Color).To(Equal(m.color))
+	})
+
 	It("exits with open-target on 'o'", func() {
 		f, q := setup("q111")
 		m := newReviewModel(f, q, 0, true, 60, testReviewer, "human")

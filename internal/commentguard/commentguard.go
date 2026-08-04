@@ -1,9 +1,13 @@
 // Package commentguard enforces the secret policy for a comment write, shared by
-// every boundary that accepts a comment body (the CLI, the MCP tool). It mirrors
-// todoguard: a fail-closed check with no-work-lost recovery. A comment cannot be
-// tiered independently of its parent entry, and the push boundary does not scan
-// comment bodies, so this write-time scan is the primary gate against a secret
-// reaching a syncable tier — refuse it there, but never lose the author's text.
+// every boundary that accepts a comment body (the CLI, the MCP tool, the
+// interactive viewer). It mirrors todoguard: a fail-closed check with
+// no-work-lost recovery. A comment cannot be tiered independently of its parent
+// entry, so this write-time scan is the first gate against a secret reaching a
+// syncable tier — divert it there, but never lose the author's text. The push
+// boundary scans comment bodies too (scanForPush walks the full comment
+// op-history), so a secret that slips past a write is still caught before it
+// leaves the machine; this guard is what makes that a rare backstop rather than
+// the only defence.
 package commentguard
 
 import (
@@ -42,7 +46,7 @@ func (e *RefusedError) Error() string {
 // overrides the refusal for a betterleaks false positive: the body is stored
 // as-is and no scan runs. A missing scanner is warn-not-fail: the body is stored
 // and unscanned is true so the caller can flag it (the push boundary would still
-// block an entry-body secret, though not a comment one).
+// block the secret, in an entry body or a comment).
 func Check(snap *entry.Snapshot, body string, force bool) (unscanned bool, err error) {
 	if force {
 		return false, nil

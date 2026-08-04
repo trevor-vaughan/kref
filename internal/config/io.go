@@ -128,6 +128,41 @@ func Template(c *Config) ([]byte, error) {
 	}
 	b = append(b, tk...)
 
+	// Display and todo preferences. Like warn_unscanned these render as ACTIVE
+	// keys only when set, so the file stays a sparse override. They must be
+	// rendered here or WriteFile silently drops them: a user toggling a display
+	// preference would lose an unrelated setting they had made earlier.
+	p("\n# todo_glyphs selects the todo cockpit glyph theme: geometric | emoji.\n")
+	if c.TodoGlyphs != nil {
+		p(fmt.Sprintf("todo_glyphs: %s\n", *c.TodoGlyphs))
+	} else {
+		p("# todo_glyphs: geometric\n")
+	}
+
+	p("\n# todo_default names the entry (id or favorite) `kref todo` targets when\n")
+	p("# there are several and no argument is given.\n")
+	if c.TodoDefault != nil {
+		p(fmt.Sprintf("todo_default: %s\n", *c.TodoDefault))
+	} else {
+		p("# todo_default: <entry-id>\n")
+	}
+
+	p("\n# line_numbers shows the viewer's line-number gutter (default on). Turn it\n")
+	p("# off for clean copy-paste. Toggle it live with `,` in the viewer.\n")
+	if c.LineNumbers != nil {
+		p(fmt.Sprintf("line_numbers: %t\n", *c.LineNumbers))
+	} else {
+		p("# line_numbers: true\n")
+	}
+
+	p("\n# color forces colour on or off. Left unset, kref decides from the terminal.\n")
+	p("# KREF_COLOR and NO_COLOR still win over this. Toggle it live with `,`.\n")
+	if c.Color != nil {
+		p(fmt.Sprintf("color: %t\n", *c.Color))
+	} else {
+		p("# color: true\n")
+	}
+
 	if len(c.Favorites) > 0 {
 		p("\n# favorites map a name to an entry id; manage with `kref fav add|rm`.\n")
 		fb, err := yaml.Marshal(map[string]map[string]string{"favorites": c.Favorites})

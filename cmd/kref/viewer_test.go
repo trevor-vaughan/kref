@@ -1,16 +1,51 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/git-bug/git-bug/entity"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/trevor-vaughan/kref/internal/entry"
+	"github.com/trevor-vaughan/kref/internal/scan"
+	"github.com/trevor-vaughan/kref/internal/store"
+	"github.com/trevor-vaughan/kref/internal/todo"
 )
+
+// expandableStub is a stubProvider that also advertises ExpandableHeader, so the
+// palette's expand command is enabled. A plain stubProvider deliberately does
+// not: the todo cockpit has no expanded header either, and the row is disabled
+// there rather than hidden.
+type expandableStub struct {
+	stubProvider
+	rows []string
+	err  error
+}
+
+func (e expandableStub) ExpandHeader() ([]string, error) { return e.rows, e.err }
+
+// themedStub is a stubProvider that also advertises GlyphThemedHeader, the todo
+// cockpit's capability. A plain stubProvider does not: an entry header carries
+// no glyphs, so the row is absent there rather than shown inert. The pointer
+// receiver is the point — the theme has to survive the toggle.
+type themedStub struct {
+	stubProvider
+	theme string
+}
+
+func (t *themedStub) GlyphTheme() string { return t.theme }
+
+func (t *themedStub) SetGlyphTheme(theme string) []string {
+	t.theme = theme
+	t.header = []string{"header " + theme}
+	return t.header
+}
 
 // stubProvider is a test HeaderProvider: static header + fold, canned reload.
 type stubProvider struct {
@@ -34,6 +69,48 @@ func (p stubProvider) Reload() ([]string, []entry.Comment, error) {
 	}
 	return p.reload()
 }
+
+var _ = Describe("todoHeaderProvider", func() {
+	newProvider := func() *todoHeaderProvider {
+		render := func(c todo.Cockpit, theme string) []string {
+			return []string{fmt.Sprintf("%s open=%d", theme, c.Open)}
+		}
+		return &todoHeaderProvider{
+			theme:  "geometric",
+			counts: todo.Cockpit{Open: 2},
+			header: render(todo.Cockpit{Open: 2}, "geometric"),
+			render: render,
+			fetch: func() (todo.Cockpit, []entry.Comment, error) {
+				return todo.Cockpit{Open: 5}, nil, nil
+			},
+		}
+	}
+
+	It("re-renders the header under a new theme without re-reading the todo", func() {
+		// A display toggle must not move the numbers: the counts are the ones
+		// already on screen, drawn with different glyphs.
+		p := newProvider()
+		Expect(p.SetGlyphTheme("emoji")).To(Equal([]string{"emoji open=2"}))
+		Expect(p.HeaderLines()).To(Equal([]string{"emoji open=2"}))
+		Expect(p.GlyphTheme()).To(Equal("emoji"))
+	})
+
+	It("keeps the chosen theme across a reload", func() {
+		p := newProvider()
+		p.SetGlyphTheme("emoji")
+		h, _, err := p.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(h).To(Equal([]string{"emoji open=5"}))
+		Expect(p.HeaderLines()).To(Equal([]string{"emoji open=5"}))
+	})
+
+	It("renders a theme chosen after a reload against the reloaded counts", func() {
+		p := newProvider()
+		_, _, err := p.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.SetGlyphTheme("emoji")).To(Equal([]string{"emoji open=5"}))
+	})
+})
 
 var _ = Describe("todoInitialFold", func() {
 	It("collapses Done unless --full", func() {
@@ -425,6 +502,93 @@ var _ = Describe("viewerModel cursor", func() {
 		Expect(m.cur).To(Equal(0))
 	})
 
+	// home/end only prove anything on a body that overflows the window: on the
+	// short one above, G leaves the cursor on item 0 and the assertion is vacuous.
+	tallModel := func() viewerModel {
+		return send(newViewerModel(viewerInput{
+			title: "todo", body: strings.Repeat("## section\n\nprose\n\n", 40),
+			color: false, width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		}), tea.WindowSizeMsg{Width: 80, Height: 10})
+	}
+
+	It("home jumps to the first item, as it does in the list cockpit and pager", func() {
+		m := send(tallModel(), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+		Expect(m.cur).NotTo(Equal(0)) // G really moved off the first item
+		m = send(m, tea.KeyMsg{Type: tea.KeyHome})
+		Expect(m.cur).To(Equal(0))
+		Expect(m.sv.ScrollLabel()).To(Equal("top"))
+	})
+
+	// A pending <n> is a goto-line count for g alone. home means the top
+	// whatever was typed before it, so 12home must not land on body line 12.
+	It("home ignores a pending goto-line count", func() {
+		m := send(tallModel(), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+		m = send(m,
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")},
+			tea.KeyMsg{Type: tea.KeyHome})
+		Expect(m.cur).To(Equal(0))
+		Expect(m.sv.ScrollLabel()).To(Equal("top"))
+	})
+
+	// The strip must spend its width on metadata and elide the title, not the
+	// other way round: the title is also in the body's H1 and the status line,
+	// but the fields appear nowhere else in the viewer.
+	Describe("sticky strip width fitting", func() {
+		fields := []string{"◐ personal / open", "v12", "14 links", "2 open"}
+		stripWith := func(width int, title string) string {
+			m := newViewerModel(viewerInput{
+				title: title, body: "## S\n\nprose\n", color: false, width: width,
+				provider: stubProvider{header: fields},
+			})
+			return send(m, tea.WindowSizeMsg{Width: width, Height: 20}).sv.Title()
+		}
+		longTitle := "81be409e4ef8  Auth design — token rotation and refresh semantics"
+
+		It("shows every field when the terminal is wide", func() {
+			out := stripWith(140, longTitle)
+			for _, f := range fields {
+				Expect(out).To(ContainSubstring(f))
+			}
+			Expect(out).To(ContainSubstring("refresh semantics")) // title intact
+		})
+
+		It("drops from the tail as the terminal narrows", func() {
+			out := stripWith(100, longTitle)
+			Expect(out).To(ContainSubstring("◐ personal / open"))
+			Expect(out).NotTo(ContainSubstring("2 open"))
+		})
+
+		It("keeps the first field at 80 and elides the title instead", func() {
+			out := stripWith(80, longTitle)
+			Expect(out).To(ContainSubstring("◐ personal / open"))
+			Expect(out).To(ContainSubstring("81be409e4ef8")) // the id survives
+			Expect(out).To(ContainSubstring("…"))            // the title paid
+			Expect(ansi.StringWidth(out)).To(BeNumerically("<=", 78))
+		})
+
+		It("never lets a long title push the first field off the strip", func() {
+			out := stripWith(80, "81be409e4ef8  "+strings.Repeat("x", 70))
+			// The width assertion is what discriminates: SetTitle stores the
+			// strip unfitted and chromeRow truncates it at render, so without
+			// fitting the substring checks below pass on a 100-column string
+			// whose tail the reader never sees.
+			Expect(ansi.StringWidth(out)).To(BeNumerically("<=", 78))
+			Expect(out).To(ContainSubstring("◐ personal / open"))
+			Expect(out).To(ContainSubstring("81be409e4ef8"))
+		})
+
+		It("renders a provider with no fields as the title alone", func() {
+			m := newViewerModel(viewerInput{
+				title: longTitle, body: "## S\n\nprose\n", color: false, width: 80,
+				provider: stubProvider{},
+			})
+			Expect(send(m, tea.WindowSizeMsg{Width: 80, Height: 20}).sv.Title()).
+				To(ContainSubstring("Auth design"))
+		})
+	})
+
 	It("quits on q, and on esc once there is nothing left to dismiss", func() {
 		_, qCmd := send(newModel(), size).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 		Expect(qCmd).NotTo(BeNil())
@@ -449,7 +613,9 @@ var _ = Describe("viewerModel cursor", func() {
 		Expect(big.View()).To(ContainSubstring("top"))    // at the top
 	})
 
-	It("toggles content colour off and on with t", func() {
+	It("toggles content colour off from the view-options menu", func() {
+		// Colour is a saved display preference, so it lives behind `,` rather than
+		// in the palette: `,` is settings, `:` is keyless commands.
 		q := []entry.Comment{{ID: "q", Author: "ada", Body: "q?", Question: true}} // open ◉ = red glyph
 		m := send(newViewerModel(viewerInput{
 			title: "todo",
@@ -458,37 +624,54 @@ var _ = Describe("viewerModel cursor", func() {
 		}), size)
 		Expect(m.View()).To(ContainSubstring("\x1b[31m")) // red content (glyph + header) when on
 		Expect(m.sv.Plain()).To(BeFalse())                // chrome styled when colour on
-		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // gutter → colour
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
 		Expect(m.color).To(BeFalse())
 		Expect(m.View()).NotTo(ContainSubstring("\x1b[31m")) // no red content when off
 		Expect(m.sv.Plain()).To(BeTrue())                    // chrome goes plain too
+	})
+
+	It("no longer treats t as a key", func() {
+		m := send(newViewerModel(viewerInput{
+			title: "todo", body: body, color: true, width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+		Expect(m.color).To(BeTrue()) // unchanged: t falls through to the viewport
 	})
 })
 
 type fakeWriter struct {
 	addKind, addBody, addReplyTo string
+	addQuestion                  bool
 	added                        bool
 	editTarget, editBody         string
 	edited                       bool
 	deleteTarget                 string
 	deleted                      bool
-	resolveTarget                string
+	resolveTarget, resolveNote   string
 	resolved                     bool
 	unresolved                   bool
 	unresolveTarget              string
+	result                       writeResult // outcome the next body-bearing write returns
 }
 
-func (f *fakeWriter) AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (string, error) {
-	f.added, f.addKind, f.addBody, f.addReplyTo = true, actorKind, body, replyTo
-	return "newid", nil
+func (f *fakeWriter) AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (writeResult, error) {
+	f.added, f.addKind, f.addBody, f.addReplyTo, f.addQuestion = true, actorKind, body, replyTo, question
+	res := f.result
+	if res.CommentID == "" && res.Parked == nil {
+		res.CommentID = "newid"
+	}
+	return res, nil
 }
-func (f *fakeWriter) ResolveComment(id entity.Id, target string) error {
-	f.resolved, f.resolveTarget = true, target
-	return nil
+func (f *fakeWriter) ResolveWithNote(id entity.Id, target, note string) (writeResult, error) {
+	f.resolved, f.resolveTarget, f.resolveNote = true, target, note
+	return f.result, nil
 }
-func (f *fakeWriter) EditComment(id entity.Id, target, body string) error {
+func (f *fakeWriter) EditComment(id entity.Id, target, body string) (writeResult, error) {
 	f.edited, f.editTarget, f.editBody = true, target, body
-	return nil
+	return f.result, nil
 }
 func (f *fakeWriter) DeleteComment(id entity.Id, target string) error {
 	f.deleted, f.deleteTarget = true, target
@@ -597,19 +780,42 @@ var _ = Describe("viewerModel reply", func() {
 		send(m, tea.KeyMsg{Type: tea.KeyCtrlS}) // empty note → just resolve
 		Expect(fw.resolved).To(BeTrue())
 		Expect(fw.resolveTarget).To(Equal("q"))
-		Expect(fw.added).To(BeFalse()) // no note reply
+		Expect(fw.resolveNote).To(BeEmpty())
+		Expect(fw.added).To(BeFalse()) // the note never goes through AddComment
 	})
 
-	It("posts a note reply before resolving when the note is non-empty", func() {
+	It("passes a non-empty note to the writer with the resolve", func() {
 		fw := &fakeWriter{}
 		m := send(newModel(fw, base), size)
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ok")})
 		send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
-		Expect(fw.added).To(BeTrue()) // note posted as a reply first
-		Expect(fw.addReplyTo).To(Equal("q"))
-		Expect(fw.addBody).To(Equal("ok"))
 		Expect(fw.resolved).To(BeTrue())
+		Expect(fw.resolveTarget).To(Equal("q"))
+		Expect(fw.resolveNote).To(Equal("ok"))
+		Expect(fw.added).To(BeFalse()) // one guarded call, not note-then-resolve
+	})
+
+	It("reports a parked write as held for review and does not claim success", func() {
+		fw := &fakeWriter{result: writeResult{Parked: &store.Parked{
+			ItemID:   "abcd1234abcd",
+			Findings: []scan.Finding{{RuleID: "github-pat", StartLine: 1, Description: "token"}},
+		}}}
+		m := send(newModel(fw, base), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(m.notice).To(ContainSubstring("held for review"))
+		Expect(m.notice).NotTo(ContainSubstring("replied"))
+	})
+
+	It("flags an unscanned write in the notice", func() {
+		fw := &fakeWriter{result: writeResult{CommentID: "newid", Unscanned: true}}
+		m := send(newModel(fw, base), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(m.notice).To(ContainSubstring("UNSCANNED"))
 	})
 
 	It("x reopens a resolved question and expands its thread", func() {
@@ -1195,5 +1401,460 @@ var _ = Describe("viewerModel exit echo", func() {
 		fm := out.(viewerModel)
 		Expect(fm.sv.VisibleWindow()).To(ContainElement(ContainSubstring(cursorMarker)))
 		Expect(strings.Join(fm.echoLines(), "\n")).NotTo(ContainSubstring(cursorMarker))
+	})
+})
+
+var _ = Describe("viewerModel comment menu", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	withComments := func(fw *fakeWriter, cs []entry.Comment) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\n- [ ] a\n",
+			color: false, width: 90, comments: cs,
+			writer: fw, entryID: "deadbeef", actorKind: "human",
+			provider: stubProvider{
+				header: []string{"h"},
+				reload: func() ([]string, []entry.Comment, error) { return []string{"h"}, cs, nil },
+			},
+		})
+	}
+	question := []entry.Comment{{ID: "q", Author: "ada", Body: "root q?", Question: true}}
+
+	It("opens on c and lists every comment action", func() {
+		m := send(withComments(&fakeWriter{}, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		Expect(m.mode).To(Equal(modeCommentMenu))
+		view := m.View()
+		for _, want := range []string{"new comment", "new question", "reply", "edit", "delete", "resolve"} {
+			Expect(view).To(ContainSubstring(want))
+		}
+	})
+
+	It("names the comment it will act on", func() {
+		m := send(withComments(&fakeWriter{}, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		Expect(m.View()).To(ContainSubstring("ada"))
+	})
+
+	It("closes on esc without writing", func() {
+		fw := &fakeWriter{}
+		m := send(withComments(fw, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(m.mode).To(Equal(modeNone))
+		Expect(fw.added).To(BeFalse())
+	})
+
+	It("fires a row by its own accelerator from inside the menu", func() {
+		m := send(withComments(&fakeWriter{}, question), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		Expect(m.mode).To(Equal(modeReply)) // same path as pressing r outside
+	})
+
+	It("dims the cursor-dependent rows on an entry with no comments", func() {
+		m := send(withComments(&fakeWriter{}, nil), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		// enter takes the first *enabled* row, which must be new comment — not
+		// reply, which has nothing to reply to.
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeNewComment))
+	})
+
+	It("refuses a disabled row pressed by its accelerator", func() {
+		fw := &fakeWriter{}
+		m := send(withComments(fw, nil), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		Expect(m.mode).To(Equal(modeCommentMenu)) // still open, nothing fired
+		Expect(fw.added).To(BeFalse())
+	})
+})
+
+var _ = Describe("viewerModel new comment and question", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	newModel := func(fw *fakeWriter) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\n- [ ] a\n",
+			color: false, width: 90, comments: nil,
+			writer: fw, entryID: "deadbeef", actorKind: "human",
+			provider: stubProvider{
+				header: []string{"h"},
+				reload: func() ([]string, []entry.Comment, error) { return []string{"h"}, nil, nil },
+			},
+		})
+	}
+
+	It("a starts a root comment, not a reply", func() {
+		fw := &fakeWriter{}
+		m := send(newModel(fw), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		Expect(m.mode).To(Equal(modeNewComment))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(fw.added).To(BeTrue())
+		Expect(fw.addBody).To(Equal("hi"))
+		Expect(fw.addReplyTo).To(BeEmpty()) // root, not a reply
+		Expect(fw.addQuestion).To(BeFalse())
+	})
+
+	It("A raises a question", func() {
+		fw := &fakeWriter{}
+		m := send(newModel(fw), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+		Expect(m.mode).To(Equal(modeNewQuestion))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("why?")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(fw.added).To(BeTrue())
+		Expect(fw.addQuestion).To(BeTrue())
+		Expect(fw.addReplyTo).To(BeEmpty())
+	})
+
+	It("discards an empty body", func() {
+		fw := &fakeWriter{}
+		m := send(newModel(fw), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+		Expect(fw.added).To(BeFalse())
+		Expect(m.mode).To(Equal(modeNone))
+	})
+})
+
+var _ = Describe("viewerModel command palette", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	newModel := func() viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\n- [ ] a\n",
+			color: false, width: 90, comments: nil,
+			writer: &fakeWriter{}, entryID: "deadbeef", actorKind: "human",
+			provider: expandableStub{
+				stubProvider: stubProvider{header: []string{"h"}},
+				rows:         []string{"h", "Created  2026-07-01 by ada"},
+			},
+		})
+	}
+	typeRunes := func(m viewerModel, s string) viewerModel {
+		for _, r := range s {
+			m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		return m
+	}
+
+	It("opens on : and lists the commands that have no key", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		Expect(m.mode).To(Equal(modePalette))
+		Expect(m.View()).To(ContainSubstring("expand header"))
+	})
+
+	It("omits anything that already has a key", func() {
+		// The palette is not a second help popup: ? answers "what are the keys",
+		// : answers "what else is there", and nothing appears in both.
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(view).NotTo(ContainSubstring("new comment"))     // has a
+		Expect(view).NotTo(ContainSubstring("reply"))           // has r
+		Expect(view).NotTo(ContainSubstring("comment actions")) // has c
+	})
+
+	It("omits keys the viewport owns, which it cannot fire", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		Expect(m.View()).NotTo(ContainSubstring("scroll a half page"))
+	})
+
+	It("lists exactly the keyless actions, whatever they come to be", func() {
+		// Pinned as a relationship rather than a fixed list, so this keeps
+		// holding as actions land keyless and later graduate to a key.
+		var want []string
+		for _, a := range viewerActionList() {
+			if a.Hidden || a.Passthrough || a.Do == nil || len(a.Keys) > 0 {
+				continue
+			}
+			label := a.MenuLabel
+			if label == "" {
+				label = a.Label
+			}
+			want = append(want, label)
+		}
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(want).NotTo(BeEmpty())
+		for _, label := range want {
+			Expect(view).To(ContainSubstring(label))
+		}
+	})
+
+	It("filters as you type and fires the match", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = typeRunes(m, "expand")
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeNone)) // fired and closed
+	})
+
+	It("takes a whole burst of runes in one key message", func() {
+		// A terminal delivers fast typing as a single multi-rune KeyMsg; handling
+		// only the one-rune case drops most of what was typed, which a
+		// one-rune-at-a-time spec cannot catch.
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("expand")})
+		Expect(m.View()).To(ContainSubstring("expand header"))
+
+		m2 := send(newModel(), size)
+		m2 = send(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m2 = send(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzzz")})
+		Expect(m2.View()).To(ContainSubstring("no matches"))
+	})
+
+	It("backspaces the filter", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = typeRunes(m, "expandx")
+		Expect(m.View()).To(ContainSubstring("no matches"))
+		m = send(m, tea.KeyMsg{Type: tea.KeyBackspace})
+		Expect(m.View()).NotTo(ContainSubstring("no matches"))
+	})
+
+	It("closes on esc without acting", func() {
+		m := send(newModel(), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(m.mode).To(Equal(modeNone))
+	})
+})
+
+var _ = Describe("viewerModel view options", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	newModel := func(gutter bool) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nline one\n", color: false, width: 90,
+			hideGutter: !gutter,
+			provider:   stubProvider{header: []string{"h"}},
+		})
+	}
+	newThemedModel := func(theme string) viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nline one\n", color: false, width: 90,
+			provider: &themedStub{stubProvider: stubProvider{header: []string{"h"}}, theme: theme},
+		})
+	}
+	It("opens on , and shows each setting's current value", func() {
+		m := send(newModel(true), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		Expect(m.mode).To(Equal(modeSettings))
+		view := m.View()
+		Expect(view).To(ContainSubstring("line numbers"))
+		Expect(view).To(ContainSubstring("colour"))
+		Expect(view).To(ContainSubstring("on"))
+	})
+
+	It("stays open across several toggles", func() {
+		// Changing two settings should be one visit, not two — unlike the comment
+		// menu and palette, which close on fire.
+		m := send(newModel(true), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeSettings))
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.mode).To(Equal(modeSettings))
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(m.mode).To(Equal(modeNone))
+	})
+
+	It("hides the line-number column when the gutter is off", func() {
+		on := send(newModel(true), size)
+		Expect(on.View()).To(ContainSubstring("│"))
+
+		off := send(newModel(true), size)
+		off = send(off, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		off = send(off, tea.KeyMsg{Type: tea.KeyEnter}) // toggle line numbers
+		Expect(off.showGutter).To(BeFalse())
+		off = send(off, tea.KeyMsg{Type: tea.KeyEsc})
+		Expect(off.View()).NotTo(ContainSubstring("│"))
+	})
+
+	It("leaves the selection on the row just toggled", func() {
+		// The menu stays open so several settings are one visit; if the selection
+		// snapped back to the top, the obvious "changed my mind" second enter would
+		// silently toggle a different setting.
+		m := send(newModel(true), size,
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.color).To(BeTrue())
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.color).To(BeFalse())
+		Expect(m.showGutter).To(BeTrue())
+	})
+
+	It("starts with the gutter off when the config says so", func() {
+		Expect(send(newModel(false), size).View()).NotTo(ContainSubstring("│"))
+	})
+
+	It("offers the glyph theme only where the header has one", func() {
+		entryView := send(newModel(true), size, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		Expect(entryView.View()).NotTo(ContainSubstring("glyphs"))
+
+		todoView := send(newThemedModel("geometric"), size, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+		Expect(todoView.View()).To(ContainSubstring("glyphs"))
+		Expect(todoView.View()).To(ContainSubstring("geometric"))
+	})
+
+	It("cycles the glyph theme, re-renders the header and persists it", func() {
+		p := &themedStub{stubProvider: stubProvider{header: []string{"header geometric"}}, theme: "geometric"}
+		m := send(newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nline one\n", color: false, width: 90,
+			provider: p,
+		}), size,
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(p.theme).To(Equal("emoji"))
+		// The header is pre-rendered with the theme baked in, so the toggle has to
+		// re-render it — not just save the preference for next launch.
+		Expect(m.header).To(Equal([]string{"header emoji"}))
+		Expect(m.View()).To(ContainSubstring("emoji"))
+		_, uc, err := loadUserConfigForEdit()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(uc.TodoGlyphs).NotTo(BeNil())
+		Expect(*uc.TodoGlyphs).To(Equal("emoji"))
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(p.theme).To(Equal("geometric"))
+		Expect(m.header).To(Equal([]string{"header geometric"}))
+	})
+})
+
+var _ = Describe("viewerModel expand header", func() {
+	size := tea.WindowSizeMsg{Width: 90, Height: 30}
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	expandable := func() viewerModel {
+		return newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nx\n", color: false, width: 90,
+			provider: expandableStub{
+				stubProvider: stubProvider{header: []string{"base header"}},
+				rows:         []string{"base header", "Created  2026-07-01 by ada"},
+			},
+		})
+	}
+
+	It("swaps in the extended header and back", func() {
+		m := send(expandable(), size)
+		Expect(m.View()).NotTo(ContainSubstring("Created"))
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeTrue())
+		// It renders as a content block, not into the sticky title line: that line
+		// joins its rows with " · " and would truncate a multi-row header away.
+		Expect(m.View()).To(ContainSubstring("Created"))
+		Expect(m.sv.Title()).NotTo(ContainSubstring("Created"))
+
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeFalse())
+		Expect(m.View()).NotTo(ContainSubstring("Created"))
+	})
+
+	It("is offered but disabled on a view with no expanded header", func() {
+		m := send(newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nx\n", color: false, width: 90,
+			provider: stubProvider{header: []string{"h"}},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(view).To(ContainSubstring("expand header"))
+		Expect(view).To(ContainSubstring("no expanded header")) // the reason, not silence
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeFalse()) // disabled rows cannot be selected
+	})
+
+	It("reports a failure to expand rather than swallowing it", func() {
+		m := send(newViewerModel(viewerInput{
+			title: "spec", body: "## Open\n\nx\n", color: false, width: 90,
+			provider: expandableStub{
+				stubProvider: stubProvider{header: []string{"h"}},
+				err:          errors.New("store unreachable"),
+			},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.expanded).To(BeFalse())
+		Expect(m.View()).To(ContainSubstring("could not expand"))
+	})
+})
+
+var _ = Describe("sticky strip golden layout", func() {
+	fields := []string{"◐ personal / open", "v12", "14 links", "2 open"}
+	title := "81be409e4ef8  Auth design — token rotation and refresh semantics"
+
+	stripAt := func(width int) string {
+		m := newViewerModel(viewerInput{
+			title: title, body: "## S\n\nprose\n", color: false, width: width,
+			provider: stubProvider{header: fields},
+		})
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+		return mm.(viewerModel).sv.Title()
+	}
+
+	DescribeTable("spends the width it has",
+		func(width int, want string) {
+			Expect(stripAt(width)).To(Equal(want))
+		},
+		Entry("140 shows everything", 140,
+			"81be409e4ef8  Auth design — token rotation and refresh semantics  ·  ◐ personal / open  ·  v12  ·  14 links  ·  2 open"),
+		Entry("100 drops the link and open-question counts", 100,
+			"81be409e4ef8  Auth design — token rotation and refresh semantics  ·  ◐ personal / open  ·  v12"),
+		Entry("80 keeps tier/status and elides the title", 80,
+			"81be409e4ef8  Auth design — token rotation and refresh …  ·  ◐ personal / open"),
+		Entry("60 elides the title harder, but still keeps tier/status", 60,
+			"81be409e4ef8  Auth design — token r…  ·  ◐ personal / open"),
+	)
+
+	It("never exceeds the width it was given", func() {
+		for _, w := range []int{60, 80, 100, 140} {
+			Expect(ansi.StringWidth(stripAt(w))).To(BeNumerically("<=", w-2),
+				"strip overflows at %d columns", w)
+		}
 	})
 })

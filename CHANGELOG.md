@@ -12,6 +12,26 @@ there is a tagged release to diff against.
 
 ### Changed
 
+- **The `t` colour hotkey is gone from every viewer.** Toggling colour lives in
+  the view-options menu (`,`), which each interactive surface now has: the entry
+  viewer, the `kref list` cockpit, the `kref search`/`kref diff` pager and the
+  quarantine review. The key was dropped rather than reassigned — the hotkey set
+  needs a considered pass, and a menu is where a setting lives until a key is
+  earned. Colour is a saved preference now, so it also survives the session
+  instead of resetting on the next launch.
+- **The saved colour preference is applied, not just written.** `color:` in
+  `~/.config/kref/config.yaml` was recorded by the menu and then ignored by every
+  command — the resolution order still ran env, then terminal detection, with no
+  step that read it. Interactive surfaces now resolve colour as: `KREF_COLOR` or
+  `NO_COLOR` (per-invocation intent) → the saved preference → terminal
+  detection. Static and piped output is unchanged and still ignores the file, so
+  a redirect's bytes never depend on a preference.
+- **The `kref search`/`kref diff` pager honors colour at all.** It hardcoded
+  colour on for its own chrome, so `NO_COLOR` and `--plain` styled the frame
+  anyway; and turning colour off left the body's ANSI in place, because the lines
+  arrive pre-rendered. The pager now takes its initial colour from the caller and
+  strips the body's escapes while colour is off, restoring them when it goes back
+  on.
 - **`kref version` reports the commit date.** `kref version` and `kref --version`
   now print `kref <version> (commit <UTC RFC3339>)`, and `--json` carries a
   `commit_date` key alongside `version` (empty, not absent, when unknown — the
@@ -60,6 +80,29 @@ there is a tagged release to diff against.
   it." `kref retier` also gains the `-y` shorthand it was missing.
 
 ### Fixed
+
+- **The viewer's sticky top line shows metadata again.** It was built by joining
+  the static header block into one line, and that block's first row is the
+  entry's full 64-character id — which consumed the whole strip at 140 columns,
+  let alone 80, hiding tier, status, labels, origin and links from the one
+  surface a human actually reads. The strip now carries purpose-built fields
+  (tier/status, version, link count, open questions) and fits itself to the
+  terminal, dropping the rightmost fields as the window narrows and shortening
+  the title before dropping any of them. `kref todo`'s strip gained the same
+  treatment, with its alert signals ranked above its counts. Static `--header`,
+  `--plain` and `--json` output is unchanged.
+
+- **`home` jumps to the top in the entry viewer.** `end` was bound to the bottom
+  but `home` fell through to the viewport and did nothing, while the `kref list`
+  cockpit and the pager both bound the pair. A pending `<n>` count is discarded
+  by `home`, so `12` then `home` goes to the top rather than to body line 12.
+
+- **Writing the user config no longer drops settings it does not know about.**
+  `config.WriteFile` renders through a canonical template that omitted
+  `todo_glyphs` and `todo_default`, so any code path that rewrote the file
+  silently deleted them — now reachable, since toggling a display preference in
+  the viewer rewrites the file. All settable keys round-trip, with a spec that
+  fails if a future field is added to the struct but not the template.
 
 - **Agent writes through the `kref todo` cockpit are attributed correctly.** The
   cockpit resolved the actor but dropped the name, so a reply made under
@@ -130,6 +173,13 @@ there is a tagged release to diff against.
 
 ### Added
 
+- **`kref new --file <path>`** reads the new entry's body from a file, matching
+  `kref update --file`; it previously failed with a bare `unknown flag: --file`.
+  The body resolves as `--body`, else `--file`, else piped stdin, and the two
+  flags together are an error — the same order and rule `update` uses. A
+  `kref-id` trailer in the file is stripped, so re-creating from an exported body
+  does not bake the marker in. `--file` takes content only; `kref ingest` remains
+  the verb that records the source path and detects the content type.
 - **Horizontal scroll for wide lines** — the interactive `kref list` cockpit and
   the `kref search`/`kref diff` pager pan left/right with `←`/`h` and `→`/`l`, so
   a title or diff line wider than the window can be read without wrapping.
@@ -160,16 +210,11 @@ there is a tagged release to diff against.
   `--allow` the server stays locked to its `--dir`/`KREF_DIR` repo and a per-call
   `dir` naming any other repository is refused — the boundary that keeps an
   agent from reaching an unrelated repo's private tier.
-- **MCP client-roots mode** — `kref mcp --client-roots` confines each tool call
-  to the directories the client advertises via the MCP `roots` capability
-  (fetched per call), as an alternative to `--allow`. The two are mutually
-  exclusive; if the client advertises no usable `file://` roots, every call is
-  refused (fail closed).
-- **MCP tier scoping in multi-repo modes** — a `--allow` or `--client-roots`
-  server serves only syncable (non-private-typed) tiers of an addressed repo,
-  except a client's own sole advertised root. Cross-repo `private`/`agent` tiers
-  and the quarantine review queue are never served — the exfiltration boundary
-  called for by the global-server safety design.
+- **MCP tier scoping in global mode** — a `--allow` server serves only syncable
+  (non-private-typed) tiers of an addressed repo. Cross-repo `private`/`agent`
+  tiers and the quarantine review queue are never served — the exfiltration
+  boundary called for by the global-server safety design. Reaching a repo's
+  private tiers over MCP takes a locked-mode server pinned to it with `--dir`.
 - **`kref_update` labels and links** — the MCP `kref_update` tool now takes
   optional `add_labels`/`remove_labels` and `add_links` (`[{to, type?}]`, type
   defaulting to `relates`)/`remove_links` arrays, so an agent manages metadata
@@ -515,9 +560,53 @@ there is a tagged release to diff against.
   ActiveHelp hint when there are none), and a bare `kref fav` now defaults to
   `kref fav ls`.
 
+### Added
+
+- **`kref show` displays an entry's links.** Outgoing and incoming typed edges
+  appear in the metadata header with their type, short id and title. They were
+  previously reachable only through `show --json`: `kref links` had been retired
+  on the grounds that links live in the expanded header, and the expanded header
+  is what the viewer rework deferred. Long edge lists are capped at ten so a
+  hub entry cannot push its own body off the screen.
+- **Start a comment thread from the viewer.** `a` posts a comment and `A` raises
+  a question on the entry itself. Previously `r` could only reply to an existing
+  comment, so raising the first question on an entry meant leaving the viewer for
+  `kref comment`.
+- **`c` opens a comment menu** listing reply, edit, delete, resolve and the two
+  new verbs, each with its accelerator beside it. Actions that cannot run right
+  now stay visible with the reason attached, instead of the key appearing to do
+  nothing until you press it.
+- **`,` opens view options** on every interactive surface, each offering only what
+  it can act on: the entry viewer has the line-number gutter (turn it off for
+  clean copy-paste) and colour; `kref todo` adds the cockpit glyph theme, which
+  cycles between the geometric and emoji sets and redraws the header on the spot;
+  the `kref list` cockpit and the quarantine review have colour; the `kref diff`
+  pager has colour and its own line numbers, which `kref search` omits rather
+  than showing inert — it has no gutter to hide. Every setting persists to
+  `~/.config/kref/config.yaml`, and the menu stays open on the row you just
+  changed, so changing two settings, or changing your mind about one, is a single
+  visit.
+- **Expanding the header is back**, as a command in the palette. It shows the
+  entry's op-log — created, edited, editors, recent body versions — plus the
+  complete link list the header caps.
+- **`:` opens the commands that have no hotkey**, filtered as you type. It is
+  not a second help popup: `?` tells you what the keys are, `:` tells you what
+  else there is, and nothing appears in both. Actions can now live in the palette
+  without a key of their own, so a key is something an action earns by being
+  reached for rather than something assigned when it is written.
+
 ### Security
 
 - betterleaks scans every ingest and push to keep secrets out of syncable tiers.
+- **Comments written in the interactive viewer are scanned.** `kref comment` and
+  the MCP tool already diverted a secret-bearing comment into the quarantine
+  review queue, but replies, edits and resolve notes typed in the viewer went
+  straight to the DAG unscanned — the one comment-writing surface outside the
+  policy. They now park like every other surface: the footer reports the write as
+  held rather than applied, and the review thread the park opens is visible in
+  the discussion you are already reading. A flagged closing note parks the
+  resolve as a single held operation instead of storing the note and resolving
+  anyway.
 - Scratch files (editor buffers for `kref edit`, bundle export/import staging,
   betterleaks reports) are created under `$XDG_CACHE_HOME/kref/tmp`
   (`~/.cache/kref/tmp`, mode 0700) instead of the shared system temp dir —

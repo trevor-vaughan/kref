@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"bytes"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -106,5 +107,87 @@ var _ = Describe("TodoCockpit", func() {
 		render.TodoCockpit(&b, c, "geometric", false)
 		Expect(b.String()).To(ContainSubstring("3 awaiting review"))
 		Expect(b.String()).NotTo(ContainSubstring("stale"))
+	})
+})
+
+var _ = Describe("TodoStripFields", func() {
+	base := todo.Cockpit{Open: 12, Done: 3, Awaiting: 0, ToReview: -1, Changed: -1, Version: 83}
+
+	It("puts awaiting-you first and the counts after it", func() {
+		f := render.TodoStripFields(base, "geometric", false)
+		Expect(f[0]).To(ContainSubstring("0 awaiting you"))
+		Expect(f).To(ContainElement("open 12 · done 3"))
+		Expect(f).To(ContainElement("v83"))
+	})
+
+	It("ranks every alert above the counts, so a narrow strip keeps them", func() {
+		c := base
+		c.ToReview, c.Changed, c.QuarantinePending = 2, 3, 4
+		f := render.TodoStripFields(c, "geometric", false)
+		idx := func(sub string) int {
+			for i, s := range f {
+				if strings.Contains(s, sub) {
+					return i
+				}
+			}
+			return -1
+		}
+		Expect(idx("2 to review")).To(BeNumerically("<", idx("open 12")))
+		Expect(idx("3 changed")).To(BeNumerically("<", idx("open 12")))
+		Expect(idx("4 awaiting review")).To(BeNumerically("<", idx("open 12")))
+		Expect(idx("open 12")).To(BeNumerically("<", idx("v83")))
+	})
+
+	It("marks a stale quarantine queue", func() {
+		c := base
+		c.QuarantinePending, c.QuarantineStale = 4, 1
+		Expect(render.TodoStripFields(c, "geometric", false)).To(ContainElement("⚠ 4 awaiting review (1 stale)"))
+	})
+
+	It("omits not-computed signals, the zero version and a zero edited time", func() {
+		f := render.TodoStripFields(base, "geometric", false)
+		joined := strings.Join(f, "|")
+		Expect(joined).NotTo(ContainSubstring("to review"))
+		Expect(joined).NotTo(ContainSubstring("changed"))
+		Expect(joined).NotTo(ContainSubstring("awaiting review"))
+		Expect(joined).NotTo(ContainSubstring("edited"))
+
+		c := base
+		c.Version = 0
+		Expect(strings.Join(render.TodoStripFields(c, "geometric", false), "|")).NotTo(ContainSubstring("v0"))
+	})
+
+	It("emits an edited field when the timestamp is set", func() {
+		c := base
+		c.Edited = time.Now().Add(-49 * time.Minute)
+		Expect(strings.Join(render.TodoStripFields(c, "geometric", false), "|")).To(ContainSubstring("edited "))
+	})
+
+	It("never joins two fields into one, so the viewer can drop them separately", func() {
+		c := base
+		c.ToReview = 2
+		for _, f := range render.TodoStripFields(c, "geometric", false) {
+			// "open 12 · done 3" is the one intentional compound; nothing else
+			// may carry the separator the viewer uses between fields.
+			if !strings.HasPrefix(f, "open ") {
+				Expect(f).NotTo(ContainSubstring(" · "))
+			}
+		}
+	})
+
+	It("honors the glyph theme", func() {
+		emoji := render.TodoStripFields(base, "emoji", false)
+		geo := render.TodoStripFields(base, "geometric", false)
+		Expect(emoji[0]).NotTo(Equal(geo[0]))
+	})
+
+	// The strip must not be able to change `kref todo --no-pager`.
+	It("leaves TodoCockpit's output untouched", func() {
+		var b bytes.Buffer
+		render.TodoCockpit(&b, base, "geometric", false)
+		render.TodoStripFields(base, "geometric", false)
+		var b2 bytes.Buffer
+		render.TodoCockpit(&b2, base, "geometric", false)
+		Expect(b2.String()).To(Equal(b.String()))
 	})
 })

@@ -261,3 +261,33 @@ func favoritesFor(favs map[string]string, id entity.Id) []string {
 	sort.Strings(out)
 	return out
 }
+
+// setUserLineNumbers, setUserColor and setUserGlyphTheme persist a display
+// preference to the USER config file. Display prefs are deliberately user-scoped
+// rather than repo-native: how you like the viewer to look travels with you, not
+// with the repository, and a synced entry must not dictate another machine's
+// rendering.
+func setUserLineNumbers(on bool) error {
+	return editUserConfig(func(uc *config.Config) { uc.LineNumbers = &on })
+}
+
+func setUserColor(on bool) error {
+	return editUserConfig(func(uc *config.Config) { uc.Color = &on })
+}
+
+func setUserGlyphTheme(theme string) error {
+	return editUserConfig(func(uc *config.Config) { uc.TodoGlyphs = &theme })
+}
+
+// editUserConfig loads the user config, applies set, validates and writes it.
+func editUserConfig(set func(*config.Config)) error {
+	path, uc, err := loadUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	set(uc)
+	if err := config.Validate(uc); err != nil {
+		return err
+	}
+	return config.WriteFile(path, uc)
+}

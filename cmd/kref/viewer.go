@@ -25,14 +25,40 @@ import (
 )
 
 // HeaderProvider supplies the viewer's dynamic, entry-semantic inputs: the
-// sticky header signal lines, the sections collapsed on first render (by outline
+// sticky strip's fields, the sections collapsed on first render (by outline
 // heading Path), and the ctrl+r refresh. The comment write path uses the
-// separate commentWriter interface. An optional ExpandableHeader capability
-// (type-asserted) for the show e-expand is deferred to the config-menu work.
+// separate commentWriter interface. Optional ExpandableHeader and
+// GlyphThemedHeader capabilities are type-asserted.
 type HeaderProvider interface {
+	// HeaderLines returns the sticky strip's fields, most important first.
+	// The viewer joins them with · and drops from the TAIL when the width
+	// runs out, so element 0 survives longest.
+	//
+	// These are strip fields, NOT a metadata block. A value long enough to
+	// fill the strip on its own — a full 64-character id, say — starves
+	// every field after it. Use render.StripFields / render.TodoStripFields.
 	HeaderLines() []string
 	InitialFold() map[string]bool
 	Reload() (header []string, comments []entry.Comment, err error)
+}
+
+// ExpandableHeader is the optional capability a provider advertises when its
+// header has an expanded form — the entry view's op-log and full link list. The
+// viewer type-asserts for it: a todo cockpit header has no expansion, and the
+// action that offers it is disabled rather than absent, so the reader learns the
+// capability exists and why it does not apply here.
+type ExpandableHeader interface {
+	ExpandHeader() ([]string, error)
+}
+
+// GlyphThemedHeader is the optional capability a provider advertises when its
+// header is drawn with a glyph theme the reader can cycle. Only the todo cockpit
+// has one, so the `,` row is absent in the entry viewer rather than shown inert:
+// an entry header has no glyphs for the setting to act on. The header is
+// pre-rendered with the theme baked in, so setting it returns the new rows.
+type GlyphThemedHeader interface {
+	GlyphTheme() string
+	SetGlyphTheme(theme string) []string
 }
 
 type viewerInput struct {
@@ -46,7 +72,11 @@ type viewerInput struct {
 	entryID     entity.Id
 	actor       string
 	actorKind   string
-	provider    HeaderProvider
+	// hideGutter is inverted deliberately: the line-number gutter defaults to ON,
+	// so the zero value of viewerInput must mean "shown". A showGutter field
+	// would make every caller that forgets it silently lose the numbers.
+	hideGutter bool
+	provider   HeaderProvider
 }
 
 const (
@@ -71,14 +101,22 @@ const (
 	modeEdit
 	modeResolveNote
 	modeConfirmDelete
+	modeCommentMenu
+	modeNewComment
+	modeNewQuestion
+	modePalette
+	modeSettings
 )
 
-// commentWriter is the subset of *store.Store the cockpit uses to write comments.
+// commentWriter is the guarded contract the viewer writes comments through. It
+// is deliberately NOT *store.Store's method set: the secret policy lives above
+// the store, so the viewer takes an adapter that applies it (guardedWriter) and
+// reports the outcome as a writeResult.
 type commentWriter interface {
-	AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (string, error)
-	ResolveComment(id entity.Id, target string) error
+	AddComment(id entity.Id, actor, actorKind, body string, question bool, replyTo string) (writeResult, error)
+	EditComment(id entity.Id, target, body string) (writeResult, error)
+	ResolveWithNote(id entity.Id, target, note string) (writeResult, error)
 	UnresolveComment(id entity.Id, target string) error
-	EditComment(id entity.Id, target, body string) error
 	DeleteComment(id entity.Id, target string) error
 }
 
@@ -133,31 +171,22 @@ type viewerModel struct {
 	ta            textarea.Model
 	target        string
 	notice        string
-	spilled       string      // where a ctrl+c-interrupted draft was preserved
-	search        pagerSearch // shared incremental search (/, n/N)
-	bodyStartLine int         // content-line index where the body zone begins (for <n>g)
-	bodyLineCount int         // rendered body line count (for <n>g clamping)
-	contentRaw    []string    // gutter-free content lines, parallel to the ScrollView content (for search)
+	spilled       string         // where a ctrl+c-interrupted draft was preserved
+	search        pagerSearch    // shared incremental search (/, n/N)
+	menu          *tui.Menu      // action overlay, live while mode is modeCommentMenu or modePalette
+	menuActions   []action       // the actions behind the overlay's rows, addressed by MenuRow.ID
+	showGutter    bool           // line-number gutter; off gives clean copy-paste
+	provider      HeaderProvider // kept for the optional ExpandableHeader capability
+	expandedRows  []string       // extended header, rendered as a content block while expanded
+	expanded      bool           // header currently showing the extended form
+	bodyStartLine int            // content-line index where the body zone begins (for <n>g)
+	bodyLineCount int            // rendered body line count (for <n>g clamping)
+	contentRaw    []string       // gutter-free content lines, parallel to the ScrollView content (for search)
 }
 
 func newViewerModel(in viewerInput) viewerModel {
 	sv := tui.NewScrollView(in.title)
-	sv.SetHelpRows([]string{
-		"j/k ↑/↓       scroll a line",
-		"pgup/pgdn     scroll a page",
-		"ctrl+d/u      scroll a half page",
-		"tab/S-tab     next/prev item",
-		"→/← l/h       into a reply / out to parent",
-		"g/G           top / bottom",
-		"<n>g          goto body line n",
-		"space         fold the current section",
-		"^space        fold / unfold everything",
-		"/ n/N         search / next / prev",
-		"r/e/d/x       reply / edit / delete / resolve↔reopen",
-		"ctrl+r        refresh",
-		"t             toggle colour",
-		"? q esc       help / quit",
-	})
+	sv.SetHelpRows(helpRows())
 	col := in.provider.InitialFold()
 	if col == nil {
 		col = map[string]bool{}
@@ -186,6 +215,8 @@ func newViewerModel(in viewerInput) viewerModel {
 		actor:         in.actor,
 		actorKind:     in.actorKind,
 		reload:        in.provider.Reload,
+		provider:      in.provider,
+		showGutter:    !in.hideGutter,
 		ta:            ta,
 	}
 }
@@ -246,6 +277,9 @@ func gutterFor(isCursor bool) string {
 // line number followed by " │ " for a body line (lineNo >= 1), or gutterW spaces
 // for a non-body line (comments, preamble, separators). gutterW is numDigits+3.
 func numberCol(lineNo, gutterW int) string {
+	if gutterW == 0 {
+		return "" // gutter off: no column at all, so the text copies clean
+	}
 	if lineNo < 1 {
 		return strings.Repeat(" ", gutterW)
 	}
@@ -329,6 +363,9 @@ func (m *viewerModel) renderContent() {
 		d = nd
 	}
 	gutterW := d + 3
+	if !m.showGutter {
+		gutterW = 0 // no number column: the cursor gutter alone, clean to copy
+	}
 
 	var lines []string
 	m.contentRaw = m.contentRaw[:0]
@@ -338,6 +375,14 @@ func (m *viewerModel) renderContent() {
 	emit := func(raw string, isCursor bool, bodyLineNo int) {
 		m.contentRaw = append(m.contentRaw, raw)
 		lines = append(lines, gutterFor(isCursor)+numberCol(bodyLineNo, gutterW)+raw)
+	}
+
+	// Expanded header: a block at the very top, un-numbered, above the discussion.
+	if m.expanded {
+		for _, h := range m.expandedRows {
+			emit(h, false, 0)
+		}
+		emit("", false, 0)
 	}
 
 	// Discussion zone: comment nodes, un-numbered (bodyLineNo 0), blank separators.
@@ -442,23 +487,55 @@ func (m *viewerModel) linesBelowCursor() int {
 	return max(0, m.contentLines-m.offsets[m.cur]-1)
 }
 
-// globalContext joins the entry identity and the non-empty header signal lines
-// into the single sticky title line (awaiting-you count, open/done, version).
+// stripSep separates the sticky strip's fields.
+const stripSep = "  ·  "
+
+// globalContext builds the sticky title strip: the entry title followed by the
+// provider's fields, joined with stripSep.
+//
+// The strip is fitted rather than truncated. ScrollView.Fit takes variants from
+// richest to poorest and returns the first that fits; its fallback is the LAST
+// variant, which chromeRow then truncates from the right — which would starve
+// the fields exactly as an unfitted join does. So the poorest variant elides the
+// title to whatever the never-dropped field leaves, spending the title's tail to
+// keep the metadata. That is the intended trade: the title is also in the body's
+// H1 and the status line, while the fields appear nowhere else in the viewer.
 func (m *viewerModel) globalContext() string {
-	parts := []string{}
-	if m.title != "" {
-		parts = append(parts, m.title)
-	}
+	fields := []string{}
 	for _, h := range m.header {
 		if s := strings.TrimSpace(h); s != "" {
-			parts = append(parts, s)
+			fields = append(fields, s)
 		}
 	}
-	line := strings.Join(parts, "  ·  ")
-	if !m.color {
-		line = ansiRe.ReplaceAllString(line, "") // the header is pre-rendered; strip color when off
+	strip := func(title string, n int) string {
+		parts := []string{}
+		if title != "" {
+			parts = append(parts, title)
+		}
+		parts = append(parts, fields[:n]...)
+		line := strings.Join(parts, stripSep)
+		if !m.color {
+			line = ansiRe.ReplaceAllString(line, "") // the header is pre-rendered; strip color when off
+		}
+		return line
 	}
-	return line
+
+	if len(fields) == 0 {
+		return m.sv.Fit(strip(m.title, 0))
+	}
+	// Richest first, then one fewer field each time — but never below one.
+	// Dropping to the title alone would fit at widths where field 0 still had
+	// room, and Fit takes the first variant that fits, so a bare-title variant
+	// would win and the strip would lose its metadata all over again.
+	variants := make([]string, 0, len(fields)+1)
+	for n := len(fields); n >= 1; n-- {
+		variants = append(variants, strip(m.title, n))
+	}
+	// The fallback: keep field 0 and pay for it out of the title.
+	budget := max(m.sv.Width()-2, 0) // the chrome styles add Padding(0, 1)
+	cost := ansi.StringWidth(strip("", 1)) + ansi.StringWidth(stripSep)
+	variants = append(variants, strip(ansi.Truncate(m.title, max(budget-cost, 0), "…"), 1))
+	return m.sv.Fit(variants...)
 }
 
 // ansiRe matches SGR color escape sequences, for stripping color from the
@@ -524,6 +601,86 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeSettings {
+			switch msg.String() {
+			case "esc", ",", "q":
+				m.mode, m.menu = modeNone, nil
+				m.applyViewport()
+				return m, nil
+			case "up", "k":
+				m.menu.Move(-1)
+				return m, nil
+			case "down", "j":
+				m.menu.Move(1)
+				return m, nil
+			case "enter", " ":
+				if row, ok := m.menu.Selected(); ok {
+					m.toggleSetting(row.ID)
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+		if m.mode == modePalette {
+			// Letters type into the filter here rather than firing rows: a palette
+			// is search-first, which is what makes it useful when you do not know
+			// the key. The comment menu is the opposite — small, fixed, and keyed.
+			switch msg.String() {
+			case "esc":
+				m.mode, m.menu = modeNone, nil
+				m.applyViewport()
+				return m, nil
+			case "up":
+				m.menu.Move(-1)
+				return m, nil
+			case "down":
+				m.menu.Move(1)
+				return m, nil
+			case "enter":
+				if row, ok := m.menu.Selected(); ok {
+					return m, m.fireMenuRow(row.ID)
+				}
+				return m, nil
+			case "backspace":
+				if f := m.menu.Filter(); f != "" {
+					m.menu.SetFilter(f[:len(f)-1])
+				}
+				return m, nil
+			}
+			// Append every rune in the message, not just a lone one: a terminal
+			// delivers fast typing as a single multi-rune key, so a one-rune-only
+			// branch silently drops most of what was typed.
+			if len(msg.Runes) > 0 {
+				m.menu.SetFilter(m.menu.Filter() + string(msg.Runes))
+			}
+			return m, nil
+		}
+		if m.mode == modeCommentMenu {
+			switch msg.String() {
+			case "esc":
+				m.mode, m.menu = modeNone, nil
+				m.applyViewport()
+				return m, nil
+			case "up", "k":
+				m.menu.Move(-1)
+				return m, nil
+			case "down", "j":
+				m.menu.Move(1)
+				return m, nil
+			case "enter":
+				if row, ok := m.menu.Selected(); ok {
+					return m, m.fireMenuRow(row.ID)
+				}
+				return m, nil
+			}
+			// A row's own letter fires it from in here too, so the menu teaches
+			// the accelerator rather than replacing it. A disabled row's key is
+			// ignored: ByKey only returns rows that can act.
+			if row, ok := m.menu.ByKey(msg.String()); ok {
+				return m, m.fireMenuRow(row.ID)
+			}
+			return m, nil
+		}
 		if m.mode != modeNone {
 			switch msg.String() {
 			case "esc":
@@ -561,168 +718,19 @@ func (m viewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !isDigit(msg.String()) && msg.String() != "g" {
 			m.numBuf = ""
 		}
-		switch msg.String() {
-		case "esc":
-			// Layered dismiss. A modal and the help popup are handled above, so
-			// by here the only thing left to step back from is a committed
-			// search; with nothing to dismiss, esc quits — as it already did in
-			// the pager, the list cockpit and the review viewer.
-			if m.search.footer() != "" {
-				m.search = pagerSearch{}
-				if m.foldSnapshot != nil {
-					m.collapsed, m.foldSnapshot = m.foldSnapshot, nil
+		if a, ok := actionForKey(msg.String()); ok && !a.Passthrough {
+			if a.Enabled != nil && !a.Enabled(&m) {
+				// The key is real but cannot act here. Say why, in the same words
+				// the menu would have dimmed the row with.
+				if a.Detail != nil {
+					m.notice = a.Detail(&m)
 				}
-				m.applyViewport()
 				return m, nil
 			}
-			return m, tea.Quit
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "?":
-			m.sv.ToggleHelp()
-			return m, nil
-		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			m.numBuf += msg.String()
-			return m, nil
-		case "g":
-			if m.numBuf != "" {
-				n, _ := strconv.Atoi(m.numBuf)
-				m.numBuf = ""
-				m.gotoBodyLine(n)
-			} else {
-				// Bare g goes to the top, and gg lands there too (the second g
-				// is a no-op) — so the vim chord and the list cockpit's single
-				// g both work, in every viewer.
-				m.gotoItem(0)
-			}
-			return m, nil
-		case "G", "end":
-			m.gotoBottom()
-			return m, nil
-		case "up", "k":
-			m.scrollLines(-1)
-			return m, nil
-		case "down", "j":
-			m.scrollLines(1)
-			return m, nil
-		case "tab":
-			m.moveCursor(1)
-			return m, nil
-		case "shift+tab":
-			m.moveCursor(-1)
-			return m, nil
-		case "right", "l":
-			m.cursorInto()
-			return m, nil
-		case "left", "h":
-			m.cursorOut()
-			return m, nil
-		case " ":
-			m.toggleFold()
-			return m, nil
-		case "r":
-			if m.writer == nil {
-				return m, nil
-			}
-			id := m.selectedCommentID()
-			if id == "" {
-				m.noComment("reply to")
-				return m, nil
-			}
-			m.target = id
-			m.mode = modeReply
-			m.ta.Reset()
-			m.ta.Focus()
-			m.applyViewport()
-			return m, nil
-		case "e":
-			if m.writer == nil {
-				return m, nil
-			}
-			c := m.commentByID(m.selectedCommentID())
-			if c == nil || c.Deleted {
-				m.noComment("edit")
-				return m, nil
-			}
-			m.target = c.ID
-			m.mode = modeEdit
-			m.ta.Reset()
-			m.ta.SetValue(c.Body)
-			m.ta.Focus()
-			m.applyViewport()
-			return m, nil
-		case "d":
-			if m.writer == nil {
-				return m, nil
-			}
-			c := m.commentByID(m.selectedCommentID())
-			if c == nil || c.Deleted {
-				m.noComment("delete")
-				return m, nil
-			}
-			m.target = c.ID
-			m.mode = modeConfirmDelete
-			m.applyViewport()
-			return m, nil
-		case "x":
-			if m.writer == nil {
-				return m, nil
-			}
-			root := m.selectedThreadRoot()
-			if root == nil {
-				m.noComment("resolve")
-				return m, nil
-			}
-			if !root.Question {
-				m.notice = "only a question can be resolved — this thread is a plain comment"
-				return m, nil
-			}
-			if root.Resolved {
-				if err := m.writer.UnresolveComment(m.entryID, root.ID); err != nil {
-					m.notice = "reopen failed: " + err.Error()
-					m.applyViewport()
-					return m, nil
-				}
-				m.nodeCollapsed[root.ID] = false // show the reopened thread
-				m.doReload("reopened")
-				return m, nil
-			}
-			m.target = root.ID
-			m.mode = modeResolveNote
-			m.ta.Reset()
-			m.ta.Focus()
-			m.applyViewport()
-			return m, nil
-		case "ctrl+r":
-			if m.reload != nil {
-				m.doReload("refreshed")
-			}
-			return m, nil
-		case "ctrl+@": // ^space — terminals send NUL for ctrl+space
-			m.toggleFoldAll()
-			return m, nil
-		case "o", "c", "O", "C":
-			// Retired fold keys, held inert rather than dropped: space folds the
-			// section under the cursor and ^space folds everything, so a stale
-			// finger must not fall through to the viewport (and `o` stays free
-			// for the open-an-entry gesture the other cockpits give it).
-			return m, nil
-		case "t":
-			m.color = !m.color
-			m.applyViewport()
-			return m, nil
-		case "/":
-			m.search.start()
-			return m, nil
-		case "n":
-			m.search.cycle(1, &m.sv)
-			return m, nil
-		case "N":
-			m.search.cycle(-1, &m.sv)
-			return m, nil
+			return m, a.Do(&m, msg.String())
 		}
-		// Everything else (pgup/pgdn, ctrl+d/u, home/end) scrolls the viewport by a
-		// page or half-page; the cursor follows to the item at the new top.
+		// Everything else (pgup/pgdn, ctrl+d/u) scrolls the viewport by a page or
+		// half-page; the cursor follows to the item at the new top.
 		cmd := m.sv.PassKey(msg)
 		m.syncCursorToScroll()
 		return m, cmd
@@ -745,6 +753,9 @@ func (m viewerModel) View() string {
 	}
 	if m.notice != "" {
 		footer = m.notice + "  ·  " + footer
+	}
+	if m.mode == modeCommentMenu || m.mode == modePalette || m.mode == modeSettings {
+		return m.sv.RenderOverlay(footer, m.menu.Render(m.width, m.color))
 	}
 	if m.mode != modeNone {
 		return m.sv.RenderOverlay(footer, m.inputBox())
@@ -779,6 +790,10 @@ func (m *viewerModel) inputBox() string {
 		title, hint = "Edit comment", "ctrl+s save · ctrl+o editor · esc cancel"
 	case modeResolveNote:
 		title, hint = "Resolve — optional closing note", "ctrl+s resolve · ctrl+o editor · esc cancel"
+	case modeNewComment:
+		title, hint = "New comment", "ctrl+s post · ctrl+o editor · esc cancel"
+	case modeNewQuestion:
+		title, hint = "New question", "ctrl+s ask · ctrl+o editor · esc cancel"
 	}
 	return modalStyle.Render(
 		modalTitleStyle.Render(title) + "\n\n" + m.ta.View() + "\n\n" + modalHintStyle.Render(hint))
@@ -821,11 +836,28 @@ func (m *viewerModel) selectedCommentID() string {
 // have to explain themselves rather than look broken; verb names the action the
 // reader was reaching for ("reply to", "edit", "delete", "resolve").
 func (m *viewerModel) noComment(verb string) {
-	if len(m.comments) == 0 {
-		m.notice = "no comment selected — this entry has none yet; r replies once there is one"
-		return
+	m.notice = m.noCommentReason(verb)
+}
+
+// liveComment returns the non-deleted comment under the cursor, or nil. Edit
+// and delete both need one, and both the menu row and the key press ask through
+// this so they cannot disagree.
+func (m *viewerModel) liveComment() *entry.Comment {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil || c.Deleted {
+		return nil
 	}
-	m.notice = "no comment selected — tab to a comment to " + verb + " it"
+	return c
+}
+
+// noCommentReason is the same explanation as a string, so the comment menu can
+// show it as a disabled row's reason *before* the key is pressed while the bare
+// keypress still reports it after. One wording, two surfaces.
+func (m *viewerModel) noCommentReason(verb string) string {
+	if len(m.comments) == 0 {
+		return "no comment selected — this entry has none yet; a starts one"
+	}
+	return "no comment selected — tab to a comment to " + verb + " it"
 }
 
 // editorFinishedMsg carries the result of the $EDITOR escape back into the event
@@ -886,13 +918,14 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 			m.applyViewport()
 			return m, nil
 		}
-		if _, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, false, m.target); err != nil {
+		res, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, false, m.target)
+		if err != nil {
 			m.notice = "write failed: " + err.Error()
 			return m, nil
 		}
 		m.mode = modeNone
 		m.ta.Reset()
-		m.doReload("replied")
+		m.doReload(writeNote("replied", res))
 		return m, nil
 	case modeEdit:
 		if strings.TrimSpace(body) == "" {
@@ -902,33 +935,364 @@ func (m viewerModel) submitInput() (tea.Model, tea.Cmd) {
 			m.applyViewport()
 			return m, nil
 		}
-		if err := m.writer.EditComment(m.entryID, m.target, body); err != nil {
+		res, err := m.writer.EditComment(m.entryID, m.target, body)
+		if err != nil {
 			m.notice = "write failed: " + err.Error()
 			return m, nil
 		}
 		m.mode = modeNone
 		m.ta.Reset()
-		m.doReload("edited")
+		m.doReload(writeNote("edited", res))
+		return m, nil
+	case modeNewComment, modeNewQuestion:
+		if strings.TrimSpace(body) == "" {
+			m.notice = "empty — nothing posted"
+			m.mode = modeNone
+			m.ta.Reset()
+			m.applyViewport()
+			return m, nil
+		}
+		question := m.mode == modeNewQuestion
+		verb := "commented"
+		if question {
+			verb = "asked"
+		}
+		// Empty replyTo: this starts its own thread rather than answering one.
+		res, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, question, "")
+		if err != nil {
+			m.notice = "write failed: " + err.Error()
+			return m, nil
+		}
+		m.mode = modeNone
+		m.ta.Reset()
+		m.doReload(writeNote(verb, res))
 		return m, nil
 	case modeResolveNote:
-		if strings.TrimSpace(body) != "" {
-			if _, err := m.writer.AddComment(m.entryID, m.actor, m.actorKind, body, false, m.target); err != nil {
-				m.notice = "write failed: " + err.Error()
-				return m, nil
-			}
-		}
-		if err := m.writer.ResolveComment(m.entryID, m.target); err != nil {
+		res, err := m.writer.ResolveWithNote(m.entryID, m.target, body)
+		if err != nil {
 			m.notice = "write failed: " + err.Error()
 			return m, nil
 		}
 		m.mode = modeNone
 		m.ta.Reset()
-		m.doReload("resolved")
+		m.doReload(writeNote("resolved", res))
 		return m, nil
 	default:
 		m.mode = modeNone
 		m.applyViewport()
 		return m, nil
+	}
+}
+
+// openCommentMenu builds the comment overlay from the action table, so the menu
+// and the accelerators can never disagree about what is available: both read the
+// same Enabled and the same Detail.
+func (m *viewerModel) openCommentMenu() {
+	menu := tui.NewMenu("comment")
+	menu.SetSubtitle(m.menuTarget())
+	var rows []tui.MenuRow
+	m.menuActions = nil
+	for _, a := range viewerActionList() {
+		if a.Group != "comment" || a.Hidden {
+			continue
+		}
+		rows = append(rows, m.menuRow(a, a.MenuLabel))
+	}
+	menu.SetRows(rows)
+	m.menu = menu
+	m.mode = modeCommentMenu
+	m.applyViewport()
+}
+
+// openPalette lists the commands that have no hotkey. It is deliberately not a
+// second help popup: `?` answers "what are the keys", `:` answers "what else is
+// there", and nothing appears in both. An action listed here graduates out of
+// the palette the day it earns a key.
+func (m *viewerModel) openPalette() {
+	menu := tui.NewMenu("commands")
+	var rows []tui.MenuRow
+	m.menuActions = nil
+	for _, a := range viewerActionList() {
+		if a.Hidden || a.Passthrough || a.Do == nil || len(a.Keys) > 0 {
+			continue
+		}
+		label := a.MenuLabel
+		if label == "" {
+			label = a.Label
+		}
+		rows = append(rows, m.menuRow(a, label))
+	}
+	menu.SetRows(rows)
+	m.menu = menu
+	m.mode = modePalette
+	m.applyViewport()
+}
+
+// settingRow ids. Settings are not action-table entries: they carry a value and
+// persist, where actions fire and are done.
+const (
+	settingGutter = "gutter"
+	settingColor  = "colour"
+	settingGlyphs = "glyphs"
+)
+
+// openSettings builds the `,` view-options overlay. Unlike the comment menu and
+// the palette it stays open after a choice: changing two settings should be one
+// visit, not two.
+func (m *viewerModel) openSettings() {
+	menu := tui.NewMenu("view options")
+	menu.SetRows(m.settingRows())
+	m.menu = menu
+	m.mode = modeSettings
+	m.applyViewport()
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+func (m *viewerModel) settingRows() []tui.MenuRow {
+	rows := []tui.MenuRow{
+		{ID: settingGutter, Label: "line numbers", Value: onOff(m.showGutter), Enabled: true},
+		{ID: settingColor, Label: "colour", Value: onOff(m.color), Enabled: true},
+	}
+	// The glyph theme is only a setting where the header actually draws glyphs —
+	// the todo cockpit. Elsewhere the row is absent, not inert.
+	if th, ok := m.provider.(GlyphThemedHeader); ok {
+		rows = append(rows, tui.MenuRow{ID: settingGlyphs, Label: "glyphs", Value: th.GlyphTheme(), Enabled: true})
+	}
+	return rows
+}
+
+// toggleSetting flips a setting, applies it to the live view and persists it to
+// the user config. A failed write is a notice, not a crash: the view has already
+// changed, and losing the preference is not worth losing the session over.
+func (m *viewerModel) toggleSetting(id string) {
+	var err error
+	switch id {
+	case settingGutter:
+		m.showGutter = !m.showGutter
+		err = setUserLineNumbers(m.showGutter)
+	case settingColor:
+		m.color = !m.color
+		err = setUserColor(m.color)
+	case settingGlyphs:
+		th, ok := m.provider.(GlyphThemedHeader)
+		if !ok {
+			return
+		}
+		next := "emoji"
+		if th.GlyphTheme() == "emoji" {
+			next = "geometric"
+		}
+		// The theme is baked into the rendered header rows, so the provider hands
+		// back a fresh set: saving the preference alone would leave the glyphs on
+		// screen contradicting the value in this very menu until the next launch.
+		m.header = th.SetGlyphTheme(next)
+		err = setUserGlyphTheme(next)
+	default:
+		return
+	}
+	if err != nil {
+		m.notice = "preference not saved: " + err.Error()
+	}
+	m.menu.RefreshRows(m.settingRows())
+	m.applyViewport()
+}
+
+// toggleExpandHeader shows or hides the extended header. It renders as a block
+// at the top of the scrollable content, NOT into the sticky title line: that
+// line joins its rows with " · " into a single strip, so a multi-row header
+// pushed through it is truncated at the terminal edge and effectively invisible.
+func (m *viewerModel) toggleExpandHeader() {
+	if m.expanded {
+		m.expandedRows, m.expanded = nil, false
+		m.applyViewport()
+		return
+	}
+	exp, ok := m.provider.(ExpandableHeader)
+	if !ok {
+		return
+	}
+	rows, err := exp.ExpandHeader()
+	if err != nil {
+		m.notice = "could not expand the header: " + err.Error()
+		m.applyViewport()
+		return
+	}
+	m.expandedRows, m.expanded = rows, true
+	m.applyViewport()
+}
+
+// menuTarget names what the menu will act on. The delete confirm already learned
+// this lesson: an overlay floats over the very comment it is asking about, so it
+// has to say which one or the reader is choosing blind.
+func (m *viewerModel) menuTarget() string {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil {
+		return "on this entry"
+	}
+	first := strings.TrimSpace(strings.SplitN(c.Body, "\n", 2)[0])
+	return "on " + ansi.Truncate(render.CommentAuthor(*c)+": "+first, 44, "…")
+}
+
+// menuRow turns an action into an overlay row, recording the action so the row
+// can be fired by ID. Enablement and the dim reason come from the action itself,
+// which is what keeps a row and its accelerator in agreement.
+func (m *viewerModel) menuRow(a action, label string) tui.MenuRow {
+	row := tui.MenuRow{ID: strconv.Itoa(len(m.menuActions)), Label: label, Enabled: true}
+	if len(a.Keys) > 0 {
+		row.Key = a.Keys[0]
+	}
+	if a.Enabled != nil {
+		row.Enabled = a.Enabled(m)
+	}
+	if !row.Enabled && a.Detail != nil {
+		row.Detail = a.Detail(m)
+	}
+	m.menuActions = append(m.menuActions, a)
+	return row
+}
+
+// fireMenuRow runs the action behind a row and closes the overlay. Rows are
+// addressed by ID rather than key: a keyless action still has to be firable once
+// it is selected, which is the whole point of the palette.
+func (m *viewerModel) fireMenuRow(id string) tea.Cmd {
+	m.mode = modeNone
+	m.menu = nil
+	i, err := strconv.Atoi(id)
+	if err != nil || i < 0 || i >= len(m.menuActions) {
+		m.applyViewport()
+		return nil
+	}
+	a := m.menuActions[i]
+	if a.Do == nil {
+		m.applyViewport()
+		return nil
+	}
+	key := ""
+	if len(a.Keys) > 0 {
+		key = a.Keys[0]
+	}
+	return a.Do(m, key)
+}
+
+// startNewComment opens the modal for a comment that starts its own thread —
+// the gesture the viewer had no key for, which forced you out to `kref comment`.
+func (m *viewerModel) startNewComment(question bool) {
+	m.target = "" // root: no parent
+	m.mode = modeNewComment
+	if question {
+		m.mode = modeNewQuestion
+	}
+	m.ta.Reset()
+	m.ta.Focus()
+	m.applyViewport()
+}
+
+// startReply opens the reply modal for the comment under the cursor.
+func (m *viewerModel) startReply() {
+	id := m.selectedCommentID()
+	if id == "" {
+		m.noComment("reply to")
+		return
+	}
+	m.target = id
+	m.mode = modeReply
+	m.ta.Reset()
+	m.ta.Focus()
+	m.applyViewport()
+}
+
+// startEdit opens the edit modal for the live comment under the cursor.
+func (m *viewerModel) startEdit() {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil || c.Deleted {
+		m.noComment("edit")
+		return
+	}
+	m.target = c.ID
+	m.mode = modeEdit
+	m.ta.Reset()
+	m.ta.SetValue(c.Body)
+	m.ta.Focus()
+	m.applyViewport()
+}
+
+// startDelete opens the delete confirm for the live comment under the cursor.
+func (m *viewerModel) startDelete() {
+	c := m.commentByID(m.selectedCommentID())
+	if c == nil || c.Deleted {
+		m.noComment("delete")
+		return
+	}
+	m.target = c.ID
+	m.mode = modeConfirmDelete
+	m.applyViewport()
+}
+
+// startResolve resolves an open question, or reopens a resolved one — x is a
+// toggle because the two states are one gesture to the reader.
+func (m *viewerModel) startResolve() tea.Cmd {
+	root := m.selectedThreadRoot()
+	if root == nil {
+		m.noComment("resolve")
+		return nil
+	}
+	if !root.Question {
+		m.notice = "only a question can be resolved — this thread is a plain comment"
+		return nil
+	}
+	if root.Resolved {
+		if err := m.writer.UnresolveComment(m.entryID, root.ID); err != nil {
+			m.notice = "reopen failed: " + err.Error()
+			m.applyViewport()
+			return nil
+		}
+		m.nodeCollapsed[root.ID] = false // show the reopened thread
+		m.doReload("reopened")
+		return nil
+	}
+	m.target = root.ID
+	m.mode = modeResolveNote
+	m.ta.Reset()
+	m.ta.Focus()
+	m.applyViewport()
+	return nil
+}
+
+// dismiss is esc's layered step-back. A modal and the help popup are handled
+// before dispatch, so by here the only thing left to dismiss is a committed
+// search; with nothing to dismiss, esc quits — as it already did in the pager,
+// the list cockpit and the review viewer.
+func (m *viewerModel) dismiss() tea.Cmd {
+	if m.search.footer() != "" {
+		m.search = pagerSearch{}
+		if m.foldSnapshot != nil {
+			m.collapsed, m.foldSnapshot = m.foldSnapshot, nil
+		}
+		m.applyViewport()
+		return nil
+	}
+	return tea.Quit
+}
+
+// writeNote turns a guarded write's outcome into the footer notice. A parked
+// write must not read as success: it was held, not applied — and the review
+// thread the park opened is already visible in the discussion above, because
+// reload runs right after this. An unscanned write carries the CLI's warning.
+func writeNote(verb string, res writeResult) string {
+	switch {
+	case res.Parked != nil:
+		return fmt.Sprintf("held for review — %d finding(s), not applied; see the review thread above",
+			len(res.Parked.Findings))
+	case res.Unscanned:
+		return verb + " — stored UNSCANNED (betterleaks not found)"
+	default:
+		return verb
 	}
 }
 
@@ -996,6 +1360,17 @@ func (m *viewerModel) doReload(note string) {
 		return
 	}
 	m.header, m.comments = header, comments
+	// A refresh must not leave a stale expansion on screen: re-derive it so the
+	// op-log and links match what was just reloaded.
+	if m.expanded {
+		if exp, ok := m.provider.(ExpandableHeader); ok {
+			if rows, eerr := exp.ExpandHeader(); eerr == nil {
+				m.expandedRows = rows
+			} else {
+				m.expandedRows, m.expanded = nil, false
+			}
+		}
+	}
 	m.notice = note
 	m.applyViewport()
 }

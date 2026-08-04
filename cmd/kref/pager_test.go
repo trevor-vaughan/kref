@@ -248,6 +248,61 @@ var _ = Describe("pager help overlay", func() {
 	})
 })
 
+var _ = Describe("pager view options", func() {
+	key := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+	send := func(m pagerModel, msgs ...tea.Msg) pagerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(pagerModel)
+	}
+	sized := func(pc pagerContent) pagerModel {
+		return send(newPagerModel(pc), tea.WindowSizeMsg{Width: 80, Height: 14})
+	}
+
+	It("offers line numbers only when the pager was built with a gutter", func() {
+		// `kref search` has no gutter, so the row would be an inert no-op.
+		plain := sized(pagerContent{title: "t", body: []string{"a"}, color: true})
+		Expect(send(plain, key(",")).View()).NotTo(ContainSubstring("line numbers"))
+
+		numbered := sized(pagerContent{title: "t", body: []string{"a"}, number: true, gutterW: 4, color: true})
+		Expect(send(numbered, key(",")).View()).To(ContainSubstring("line numbers"))
+	})
+
+	It("hides the gutter when line numbers are turned off, and keeps <n>g", func() {
+		body := make([]string, 50)
+		for i := range body {
+			body[i] = fmt.Sprintf("line %d", i+1)
+		}
+		m := sized(pagerContent{title: "t", body: body, number: true, gutterW: 5, color: true})
+		Expect(m.content()).To(ContainSubstring("1 │ line 1"))
+
+		m = send(m, key(","), tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.content()).NotTo(ContainSubstring("│"))
+		// The jump still works with the numbers hidden, as it does in the entry
+		// viewer: the gutter is a display choice, not the addressing scheme.
+		m = send(m, tea.KeyMsg{Type: tea.KeyEsc}, key("2"), key("0"), key("g"))
+		Expect(m.sv.YOffset()).To(Equal(19))
+	})
+
+	It("strips the body's colour when colour is turned off", func() {
+		red := "\x1b[31m+ added\x1b[0m"
+		m := sized(pagerContent{title: "t", body: []string{red}, color: true})
+		Expect(m.content()).To(ContainSubstring("\x1b[31m"))
+
+		m = send(m, key(","), tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(m.color).To(BeFalse())
+		Expect(m.content()).NotTo(ContainSubstring("\x1b[31m"))
+		Expect(m.content()).To(ContainSubstring("+ added"))
+	})
+
+	It("no longer treats t as a key", func() {
+		m := sized(pagerContent{title: "t", body: []string{"a"}, color: true})
+		Expect(send(m, key("t")).color).To(BeTrue())
+	})
+})
+
 var _ = Describe("pager help popup behavior", func() {
 	key := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 	makeModel := func() pagerModel {

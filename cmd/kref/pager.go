@@ -38,28 +38,39 @@ type pagerContent struct {
 	body    []string // display lines; numbered when number == true
 	number  bool     // show the line-number gutter
 	gutterW int      // total gutter width (digits+3); 0 when number == false
+	color   bool     // render chrome and body colour (resolveColor at the call site)
 }
 
 type pagerModel struct {
-	sv      tui.ScrollView
-	lines   []string // display lines, raw (no gutter): search and goto use this
-	number  bool
-	gutterW int
+	sv    tui.ScrollView
+	lines []string // display lines, raw (no gutter): search and goto use this
+	// numbered records that this pager was BUILT with a gutter (kref diff, not
+	// kref search); number is whether it is currently drawn. <n>g keys off
+	// numbered, so the jump survives hiding the numbers — as it does in the
+	// entry viewer.
+	numbered bool
+	number   bool
+	gutterW  int
 
 	search pagerSearch // shared incremental search (/, n/N)
 
+	settings viewSettings // the `,` view-options overlay
+
 	numBuf string // accumulated digits for <n>g
-	color  bool   // chrome colour, toggled with t
+	color  bool   // chrome and body colour, toggled from the , menu
+	notice string // transient footer message (a preference that would not save)
 }
 
 func newPagerModel(pc pagerContent) pagerModel {
 	m := pagerModel{
-		sv:      tui.NewScrollView(pc.title),
-		lines:   pc.body,
-		number:  pc.number,
-		gutterW: pc.gutterW,
+		sv:       tui.NewScrollView(pc.title),
+		lines:    pc.body,
+		numbered: pc.number,
+		number:   pc.number,
+		gutterW:  pc.gutterW,
+		color:    pc.color,
 	}
-	m.color = true
+	m.sv.SetPlain(!pc.color)
 	m.sv.SetHelpRows(pagerHelpRows(pc.number))
 	m.sv.SetHorizontalStep(8) // ←/h →/l pan long lines (titles, wide diffs)
 	return m
@@ -81,24 +92,33 @@ func pagerHelpRows(numbered bool) []string {
 	}
 	return append(rows,
 		"/  n/N       search / next-prev",
-		"t            toggle colour",
+		",            view options",
 		"?            toggle this help",
 		"q  esc       quit",
 	)
 }
 
 // content joins the lines for the viewport, prefixing a right-aligned line-number
-// gutter when numbering is on.
+// gutter when numbering is on. The body arrives pre-rendered, so turning colour
+// off strips the escapes here rather than re-rendering: the lines are kept raw,
+// and turning it back on restores them.
 func (m pagerModel) content() string {
+	lines := m.lines
+	if !m.color {
+		lines = make([]string, len(m.lines))
+		for i, ln := range m.lines {
+			lines[i] = ansiRe.ReplaceAllString(ln, "")
+		}
+	}
 	if !m.number {
-		return strings.Join(m.lines, "\n")
+		return strings.Join(lines, "\n")
 	}
 	d := m.gutterW - 3
 	var b strings.Builder
-	for i, ln := range m.lines {
+	for i, ln := range lines {
 		fmt.Fprintf(&b, "%*d │ ", d, i+1)
 		b.WriteString(ln)
-		if i < len(m.lines)-1 {
+		if i < len(lines)-1 {
 			b.WriteByte('\n')
 		}
 	}
@@ -141,18 +161,28 @@ func (m pagerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sv.CloseHelp()
 			return m, nil
 		}
+		if m.settings.isOpen() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if id := m.settings.key(msg); id != "" {
+				m.toggleSetting(id)
+				m.settings.refresh(m.settingRows())
+			}
+			return m, nil
+		}
+		m.notice = ""
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			return m, tea.Quit
-		case "t":
-			m.color = !m.color
-			m.sv.SetPlain(!m.color)
+		case ",":
+			m.settings.open(m.settingRows())
 			return m, nil
 		case "?":
 			m.sv.ToggleHelp()
 			return m, nil
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			if !m.number {
+			if !m.numbered {
 				break // no visible line targets without the gutter
 			}
 			m.numBuf += msg.String()
@@ -197,6 +227,39 @@ func (m pagerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// settingRows and toggleSetting are the pager's half of the `,` menu. The
+// line-number row is offered only when this pager was built with a gutter:
+// `kref search` has none, so the row would be an inert no-op rather than a
+// setting.
+func (m pagerModel) settingRows() []tui.MenuRow {
+	var rows []tui.MenuRow
+	if m.numbered {
+		rows = append(rows, tui.MenuRow{ID: settingGutter, Label: "line numbers", Value: onOff(m.number), Enabled: true})
+	}
+	return append(rows, colorRow(m.color))
+}
+
+// toggleSetting applies a setting to the live view and saves it to the user
+// config. A failed write is a footer notice, not a crash.
+func (m *pagerModel) toggleSetting(id string) {
+	var err error
+	switch id {
+	case settingGutter:
+		m.number = !m.number
+		err = setUserLineNumbers(m.number)
+	case settingColor:
+		m.color = !m.color
+		m.sv.SetPlain(!m.color)
+		err = setUserColor(m.color)
+	default:
+		return
+	}
+	m.sv.SetContent(m.content())
+	if err != nil {
+		m.notice = "preference not saved: " + err.Error()
+	}
+}
+
 // linesBelow returns the number of content lines below the visible window.
 func (m *pagerModel) linesBelow() int {
 	return max(0, len(m.lines)-(m.sv.YOffset()+m.sv.Height()))
@@ -232,12 +295,18 @@ func (m pagerModel) footerInfo() string {
 	if m.numBuf != "" {
 		info = m.numBuf + "g · " + info
 	}
+	if m.notice != "" {
+		info = m.notice + " · " + info
+	}
 	return info + "  ·  ? keys · q quit"
 }
 
 func (m pagerModel) View() string {
 	if !m.sv.Ready() {
 		return "\n  loading…"
+	}
+	if m.settings.isOpen() {
+		return m.sv.RenderOverlay(m.footerInfo(), m.settings.render(m.sv.Width(), m.color))
 	}
 	if m.search.searching() {
 		frame := strings.TrimRight(m.sv.Render(""), "\n")

@@ -145,7 +145,7 @@ var _ = Describe("composed actor in comment headers", func() {
 			Provenance: []entry.OriginEvent{{
 				Actor: "claude-opus-5 via claude-code/2.1.220", ActorKind: "agent", Trigger: "create",
 			}},
-		}, false, "", nil)
+		}, render.ShowOptions{})
 		Expect(b.String()).To(ContainSubstring("claude-opus-5 via claude-code/2.1.220"))
 	})
 })

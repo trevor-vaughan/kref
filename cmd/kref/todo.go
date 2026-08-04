@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -32,18 +30,43 @@ func todoInitialFold(body string, full bool) map[string]bool {
 	return collapsed
 }
 
-// todoHeaderProvider is the todo command's HeaderProvider: the pre-rendered
+// todoHeaderProvider is the todo command's HeaderProvider: the rendered
 // awaiting/delta/version header, the Done-collapse fold, and the
-// summarize+watermark reload closure.
+// summarize+watermark refresh. It keeps the counts and the glyph theme apart —
+// fetch re-reads the todo, render draws it — because the `,` menu changes the
+// theme and must redraw the same numbers, while ctrl+r changes the numbers and
+// must keep the theme.
 type todoHeaderProvider struct {
 	header []string
 	fold   map[string]bool
-	reload func() ([]string, []entry.Comment, error)
+	theme  string
+	counts todo.Cockpit
+	render func(c todo.Cockpit, theme string) []string
+	fetch  func() (todo.Cockpit, []entry.Comment, error)
 }
 
-func (p todoHeaderProvider) HeaderLines() []string                      { return p.header }
-func (p todoHeaderProvider) InitialFold() map[string]bool               { return p.fold }
-func (p todoHeaderProvider) Reload() ([]string, []entry.Comment, error) { return p.reload() }
+func (p *todoHeaderProvider) HeaderLines() []string        { return p.header }
+func (p *todoHeaderProvider) InitialFold() map[string]bool { return p.fold }
+
+func (p *todoHeaderProvider) Reload() ([]string, []entry.Comment, error) {
+	c, comments, err := p.fetch()
+	if err != nil {
+		return nil, nil, err
+	}
+	p.counts, p.header = c, p.render(c, p.theme)
+	return p.header, comments, nil
+}
+
+// GlyphTheme and SetGlyphTheme satisfy GlyphThemedHeader: the cockpit header is
+// the one header drawn with glyphs, so it is the one that can offer the theme in
+// the `,` menu.
+func (p *todoHeaderProvider) GlyphTheme() string { return p.theme }
+
+func (p *todoHeaderProvider) SetGlyphTheme(theme string) []string {
+	p.theme = theme
+	p.header = p.render(p.counts, theme)
+	return p.header
+}
 
 func newTodoCmd(dir *string) *cobra.Command {
 	var full, noPager bool
@@ -123,14 +146,19 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 	// does NOT run again in the static path below (early return). This ensures
 	// exactly one advance per human view.
 	if usePager(cmd) && !noPager {
+		// The saved colour preference applies to the interactive cockpit only; the
+		// static render below stays on useColor.
+		color := resolveColor(cmd, s.EffectiveConfig())
 		// The interactive cockpit renders the questions in the discussion zone, so
 		// the header shows only the awaiting-you count, not the numbered list (the
 		// static path below keeps the list — it has no discussion zone).
 		hc := c
 		hc.Questions = nil
-		var hb bytes.Buffer
-		render.TodoCockpit(&hb, hc, theme, color)
-		header := strings.Split(strings.TrimRight(hb.String(), "\n"), "\n")
+		// The interactive strip's fields. The static --no-pager path below
+		// still renders through render.TodoCockpit, which is unchanged.
+		renderCockpit := func(cc todo.Cockpit, th string) []string {
+			return render.TodoStripFields(cc, th, color)
+		}
 		if _, kind := resolveActor(cmd, s); kind == "human" {
 			if serr := watermark.Set(key, snap.Body); serr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not save todo watermark: %v\n", serr)
@@ -138,10 +166,10 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 		}
 		title := "todo · " + render.ShortID(snap.ID)
 		id := snap.ID
-		reload := func() ([]string, []entry.Comment, error) {
+		fetch := func() (todo.Cockpit, []entry.Comment, error) {
 			fresh, ferr := s.Get(id)
 			if ferr != nil {
-				return nil, nil, ferr
+				return todo.Cockpit{}, nil, ferr
 			}
 			cc := todo.Summarize(fresh.Body, fresh.Comments)
 			cc.Version = fresh.Version
@@ -161,9 +189,7 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 				cc.ToReview, cc.Changed = d.ToReview, d.Changed
 			}
 			cc.Questions = nil // count only in the header; the zone shows the questions
-			var hb2 bytes.Buffer
-			render.TodoCockpit(&hb2, cc, theme, color)
-			return strings.Split(strings.TrimRight(hb2.String(), "\n"), "\n"), fresh.Comments, nil
+			return cc, fresh.Comments, nil
 		}
 		actor, actorKind := resolveActor(cmd, s)
 		in := viewerInput{
@@ -173,14 +199,18 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 			color:       color,
 			width:       ttyWidth(),
 			comments:    snap.Comments,
-			writer:      s,
+			writer:      newGuardedWriter(s, actor, actorKind),
 			entryID:     snap.ID,
 			actor:       actor,
 			actorKind:   actorKind,
-			provider: todoHeaderProvider{
-				header: header,
+			hideGutter:  !s.EffectiveConfig().LineNumbersOn(),
+			provider: &todoHeaderProvider{
+				header: renderCockpit(hc, theme),
 				fold:   todoInitialFold(snap.Body, full),
-				reload: reload,
+				theme:  theme,
+				counts: hc,
+				render: renderCockpit,
+				fetch:  fetch,
 			},
 		}
 		return RunViewer(in)
