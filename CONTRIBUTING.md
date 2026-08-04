@@ -57,8 +57,8 @@ Your host will ask you to approve the server the first time; a project-scoped
 MCP server is untrusted until you say so.
 
 To point an agent at several repositories instead, run the server yourself with
-`kref mcp --allow <root>` or `--client-roots`; see
-[MCP server](docs/usage.md#mcp-server) for the boundary rules.
+`kref mcp --allow <root>`; see [MCP server](docs/usage.md#mcp-server) for the
+boundary rules.
 
 ## Conventions
 

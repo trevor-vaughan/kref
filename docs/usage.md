@@ -1009,21 +1009,12 @@ per-call `dir` naming any other repository is refused — an unbounded per-call
 `dir` would let a prompt-injected agent reach the private tier of any repo the
 user owns, so cross-repo access requires this explicit boundary.
 
-`kref mcp --client-roots` derives that boundary from the client instead of the
-operator: each call is confined to the directories the host advertises through
-the protocol's `roots` capability, fetched per call. Use it when the host
-already scopes a workspace (an editor exposing its open folders, say); use
-`--allow <root>` instead when the operator wants to pin a fixed set of roots
-regardless of the client. The two are mutually exclusive. If the client
-advertises no `file://` roots, every call is refused (fail closed).
-
-In both global mode (`--allow`) and client-roots mode, the server serves only
-**syncable** (non-private-typed) tiers of an addressed repo — the one exception
-is a client that advertises a single root and addresses exactly it, which is
-treated as its own workspace and gets full access. So a multi-repo server never
-exposes another repo's `private`/`agent` tier or its quarantine review queue,
-which is the cross-repo exfiltration boundary. Locked mode (a pinned `--dir`)
-serves all tiers of its one repo as before.
+In global mode the server serves only **syncable** (non-private-typed) tiers of
+an addressed repo, even when `--allow` names exactly one root. So a multi-repo
+server never exposes another repo's `private`/`agent` tier or its quarantine
+review queue, which is the cross-repo exfiltration boundary. Locked mode (a
+pinned `--dir`) serves all tiers of its one repo, so that is the mode to use when
+an agent needs private-tier access to a particular repository.
 
 Full-body writes to a `kind:todo` entry are guarded against the lost-update
 problem with an optimistic version check (compare-and-swap). Every read surfaces

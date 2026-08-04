@@ -3249,7 +3249,6 @@ func newTidyCmd(dir *string) *cobra.Command {
 
 func newMCPCmd(dir *string) *cobra.Command {
 	var allow []string
-	var clientRoots bool
 	c := &cobra.Command{
 		Use:               "mcp",
 		Short:             "Run an MCP server exposing kref tools over stdio",
@@ -3261,10 +3260,9 @@ func newMCPCmd(dir *string) *cobra.Command {
 			// hosts log and compare, so it stays terse. Resolving it still beats
 			// the previous behaviour, which reported the literal string "dev" for
 			// anything not built with injected ldflags.
-			return mcpserver.Serve(cmd.Context(), *dir, build.Version, allow, clientRoots)
+			return mcpserver.Serve(cmd.Context(), *dir, build.Version, allow)
 		},
 	}
 	c.Flags().StringArrayVar(&allow, "allow", nil, "allow serving any repo under this absolute root via a per-call dir (repeatable); enables global mode")
-	c.Flags().BoolVar(&clientRoots, "client-roots", false, "confine each call to the client's advertised MCP roots (mutually exclusive with --allow)")
 	return c
 }

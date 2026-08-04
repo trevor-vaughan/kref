@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,14 +27,10 @@ import (
 
 // Config configures the kref MCP server. Dir is the pinned repository (locked
 // mode, the default). AllowRoots (from --allow) enables static global mode.
-// ClientRoots (from --client-roots) enables dynamic mode where each call is
-// confined to the client's advertised roots. AllowRoots and ClientRoots are
-// mutually exclusive; Serve rejects both being set.
 type Config struct {
-	Dir         string
-	Version     string
-	AllowRoots  []string
-	ClientRoots bool
+	Dir        string
+	Version    string
+	AllowRoots []string
 }
 
 // New builds the kref MCP server. dir is the pinned repository (locked mode);
@@ -43,7 +38,7 @@ type Config struct {
 // per-call dir that must resolve inside an allowed root.
 func New(cfg Config) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "kref", Version: cfg.Version}, nil)
-	dp := newDirPolicy(cfg.Dir, cfg.AllowRoots, cfg.ClientRoots)
+	dp := newDirPolicy(cfg.Dir, cfg.AllowRoots)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "kref_remember",
 		Description: "Save a new knowledge-base entry (a memory). Returns its id. If the body " +
@@ -132,10 +127,7 @@ func New(cfg Config) *mcp.Server {
 // Serve runs the kref MCP server over stdio until the host closes the connection.
 // A host ending the session by closing its end of the pipe is a clean shutdown,
 // not a failure, so the resulting EOF is not propagated as an error.
-func Serve(ctx context.Context, dir, version string, allowRoots []string, clientRoots bool) error {
-	if clientRoots && len(allowRoots) > 0 {
-		return errors.New("--allow and --client-roots are mutually exclusive")
-	}
+func Serve(ctx context.Context, dir, version string, allowRoots []string) error {
 	for _, r := range allowRoots {
 		if !filepath.IsAbs(r) {
 			return fmt.Errorf("--allow root must be an absolute path: %q", r)
@@ -144,7 +136,7 @@ func Serve(ctx context.Context, dir, version string, allowRoots []string, client
 			return fmt.Errorf("--allow root does not exist or is not a directory: %q", r)
 		}
 	}
-	srv := New(Config{Dir: dir, Version: version, AllowRoots: allowRoots, ClientRoots: clientRoots})
+	srv := New(Config{Dir: dir, Version: version, AllowRoots: allowRoots})
 	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil && !gracefulClose(err) {
 		return err
 	}
@@ -203,35 +195,19 @@ type dirParam struct {
 // mode (roots non-empty, via `kref mcp --allow`) a per-call dir is required and
 // must resolve, canonicalized and segment-checked, inside an allowed root.
 type dirPolicy struct {
-	pinned      string   // the --dir repo; locked mode's single allowed repo
-	roots       []string // canonicalized --allow roots; non-empty => static global mode
-	clientRoots bool     // --client-roots => per-call boundary from the client
+	pinned string   // the --dir repo; locked mode's single allowed repo
+	roots  []string // canonicalized --allow roots; non-empty => global mode
 }
 
-func newDirPolicy(pinned string, allowRoots []string, clientRoots bool) dirPolicy {
-	dp := dirPolicy{pinned: pinned, clientRoots: clientRoots}
+func newDirPolicy(pinned string, allowRoots []string) dirPolicy {
+	dp := dirPolicy{pinned: pinned}
 	for _, r := range allowRoots {
 		dp.roots = append(dp.roots, canonicalDir(r))
 	}
 	return dp
 }
 
-func (dp dirPolicy) resolve(ctx context.Context, sess *mcp.ServerSession, callDir string) (string, bool, error) {
-	if dp.clientRoots {
-		roots, err := fetchClientRoots(ctx, sess)
-		if err != nil {
-			return "", false, fmt.Errorf("could not read the client's advertised roots: %w", err)
-		}
-		if len(roots) == 0 {
-			return "", false, errors.New("this server was started with --client-roots but the client advertised no usable file:// roots")
-		}
-		eff, err := matchRoots(roots, callDir)
-		if err != nil {
-			return "", false, err
-		}
-		home := len(roots) == 1 && eff == roots[0]
-		return eff, !home, nil
-	}
+func (dp dirPolicy) resolve(callDir string) (string, bool, error) {
 	if len(dp.roots) == 0 { // locked mode
 		if callDir == "" {
 			return dp.pinned, false, nil
@@ -248,30 +224,10 @@ func (dp dirPolicy) resolve(ctx context.Context, sess *mcp.ServerSession, callDi
 	return eff, true, nil
 }
 
-// fetchClientRoots asks the connected client for its advertised roots and
-// returns the canonicalized local paths of the file:// ones. A transport error
-// is returned to the caller (fail closed); unusable URIs are skipped.
-func fetchClientRoots(ctx context.Context, sess *mcp.ServerSession) ([]string, error) {
-	if sess == nil {
-		return nil, errors.New("no client session")
-	}
-	res, err := sess.ListRoots(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, r := range res.Roots {
-		if p, ok := fileURIToPath(r.URI); ok {
-			out = append(out, canonicalDir(p))
-		}
-	}
-	return out, nil
-}
-
-// matchRoots resolves callDir against a set of canonicalized roots using the
-// segment-aware prefix rule shared by static (--allow) and client-advertised
-// modes. An empty callDir defaults to the sole root, or is refused when there
-// is more than one. A relative or out-of-bounds callDir is refused.
+// matchRoots resolves callDir against the canonicalized --allow roots using a
+// segment-aware prefix rule. An empty callDir defaults to the sole root, or is
+// refused when there is more than one. A relative or out-of-bounds callDir is
+// refused.
 func matchRoots(roots []string, callDir string) (string, error) {
 	if callDir == "" {
 		if len(roots) == 1 {
@@ -291,34 +247,16 @@ func matchRoots(roots []string, callDir string) (string, error) {
 	return "", errors.New("dir is outside the server's allowed roots")
 }
 
-// fileURIToPath converts an MCP root URI to a local filesystem path. It accepts
-// only file:// URIs on the local host (empty or "localhost"); anything else —
-// a remote host, a non-file scheme, or an unparseable URI — is rejected so it
-// is skipped rather than treated as a usable root.
-func fileURIToPath(uri string) (string, bool) {
-	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "file" {
-		return "", false
-	}
-	if u.Host != "" && u.Host != "localhost" {
-		return "", false
-	}
-	if u.Path == "" {
-		return "", false
-	}
-	return u.Path, true
-}
-
 // isPrivateTyped reports whether a tier's resolved type is private — the
 // non-syncable, host-bound class (private, the quarantine system tier, and the
-// future agent tier). A global/client-roots MCP server does not serve these
-// except for the client's own sole root.
+// future agent tier). A global (--allow) MCP server does not serve these at all;
+// reaching them takes a locked-mode server pinned to that one repository.
 func isPrivateTyped(tierType string) bool { return tierType == string(entry.TierPrivate) }
 
 // restrictedTierMsg is the refusal a by-id or create MCP op returns when its
 // target lives in (or would create in) a private-typed tier under a restricted
-// (global/client-roots, non-home) call.
-const restrictedTierMsg = "that entry is in a private-typed tier, which a global/client-roots MCP server does not serve (only the client's own single root gets private-tier access)"
+// (global-mode) call.
+const restrictedTierMsg = "that entry is in a private-typed tier, which a global (--allow) MCP server does not serve (start a server pinned to that repository with --dir for private-tier access)"
 
 // heldForReview reports whether a snapshot is a quarantine-tier item. Those are
 // reachable by id — the park response returns one and kref_quarantine list
@@ -369,7 +307,7 @@ type rememberParams struct {
 func remember(dp dirPolicy) mcp.ToolHandlerFor[rememberParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p rememberParams) (*mcp.CallToolResult, any, error) {
 		actor := agentActor(req, p.Model)
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -453,7 +391,7 @@ type recallHit struct {
 
 func recall(dp dirPolicy) mcp.ToolHandlerFor[recallParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p recallParams) (*mcp.CallToolResult, any, error) {
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -537,7 +475,7 @@ type getParams struct {
 
 func get(dp dirPolicy) mcp.ToolHandlerFor[getParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p getParams) (*mcp.CallToolResult, any, error) {
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -725,7 +663,7 @@ func applyMeta(st *store.Store, id entity.Id, plan metaPlan) (string, error) {
 func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p updateParams) (*mcp.CallToolResult, any, error) {
 		actor := agentActor(req, p.Model)
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -832,7 +770,7 @@ type patchParams struct {
 func patchTool(dp dirPolicy) mcp.ToolHandlerFor[patchParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p patchParams) (*mcp.CallToolResult, any, error) {
 		actor := agentActor(req, p.Model)
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -901,7 +839,7 @@ type lifecycleParams struct {
 func lifecycle(dp dirPolicy) mcp.ToolHandlerFor[lifecycleParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p lifecycleParams) (*mcp.CallToolResult, any, error) {
 		actor := agentActor(req, p.Model)
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -969,12 +907,12 @@ type quarantineParams struct {
 // held, and which rule flagged it) without the secret leaking through MCP.
 func quarantineRead(dp dirPolicy) mcp.ToolHandlerFor[quarantineParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p quarantineParams) (*mcp.CallToolResult, any, error) {
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
 		if restricted {
-			return toolError("the review queue is not served by a global/client-roots MCP server"), nil, nil
+			return toolError("the review queue is not served by a global (--allow) MCP server"), nil, nil
 		}
 		st, err := store.Open(effDir)
 		if err != nil {
@@ -1131,7 +1069,7 @@ type commentParams struct {
 func comment(dp dirPolicy) mcp.ToolHandlerFor[commentParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p commentParams) (*mcp.CallToolResult, any, error) {
 		actor := agentActor(req, p.Model)
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}
@@ -1278,7 +1216,7 @@ type supersedeParams struct {
 func supersede(dp dirPolicy) mcp.ToolHandlerFor[supersedeParams, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, p supersedeParams) (*mcp.CallToolResult, any, error) {
 		actor := agentActor(req, p.Model)
-		effDir, restricted, derr := dp.resolve(ctx, req.Session, p.Dir)
+		effDir, restricted, derr := dp.resolve(p.Dir)
 		if derr != nil {
 			return toolError("%v", derr), nil, nil
 		}

@@ -86,28 +86,6 @@ func callG(pinned string, roots []string, tool string, args map[string]any) *mcp
 	return callServer(mcpserver.New(mcpserver.Config{Dir: pinned, Version: "test", AllowRoots: roots}), tool, args)
 }
 
-// callC drives a ClientRoots server, advertising clientRootDirs as the client's
-// file:// roots BEFORE connecting (so the server's per-call ListRoots sees them).
-// It mirrors callServer's connect/cleanup idiom exactly.
-func callC(clientRootDirs []string, dir, tool string, args map[string]any) *mcp.CallToolResult {
-	GinkgoHelper()
-	ctx := context.Background()
-	srv := mcpserver.New(mcpserver.Config{Dir: dir, Version: "test", ClientRoots: true})
-	clientT, serverT := mcp.NewInMemoryTransports()
-	ss, err := srv.Connect(ctx, serverT, nil)
-	Expect(err).NotTo(HaveOccurred())
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil)
-	for _, d := range clientRootDirs {
-		client.AddRoots(&mcp.Root{URI: "file://" + d})
-	}
-	cs, err := client.Connect(ctx, clientT, nil)
-	Expect(err).NotTo(HaveOccurred())
-	DeferCleanup(func() { _ = cs.Close(); _ = ss.Wait() })
-	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
-	Expect(err).NotTo(HaveOccurred())
-	return res
-}
-
 func text(res *mcp.CallToolResult) string {
 	GinkgoHelper()
 	Expect(res.Content).NotTo(BeEmpty())
@@ -139,65 +117,17 @@ var _ = Describe("MCP global mode (--allow roots)", func() {
 	})
 
 	It("Serve rejects a relative --allow root", func() {
-		err := mcpserver.Serve(context.Background(), ".", "test", []string{"relative/root"}, false)
+		err := mcpserver.Serve(context.Background(), ".", "test", []string{"relative/root"})
 		Expect(err).To(MatchError(ContainSubstring("absolute")))
 	})
 
 	It("Serve rejects a non-existent --allow root", func() {
-		err := mcpserver.Serve(context.Background(), ".", "test", []string{filepath.Join(gitRepo(), "nope")}, false)
+		err := mcpserver.Serve(context.Background(), ".", "test", []string{filepath.Join(gitRepo(), "nope")})
 		Expect(err).To(MatchError(ContainSubstring("does not exist")))
 	})
 })
 
-var _ = Describe("MCP client-roots mode (--client-roots)", func() {
-	seed := func() (string, string) {
-		GinkgoHelper()
-		dir := gitRepo()
-		s, err := store.Init(dir, "T", "t@e.com")
-		Expect(err).NotTo(HaveOccurred())
-		id, err := s.Add(entry.TierPersonal, "spec", "Doc", "body")
-		Expect(err).NotTo(HaveOccurred())
-		_ = s.Close()
-		return dir, id.String()
-	}
-
-	It("serves a repo inside an advertised client root", func() {
-		dir, id := seed()
-		res := callC([]string{dir}, dir, "kref_get", map[string]any{"id": id, "dir": dir})
-		Expect(res.IsError).To(BeFalse())
-		Expect(text(res)).To(ContainSubstring("body"))
-	})
-
-	It("defaults dir to the sole advertised root", func() {
-		dir, id := seed()
-		res := callC([]string{dir}, "", "kref_get", map[string]any{"id": id})
-		Expect(res.IsError).To(BeFalse())
-		Expect(text(res)).To(ContainSubstring("body"))
-	})
-
-	It("refuses a dir outside every advertised root", func() {
-		dir, id := seed()
-		other := gitRepo()
-		res := callC([]string{dir}, other, "kref_get", map[string]any{"id": id, "dir": other})
-		Expect(res.IsError).To(BeTrue())
-		Expect(text(res)).To(ContainSubstring("outside"))
-	})
-
-	It("fails closed when the client advertises no roots", func() {
-		dir, id := seed()
-		res := callC(nil, dir, "kref_get", map[string]any{"id": id, "dir": dir})
-		Expect(res.IsError).To(BeTrue())
-		Expect(text(res)).To(ContainSubstring("no usable"))
-	})
-
-	It("Serve rejects --allow together with --client-roots", func() {
-		root := gitRepo()
-		err := mcpserver.Serve(context.Background(), root, "test", []string{root}, true)
-		Expect(err).To(MatchError(ContainSubstring("mutually exclusive")))
-	})
-})
-
-var _ = Describe("MCP tier scoping (global/client-roots mode)", func() {
+var _ = Describe("MCP tier scoping (global mode)", func() {
 	seed := func() (dir, privID, sharedID string) {
 		GinkgoHelper()
 		dir = gitRepo()
@@ -236,20 +166,6 @@ var _ = Describe("MCP tier scoping (global/client-roots mode)", func() {
 		ok := callG("", []string{dir}, "kref_get", map[string]any{"id": sharedID, "dir": dir})
 		Expect(ok.IsError).To(BeFalse())
 		Expect(text(ok)).To(ContainSubstring("shared body"))
-	})
-
-	It("get for a sole-root client (home) still serves the private tier", func() {
-		dir, privID, _ := seed()
-		res := callC([]string{dir}, dir, "kref_get", map[string]any{"id": privID, "dir": dir})
-		Expect(res.IsError).To(BeFalse())
-		Expect(text(res)).To(ContainSubstring("private body"))
-	})
-
-	It("get for a multi-root client (not home) refuses the private tier", func() {
-		dir, privID, _ := seed()
-		res := callC([]string{dir, gitRepo()}, dir, "kref_get", map[string]any{"id": privID, "dir": dir})
-		Expect(res.IsError).To(BeTrue())
-		Expect(text(res)).To(ContainSubstring("private-typed tier"))
 	})
 
 	It("get in locked mode still serves the private tier", func() {

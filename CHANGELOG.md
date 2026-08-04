@@ -210,16 +210,11 @@ there is a tagged release to diff against.
   `--allow` the server stays locked to its `--dir`/`KREF_DIR` repo and a per-call
   `dir` naming any other repository is refused — the boundary that keeps an
   agent from reaching an unrelated repo's private tier.
-- **MCP client-roots mode** — `kref mcp --client-roots` confines each tool call
-  to the directories the client advertises via the MCP `roots` capability
-  (fetched per call), as an alternative to `--allow`. The two are mutually
-  exclusive; if the client advertises no usable `file://` roots, every call is
-  refused (fail closed).
-- **MCP tier scoping in multi-repo modes** — a `--allow` or `--client-roots`
-  server serves only syncable (non-private-typed) tiers of an addressed repo,
-  except a client's own sole advertised root. Cross-repo `private`/`agent` tiers
-  and the quarantine review queue are never served — the exfiltration boundary
-  called for by the global-server safety design.
+- **MCP tier scoping in global mode** — a `--allow` server serves only syncable
+  (non-private-typed) tiers of an addressed repo. Cross-repo `private`/`agent`
+  tiers and the quarantine review queue are never served — the exfiltration
+  boundary called for by the global-server safety design. Reaching a repo's
+  private tiers over MCP takes a locked-mode server pinned to it with `--dir`.
 - **`kref_update` labels and links** — the MCP `kref_update` tool now takes
   optional `add_labels`/`remove_labels` and `add_links` (`[{to, type?}]`, type
   defaulting to `relates`)/`remove_links` arrays, so an agent manages metadata
