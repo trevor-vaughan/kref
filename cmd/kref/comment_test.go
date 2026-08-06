@@ -323,7 +323,7 @@ var _ = Describe("kref list --open-questions", func() {
 		run("--dir", dir, "comment", aaID, "-q", "-m", "why?")
 		_ = newEntry(dir, "BB")
 
-		out := run("--dir", dir, "list", "--open-questions", "--no-pager")
+		out := run("--dir", dir, "list", "--open-questions")
 		Expect(out).To(ContainSubstring("AA"))
 		Expect(out).NotTo(ContainSubstring("BB"))
 	})

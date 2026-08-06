@@ -47,7 +47,7 @@ Type "clear" Enter
 Show
 Type "# one colour-coded view across every tier" Enter
 Sleep 600ms
-Type "kref list --no-pager" Enter
+Type "kref list" Enter
 Sleep 3.5s
 Enter
 Type "# open one in the pager — rendered markdown, tables, highlighted code" Enter

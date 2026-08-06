@@ -101,17 +101,18 @@ is not a TTY, so a bare `kref show <id>` there silently takes the *static* path
 
 ### The gate
 
-`usePager` (`cmd/kref/output.go:59`) is the switch: stdout is a real terminal,
-`--json` not set, `--plain` not set. Each command additionally honors its own
-`--no-pager`. So the same binary is both a scriptable CLI and a TUI, and you
-choose which by how you invoke it — `--plain`/`--json`/a pipe for assertions,
-tmux for the interactive surface.
+`usePager` (`cmd/kref/output.go:86`) is the switch: stdout is a real terminal,
+`--json` not set, `--plain` not set. Commands that page additionally honor their
+own `--no-pager`; `kref list` has none, because it is never interactive. So the
+same binary is both a scriptable CLI and a TUI, and you choose which by how you
+invoke it — `--plain`/`--json`/a pipe for assertions, tmux for the interactive
+surface.
 
 | Surface | Command | Implementation |
 |---|---|---|
 | Entry viewer (read + comment write) | `kref show <id>` | `RunViewer`, `cmd/kref/viewer.go:1223` |
 | Todo cockpit (viewer + todo header) | `kref todo <id>` | `runTodoCockpit`, `cmd/kref/todo.go:77` |
-| List cockpit (row nav + actions) | `kref list` | `runListCockpit`, `cmd/kref/listcockpit.go:626` |
+| List cockpit (row nav + actions) | `kref` (no arguments) | `runRootBrowse`, `cmd/kref/listcockpit.go:719` |
 | Quarantine review queue | `kref quarantine` | `runReviewModel`, `cmd/kref/quarantine_review_view.go:277` |
 | Static pager (no model) | `kref search`, `kref diff` | `Page`, `cmd/kref/pager.go:263` |
 

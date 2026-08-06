@@ -184,16 +184,22 @@ ______________________________________________________________________
 
 ## `list`: output modes, columns, sorting, paging
 
-On a terminal, `kref list` opens an **interactive cockpit**: arrow (`↑`/`↓` or
-`j`/`k`) through the entries — the quarantine review queue is grouped on top —
-and act on the selected row without leaving the view. `Enter` opens it (the
-`kref todo` cockpit for a todo, the `kref show` pager otherwise) and returns you
-to where you were; `e` edits it in `$EDITOR`; `a`/`r` approve/reject a quarantine
-row; `x`/`u` archive/restore; `s` sets status; `f` sets or clears an alias
-(favorite name); `/` (with `n`/`N`) searches; `,` opens view options; `?` shows
-the keys; `q` quits.
-`--no-pager`, `--plain`, and `--json` keep the static, scriptable output shown
-below (with the review-queue banner).
+On a terminal, bare `kref` — no subcommand — opens an **interactive cockpit**:
+arrow (`↑`/`↓` or `j`/`k`) through the entries — the quarantine review queue is
+grouped on top — and act on the selected row without leaving the view. `Enter`
+opens it (the `kref todo` cockpit for a todo, the `kref show` pager otherwise)
+and returns you to where you were; `e` edits it in `$EDITOR`; `a`/`r`
+approve/reject a quarantine row; `x`/`u` archive/restore; `s` sets status; `f`
+sets or clears an alias (favorite name); `/` (with `n`/`N`) searches; `,` opens
+view options; `?` shows the keys; `q` quits.
+
+Bare `kref` takes the same entry-selection flags as `list`, so `kref --tier
+private` opens the cockpit over one tier. Anywhere stdout is not a terminal it
+prints this help instead, and `--json`/`--plain` are refused by name — a TUI
+cannot honour a machine contract.
+
+`kref list` never goes interactive: it prints the static, scriptable output
+shown below (with the review-queue banner) and exits.
 
 `kref list` prints a header and a color-coded visibility-tier column:
 
@@ -270,11 +276,11 @@ by visibility. `kref search` takes the same flag plus `matches` (default
 
 ### Paging
 
-On an interactive terminal the table opens in a lean pager: the same scrolling
-and `/` search as `kref show`, but with no line-number gutter and no `<n>g` line
-jumps. `,` opens view options, which here is colour alone — with no gutter there
-is nothing to hide. Piped or redirected output prints straight through;
-`--plain` and `--json` never page; `--no-pager` opts out on a terminal.
+`kref list` does not page: the table prints straight through to a terminal, a
+pipe, or a file alike. For a scrollable view of the same entries — the same `/`
+search as `kref show`, but with no line-number gutter and no `<n>g` line jumps,
+and `,` for view options (colour alone here, since with no gutter there is
+nothing to hide) — run bare `kref`.
 
 ### Other flags
 
@@ -302,8 +308,8 @@ MATCHES  TIER        ID            KIND      TITLE
 ```
 
 It composes with the same `--kind`/`--status`/`--tier`/`--label` filters as
-`kref list`, pages on a terminal like `list` does, and under `--json` emits the
-full entry objects plus a `matches` field. `kref search <query> --plain` emits
+`kref list`, pages on a terminal (`--no-pager` opts out), and under `--json`
+emits the full entry objects plus a `matches` field. `kref search <query> --plain` emits
 one tab-separated row per hit (matches, tier, id, kind, title) with no header or
 footer, for the same `grep`/`cut`/`xargs` pipelines as `list --plain`.
 
@@ -923,8 +929,8 @@ the machine unreviewed: the `quarantine` namespace is non-syncable, so a held
 secret can never be pushed. A private target is written normally (it cannot push
 anyway).
 
-A human then reviews and decides. The natural path is interactive: in `kref list`
-on a terminal, the review queue is grouped on top — press **Enter** on a review
+A human then reviews and decides. The natural path is interactive: in the bare
+`kref` cockpit, the review queue is grouped on top — press **Enter** on a review
 row to open its review view (the findings and the proposed change as a
 current→proposed diff), then `a`/`r` to approve/reject or `o` to open the target
 entry, all in place. `kref quarantine show <id>` opens the same review view for one

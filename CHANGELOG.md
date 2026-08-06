@@ -12,9 +12,20 @@ there is a tagged release to diff against.
 
 ### Changed
 
+- **BREAKING: the interactive cockpit moved from `kref list` to bare `kref`.**
+  `ls` is the name with the strongest print-and-exit expectation in Unix, and it
+  was the one command that could take over the terminal instead. `kref list` /
+  `kref ls` now always prints a static table and exits, and its `--no-pager` flag
+  is removed — with no interactive mode left, it had nothing to opt out of. Bare
+  `kref` takes the same entry-selection flags (`--kind`, `--status`, `--tier`,
+  `--label`, `--all`, `--archived`, `--include-deleted`, `--open-questions`,
+  `--sort`), so `kref --tier private` opens the cockpit over one tier; it still
+  prints help when stdout is not a terminal, and refuses `--json`/`--plain` by
+  name rather than emitting help into a machine contract. `--columns`, `--wide`,
+  `--check`, `--new`, `--plain`, and `--json` on `list` are unchanged.
 - **The `t` colour hotkey is gone from every viewer.** Toggling colour lives in
   the view-options menu (`,`), which each interactive surface now has: the entry
-  viewer, the `kref list` cockpit, the `kref search`/`kref diff` pager and the
+  viewer, the bare-`kref` cockpit, the `kref search`/`kref diff` pager and the
   quarantine review. The key was dropped rather than reassigned — the hotkey set
   needs a considered pass, and a menu is where a setting lives until a key is
   earned. Colour is a saved preference now, so it also survives the session
@@ -52,7 +63,7 @@ there is a tagged release to diff against.
 - **`esc` is a layered dismiss on every surface** — modal, then help popup, then
   a committed search, then quit. It previously quit the pager, list and review
   viewer outright and did nothing at all in the entry viewer.
-- **Footers scale with the terminal width.** The `kref list` and quarantine
+- **Footers scale with the terminal width.** The cockpit and quarantine
   review footers spelled out every key unconditionally and needed 111 and 82
   columns, so on an 80-column terminal `? keys` and the quit hint were clipped
   off the end. They now offer progressively terser variants and show the widest
@@ -67,7 +78,7 @@ there is a tagged release to diff against.
   nothing: they were a second way to do what `space` already did, and `o` reads
   as "open the entry" in the list and quarantine cockpits.
 - **`g` jumps to the top in every viewer.** The entry viewer and the
-  `kref search`/`kref diff` pager required the vim `gg` chord while the `kref list`
+  `kref search`/`kref diff` pager required the vim `gg` chord while the bare-`kref`
   cockpit took a single `g`, so the key a reader had just learned did nothing one
   Enter away. Bare `g` now goes to the top everywhere; `gg` still works (the
   second `g` is a no-op) and `<n>g` is unchanged. The help key is likewise
@@ -93,7 +104,7 @@ there is a tagged release to diff against.
   `--plain` and `--json` output is unchanged.
 
 - **`home` jumps to the top in the entry viewer.** `end` was bound to the bottom
-  but `home` fell through to the viewport and did nothing, while the `kref list`
+  but `home` fell through to the viewport and did nothing, while the bare-`kref`
   cockpit and the pager both bound the pair. A pending `<n>` count is discarded
   by `home`, so `12` then `home` goes to the top rather than to body line 12.
 
@@ -180,7 +191,7 @@ there is a tagged release to diff against.
   `kref-id` trailer in the file is stripped, so re-creating from an exported body
   does not bake the marker in. `--file` takes content only; `kref ingest` remains
   the verb that records the source path and detects the content type.
-- **Horizontal scroll for wide lines** — the interactive `kref list` cockpit and
+- **Horizontal scroll for wide lines** — the interactive bare-`kref` cockpit and
   the `kref search`/`kref diff` pager pan left/right with `←`/`h` and `→`/`l`, so
   a title or diff line wider than the window can be read without wrapping.
 - **`kref show` is interactive** — on a terminal, `kref show <id>` now opens the
@@ -267,14 +278,14 @@ there is a tagged release to diff against.
   view for a held write: its findings and the proposed change (a current→proposed
   diff for a body write), with `a`/`r` to approve/reject and `o` to open the target
   entry — no leaving to type another command. Pressing Enter on a review row in the
-  `kref list` cockpit opens the same view. The viewer is shared between both entry
+  bare-`kref` cockpit opens the same view. The viewer is shared between both entry
   points (built on `internal/tui.ScrollView`).
 - **Quarantine review polish** — held writes now show their age and a STALE
   marker past 7 days (in `kref list`, `kref quarantine list`/`show`, and the todo
   cockpit badge); a throttled post-command reminder fires when stale writes await
   review; and bare `kref quarantine` on a terminal opens the interactive review
   queue (`n`/`p` between held writes, `a`/`r` to decide, decide-and-advance).
-- **Interactive `kref list` cockpit** — on a terminal, `kref list` is now
+- **Interactive bare-`kref` cockpit** — on a terminal, bare `kref` is now
   navigable: arrow through the entries (the quarantine review queue grouped on
   top) and act on the selected row without retyping ids. `Enter` opens it (the
   `kref todo` cockpit for a todo, the `kref show` pager otherwise) and returns to
@@ -282,7 +293,7 @@ there is a tagged release to diff against.
   row; `x`/`u` archive/restore; `s` sets status; `f` sets/clears an alias; `/`
   `n` `N` search; `?` keys; `q` quits. Rows render through the same formatter as
   the static table (extracted `render.ListLines`); opening reuses the existing
-  viewers. `--plain`, `--json`, and `--no-pager` keep the static output.
+  viewers. `kref list` prints that static table and exits.
 - **Unified reader — `kref show` gains fold + shared search** — the `show` pager
   and the todo cockpit now share one reading model (new `internal/outline`).
   Markdown bodies in `kref show` fold by heading at **every** level (`#`…`######`):
@@ -580,7 +591,7 @@ there is a tagged release to diff against.
   it can act on: the entry viewer has the line-number gutter (turn it off for
   clean copy-paste) and colour; `kref todo` adds the cockpit glyph theme, which
   cycles between the geometric and emoji sets and redraws the header on the spot;
-  the `kref list` cockpit and the quarantine review have colour; the `kref diff`
+  the bare-`kref` cockpit and the quarantine review have colour; the `kref diff`
   pager has colour and its own line numbers, which `kref search` omits rather
   than showing inert — it has no gutter to hide. Every setting persists to
   `~/.config/kref/config.yaml`, and the menu stays open on the row you just
