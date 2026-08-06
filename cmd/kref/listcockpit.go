@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/git-bug/git-bug/entity"
+	"github.com/spf13/cobra"
 
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/render"
@@ -123,7 +125,8 @@ type listResult struct {
 }
 
 func newListModel(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string) *listModel {
-	sv := tui.NewScrollView("kref list")
+	// The cockpit is what bare `kref` opens; `kref list` is the static table.
+	sv := tui.NewScrollView("kref")
 	sv.SetPlain(!color)
 	sv.SetHelpRows(listHelpRows())
 	sv.SetHorizontalStep(8) // ←/h →/l pan to read titles wider than the window
@@ -707,6 +710,95 @@ func runListCockpit(acts listActions, opts render.ListOptions, color bool, filte
 			return herr
 		}
 	}
+}
+
+// runRootBrowse is bare `kref`: the interactive cockpit on a terminal, the same
+// help as ever anywhere else. --json and --plain are machine contracts a TUI
+// cannot honour, so they are refused by name, pointing at the subcommand that
+// can.
+func runRootBrowse(cmd *cobra.Command, dir *string, sel *listSelection) error {
+	if jsonMode(cmd) {
+		return errors.New("--json needs a subcommand (try `kref list --json`)")
+	}
+	if plainMode(cmd) {
+		return errors.New("--plain needs a subcommand (try `kref list --plain`)")
+	}
+	if !usePager(cmd) {
+		cmd.HelpFunc()(cmd, nil)
+		return nil
+	}
+	// Parsed before the store is opened so a bad --sort reports itself rather
+	// than whatever the store has to say first.
+	sortSpec, err := sel.sortSpec()
+	if err != nil {
+		return err
+	}
+	s, err := store.Open(*dir)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	lf, err := sel.filter(s)
+	if err != nil {
+		return err
+	}
+	return runBrowse(cmd, dir, s, lf, sortSpec, sel.all)
+}
+
+// runBrowse opens the interactive list cockpit over lf and carries out whatever
+// the user selected on the way out: the quarantine review queue, the entry
+// viewer, or $EDITOR. The cockpit has no column control of its own, so it always
+// renders the default columns.
+func runBrowse(cmd *cobra.Command, dir *string, s *store.Store, lf store.ListFilter, sortSpec *render.SortSpec, all bool) error {
+	// Favorited entries pin to the top of the view; the id-set is the values of
+	// the merged (user + shared) favorites map.
+	favIDs := map[string]bool{}
+	for _, id := range s.Favorites() {
+		favIDs[id] = true
+	}
+	color := resolveColor(cmd, s.EffectiveConfig())
+	opts := render.ListOptions{
+		Columns: render.DefaultColumns, Color: color, ShowAll: all, Sort: sortSpec, Favorites: favIDs,
+	}
+	acts := listCockpitActions{s: s, filter: lf}
+	actor, actorKind := resolveActor(cmd, s)
+	return runListCockpit(acts, opts, color, lf, actor, actorKind, func(res listResult) error {
+		switch res.action {
+		case "review":
+			queue, qerr := acts.QuarantineQueue()
+			if qerr != nil {
+				return qerr
+			}
+			start := 0
+			for i, it := range queue {
+				if it.ID == res.id {
+					start = i
+					break
+				}
+			}
+			rr, rerr := runReviewModel(acts, queue, start, color, ttyWidth(), actor, actorKind)
+			if rerr != nil {
+				return rerr
+			}
+			if rr.action == "open" {
+				snap, gerr := s.Get(rr.target)
+				if gerr != nil {
+					return gerr
+				}
+				return openEntry(cmd, dir, s, snap)
+			}
+			return nil
+		case "open":
+			snap, gerr := s.Get(res.id)
+			if gerr != nil {
+				return gerr
+			}
+			return openEntry(cmd, dir, s, snap)
+		case "edit":
+			return editEntry(cmd, s, res.id)
+		}
+		return nil
+	})
 }
 
 // listCockpitActions adapts *store.Store to listActions. Favorites are user-scope

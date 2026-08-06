@@ -48,12 +48,21 @@ func newRootCmd() *cobra.Command {
 		cobra.AddTemplateFunc("aliasedName", aliasedName)
 	})
 	var dir string
+	// sel is bare `kref`'s own filter: which entries the cockpit opens over.
+	// Local flags, so no subcommand inherits them.
+	var sel listSelection
 	root := &cobra.Command{
 		Use:           "kref",
 		Short:         "Repo-resident knowledge base over git objects",
 		Version:       build.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Args stays unset: cobra's legacyArgs still rejects an unknown first
+		// argument on a root that has subcommands, so `kref bogus` fails rather
+		// than silently opening the cockpit.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runRootBrowse(cmd, &dir, &sel)
+		},
 	}
 	root.SetVersionTemplate("kref {{.Version}}\n")
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -65,6 +74,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Bool("json", false, "machine-readable JSON output")
 	root.PersistentFlags().Bool("plain", false, "chrome-free line-oriented output: TSV for list/search, the verbatim stored body (plus any comments, one per line) for show")
 	root.PersistentFlags().String("actor", "", "attribute actions to an agent (else the git identity, as human)")
+	sel.register(root, &dir)
 	// --plain and --json are the two machine contracts; asking for both is a
 	// contradiction. No subcommand defines PersistentPreRunE, so the root hook
 	// is never shadowed.

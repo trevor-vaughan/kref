@@ -43,11 +43,11 @@ Show
 Type "# betterleaks caught a token and quarantined that file to private" Enter
 Sleep 1.2s
 Enter
-Type "kref list --no-pager" Enter
+Type "kref list" Enter
 Sleep 3.5s
 Enter
 Type "# the private tier has no remote — that secret can never be pushed" Enter
 Sleep 1.2s
 Enter
-Type "kref list --tier private --no-pager" Enter
+Type "kref list --tier private" Enter
 Sleep 4s

@@ -127,7 +127,8 @@ kref track docs/note.md     # keep one file two-way synced
 # Compose an entry by hand when there is no file:
 kref new --kind spec --body $'# Auth design\n\nprose...' --label area:auth  # title from H1
 
-kref list                   # list entries across tiers (add --tier to filter)
+kref                        # interactive cockpit over your entries (q quits)
+kref list                   # ...or a static list across tiers (add --tier to filter)
 kref search auth            # recall by a title/body substring, with match counts
 kref show <id>              # view one — rendered and paged; --plain for the raw body
 kref show                   # ...or omit the id to see the most-recently-touched entry

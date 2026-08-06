@@ -1042,19 +1042,16 @@ func newShowCmd(dir *string) *cobra.Command {
 const listColumnsHelpSentinel = "help"
 
 func newListCmd(dir *string) *cobra.Command {
-	var kind, status, tier string
-	var labels []string
-	var includeDeleted, all, newOnly, check bool
-	var wide, archived, noPager bool
-	var openQuestions bool
-	var columns, sortBy string
+	var sel listSelection
+	var newOnly, check, wide bool
+	var columns string
 	c := &cobra.Command{
 		Use:               "list",
 		Aliases:           []string{"ls"},
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Short:             "List entries",
 		Example: exampleBlock([]string{
-			"kref list                 # all entries",
+			"kref list                 # all entries (static; bare `kref` is the interactive view)",
 			"kref list --tier private  # filter by tier",
 			"kref list --new           # incoming + unpushed since last sync",
 		}),
@@ -1078,12 +1075,9 @@ func newListCmd(dir *string) *cobra.Command {
 			if newOnly && (plain || columnsSet || wide || cmd.Flags().Changed("sort")) {
 				return errors.New("--plain/--columns/--wide/--sort are not compatible with --new")
 			}
-			var sortSpec *render.SortSpec
-			if sortBy != "" {
-				var perr error
-				if sortSpec, perr = render.ParseSort(sortBy); perr != nil {
-					return perr
-				}
+			sortSpec, err := sel.sortSpec()
+			if err != nil {
+				return err
 			}
 			if check && plain {
 				return errors.New("--check is not compatible with --plain")
@@ -1114,21 +1108,12 @@ func newListCmd(dir *string) *cobra.Command {
 					func(w io.Writer, color bool) { render.WhatsNew(w, incoming, unpushed, color) },
 					map[string]any{"incoming": incoming, "unpushed": unpushed})
 			}
-			var t entry.Tier
-			if tier != "" {
-				tdef, err := s.TierDef(tier)
-				if err != nil {
-					return err
-				}
-				t = tdef.Name
-			}
-			lf := store.ListFilter{
-				Kind: kind, Status: status, Tier: t, Labels: labels,
-				IncludeDelete: includeDeleted || all, ArchivedOnly: archived, IncludeArchived: all,
-				OpenQuestionsOnly: openQuestions,
+			lf, err := sel.filter(s)
+			if err != nil {
+				return err
 			}
 			var items []*entry.Snapshot
-			if jsonMode(cmd) || check || openQuestions {
+			if jsonMode(cmd) || check || sel.openQuestions {
 				// --json needs full bodies/links/provenance; --check compares
 				// against snap.Body for drift. Both use the full DAG read.
 				items, err = s.List(lf)
@@ -1189,7 +1174,7 @@ func newListCmd(dir *string) *cobra.Command {
 					renderQuarantineBanner(w, pending)
 				}
 				render.RenderList(w, items, render.ListOptions{
-					Columns: cols, Plain: plain, Color: color, ShowAll: all, Sort: sortSpec, Favorites: favIDs,
+					Columns: cols, Plain: plain, Color: color, ShowAll: sel.all, Sort: sortSpec, Favorites: favIDs,
 				})
 				if len(drift) > 0 {
 					fmt.Fprintln(w, "\ntracked file drift (--check):")
@@ -1200,76 +1185,16 @@ func newListCmd(dir *string) *cobra.Command {
 					}
 				}
 			}
-			// On a terminal, the interactive list cockpit: navigate rows, open the
-			// selected one in the existing viewer, act inline. --plain/--json/--check
-			// keep the static output (a machine format bypasses like a pipe would).
-			if usePager(cmd) && !noPager && !plain && !jsonOut && !check {
-				acts := listCockpitActions{s: s, filter: lf}
-				actor, actorKind := resolveActor(cmd, s)
-				color := resolveColor(cmd, s.EffectiveConfig())
-				return runListCockpit(acts,
-					render.ListOptions{Columns: cols, Color: color, ShowAll: all, Sort: sortSpec, Favorites: favIDs},
-					color, lf, actor, actorKind,
-					func(res listResult) error {
-						switch res.action {
-						case "review":
-							queue, qerr := acts.QuarantineQueue()
-							if qerr != nil {
-								return qerr
-							}
-							start := 0
-							for i, it := range queue {
-								if it.ID == res.id {
-									start = i
-									break
-								}
-							}
-							rr, rerr := runReviewModel(acts, queue, start, color, ttyWidth(), actor, actorKind)
-							if rerr != nil {
-								return rerr
-							}
-							if rr.action == "open" {
-								snap, gerr := s.Get(rr.target)
-								if gerr != nil {
-									return gerr
-								}
-								return openEntry(cmd, dir, s, snap)
-							}
-							return nil
-						case "open":
-							snap, gerr := s.Get(res.id)
-							if gerr != nil {
-								return gerr
-							}
-							return openEntry(cmd, dir, s, snap)
-						case "edit":
-							return editEntry(cmd, s, res.id)
-						}
-						return nil
-					})
-			}
 			return emit(cmd, human, items)
 		},
 	}
-	c.Flags().BoolVar(&noPager, "no-pager", false, "do not page output even on a terminal")
+	sel.register(c, dir)
 	c.Flags().BoolVar(&check, "check", false, "check each tracked file for drift (reads files)")
-	c.Flags().BoolVar(&openQuestions, "open-questions", false, "only entries with an unresolved question comment")
-	c.Flags().StringVar(&kind, "kind", "", "filter by kind")
-	c.Flags().StringVar(&status, "status", "", "filter by status")
-	c.Flags().StringVar(&tier, "tier", "", "filter by tier (kref tier list shows them)")
-	c.Flags().StringArrayVar(&labels, "label", nil, "filter by label (repeatable, AND)")
-	c.Flags().BoolVar(&includeDeleted, "include-deleted", false, "include soft-deleted (tombstoned) entries")
-	c.Flags().BoolVar(&all, "all", false, "show everything: superseded + tombstoned, uncollapsed")
 	c.Flags().BoolVar(&newOnly, "new", false, "show what changed since your last sync (incoming + unpushed)")
 	c.Flags().StringVar(&columns, "columns", "", "columns to show, e.g. --columns=id,kind,author (bare --columns lists all)")
 	c.Flags().Lookup("columns").NoOptDefVal = listColumnsHelpSentinel
 	c.Flags().BoolVarP(&wide, "wide", "w", false, "preset: tier,id,kind,status,author,edited,title")
-	c.Flags().BoolVar(&archived, "archived", false, "show only archived entries")
-	c.Flags().StringVar(&sortBy, "sort", "edited", "order by a field, e.g. --sort title or --sort tier — dates put newest first; :asc/:desc overrides")
-	registerEntryFlagCompletions(c, dir)
-	_ = c.RegisterFlagCompletionFunc("status", fixedFlag(statusValues))
 	_ = c.RegisterFlagCompletionFunc("columns", completeColumns)
-	_ = c.RegisterFlagCompletionFunc("sort", fixedFlag(sortFlagValues()))
 	return c
 }
 

@@ -677,13 +677,19 @@ var _ = Describe("list human output", func() {
 		Expect(out).To(ContainSubstring("○ shared"))
 		Expect(out).To(ContainSubstring("1 entry"))
 	})
-	It("accepts --no-pager and prints the table unpaged", func() {
+	It("prints the table unpaged", func() {
 		dir := gitRepo()
 		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
 		run("--dir", dir, "new", "--title", "Paged entry")
-		out := run("--dir", dir, "list", "--no-pager")
+		out := run("--dir", dir, "list")
 		Expect(out).To(ContainSubstring("Paged entry"))
 		Expect(out).To(MatchRegexp(`(?m)^TIER\s+ID\s+KIND\s+STATUS\s+TITLE$`))
+	})
+	It("no longer accepts --no-pager, having no interactive mode to opt out of", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		_, err := runErr("--dir", dir, "list", "--no-pager")
+		Expect(err).To(MatchError(ContainSubstring("unknown flag: --no-pager")))
 	})
 	It("filters by --tier", func() {
 		dir := gitRepo()
@@ -3694,5 +3700,47 @@ var _ = Describe("show viewer strip fields", func() {
 		title := short + "  " + snap.Title
 		joined := title + "  ·  " + strings.Join(render.StripFields(snap, entry.LinkView{}, false), "  ·  ")
 		Expect(strings.Count(joined, short)).To(Equal(1))
+	})
+})
+
+var _ = Describe("bare kref", func() {
+	It("prints help when stdout is not a terminal", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+
+		out := run("--dir", dir)
+		Expect(out).To(ContainSubstring("Core Commands:"))
+		Expect(out).To(ContainSubstring("list (ls)"))
+		// A runnable root earns its own usage line alongside the subcommand one.
+		Expect(out).To(ContainSubstring("kref [flags]"))
+	})
+
+	It("refuses --json without a subcommand", func() {
+		dir := gitRepo()
+		_, err := runErr("--dir", dir, "--json")
+		Expect(err).To(MatchError(ContainSubstring("needs a subcommand")))
+		Expect(formatCLIError(err, true)).To(ContainSubstring(`{"error":`))
+	})
+
+	It("refuses --plain without a subcommand", func() {
+		dir := gitRepo()
+		_, err := runErr("--dir", dir, "--plain")
+		Expect(err).To(MatchError(ContainSubstring("needs a subcommand")))
+	})
+
+	It("still rejects an unknown command rather than opening the cockpit", func() {
+		dir := gitRepo()
+		_, err := runErr("--dir", dir, "bogus")
+		Expect(err).To(MatchError(ContainSubstring("unknown command")))
+	})
+
+	It("accepts the selection flags", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+
+		// Not a terminal, so this prints help rather than opening the cockpit;
+		// what it proves is that the flags parse on the root command.
+		Expect(run("--dir", dir, "--tier", "private", "--kind", "spec")).
+			To(ContainSubstring("Core Commands:"))
 	})
 })

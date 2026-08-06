@@ -285,7 +285,7 @@ var _ = Describe("kref list quarantine banner", func() {
 		Expect(json.Unmarshal([]byte(out), &added)).To(Succeed())
 		qid := parseQID(run("--dir", dir, "update", added.ID, "--body", qSecret))
 
-		banner := run("--dir", dir, "list", "--no-pager")
+		banner := run("--dir", dir, "list")
 		Expect(banner).To(ContainSubstring("awaiting secret review"))
 		Expect(banner).To(ContainSubstring("set-body"))
 		Expect(banner).To(ContainSubstring("Doc")) // the normal list still renders below
@@ -295,7 +295,7 @@ var _ = Describe("kref list quarantine banner", func() {
 		Expect(run("--dir", dir, "list", "--plain")).NotTo(ContainSubstring("awaiting secret review"))
 
 		run("--dir", dir, "quarantine", "approve", qid, "-m", "ok")
-		Expect(run("--dir", dir, "list", "--no-pager")).NotTo(ContainSubstring("awaiting secret review"))
+		Expect(run("--dir", dir, "list")).NotTo(ContainSubstring("awaiting secret review"))
 	})
 })
 
