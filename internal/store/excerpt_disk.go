@@ -8,7 +8,6 @@ import (
 	"os"
 	"path"
 	"strconv"
-	"syscall"
 
 	"github.com/git-bug/git-bug/entity"
 	"github.com/git-bug/git-bug/repository"
@@ -96,16 +95,6 @@ func writeLockPID(ls repository.LocalStorage, t entry.Tier, pid int) error {
 		return err
 	}
 	return f.Close()
-}
-
-// pidAlive reports whether a process with pid exists. Signal 0 performs error
-// checking without delivering a signal (ESRCH => gone).
-func pidAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // acquireBuildLock returns true if this process now holds the tier's build

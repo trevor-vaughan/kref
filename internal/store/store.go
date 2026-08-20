@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/git-bug/git-bug/entities/identity"
 	"github.com/git-bug/git-bug/entity"
@@ -430,7 +429,8 @@ func (s *Store) RefreshAll() error { return s.excerpts.refreshAll() }
 
 // spawnBackgroundRefresh fires a fully detached `kref __cache-refresh` so the
 // NEXT completion reads a fresh cache. It must not block the completion helper:
-// the child is setsid'd with closed stdio and never Wait'd on. Failure to spawn
+// the child is detached (see detachSysProcAttr) with closed stdio and never
+// Wait'd on. Failure to spawn
 // is silent — the cache stays cold and completion keeps falling back to the DAG.
 //
 // Guard: under `go test`, commands run in-process and os.Executable() is the
@@ -444,7 +444,7 @@ func (s *Store) spawnBackgroundRefresh() {
 	cmd := exec.Command(exe, "__cache-refresh")
 	cmd.Dir = s.dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return
 	}
