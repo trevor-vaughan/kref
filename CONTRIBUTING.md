@@ -4,7 +4,7 @@ Thanks for helping out. This is a small, test-driven Go project.
 
 ## Setup
 
-- **Go ≥ 1.26.4** (pinned in `go.mod`; or any Go with `GOTOOLCHAIN=auto`, which `task` sets for you).
+- **Go ≥ 1.26.7** (pinned in `go.mod`; or any Go with `GOTOOLCHAIN=auto`, which `task` sets for you).
 - [`task`](https://taskfile.dev) for all build/test/lint.
 
 Common tasks are aliased at the root; the `dev:` namespace holds the build/test
@@ -57,7 +57,8 @@ Your host will ask you to approve the server the first time; a project-scoped
 MCP server is untrusted until you say so.
 
 To point an agent at several repositories instead, run the server yourself with
-`kref mcp --allow <root>`; see [MCP server](docs/usage.md#mcp-server) for the
+`kref mcp --allow <root>`; see
+[Agents: MCP & instructions](docs/usage.md#agents-mcp--instructions) for the
 boundary rules.
 
 ## Conventions

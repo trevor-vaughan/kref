@@ -26,17 +26,25 @@ tree and adds the prose that does not fit in `--help` output.
 - [Hygiene & consolidation](#hygiene--consolidation)
 - [The ingest bridge](#the-ingest-bridge)
 - [Tracking files](#tracking-files)
+- [Comments](#comments)
+- [Todos](#todos)
 - [Sync](#sync)
-- [Backing up & recovering private knowledge](#backing-up--recovering-private-knowledge)
 - [Hooks](#hooks)
 - [Configuration & favorites](#configuration--favorites)
-- [MCP server](#mcp-server)
-- [Agent instructions](#agent-instructions)
+- [Quarantine review queue](#quarantine-review-queue)
+- [Agents: MCP & instructions](#agents-mcp--instructions)
 - [Shell completion](#shell-completion)
 - [betterleaks (runtime dependency)](#betterleaks-runtime-dependency)
 - [Deleting things](#deleting-things)
-- [Uninstall](#uninstall)
 - [Aliases](#aliases)
+
+Two companion pages carry the task-shaped material that does not belong in a
+flag reference:
+
+- **[kref for agents](agents.md)** — the MCP server and `kref agents_md`.
+- **[Backup & recovery](backup-recovery.md)** — bundles, the local vault, and
+  getting the `private` tier back.
+- **[Uninstall](uninstall.md)** — removing kref from a repo and your machine.
 
 ______________________________________________________________________
 
@@ -44,12 +52,12 @@ ______________________________________________________________________
 
 Four flags are global — accepted by every command:
 
-| Flag             | Meaning                                                                                       |
-|------------------|-----------------------------------------------------------------------------------------------|
-| `--json`         | Machine-readable JSON output (stable, script-friendly shapes)                                 |
-| `--plain`        | Chrome-free, line-oriented text: TSV for `list`/`search`, the verbatim stored body for `show` |
-| `--dir <path>`   | Which repository's ref store to use (see note below)                                          |
-| `--actor <name>` | Attribute actions to an agent in the provenance log; absent, the git identity is a human      |
+| Flag             | Meaning                                                                                  |
+|------------------|------------------------------------------------------------------------------------------|
+| `--json`         | Machine-readable JSON output (stable, script-friendly shapes)                            |
+| `--plain`        | Chrome-free, line-oriented text: TSV for `list`/`search`, body + comments for `show`     |
+| `--dir <path>`   | Which repository's ref store to use (see note below)                                     |
+| `--actor <name>` | Attribute actions to an agent in the provenance log; absent, the git identity is a human |
 
 Commands are human-readable by default and switch to JSON under `--json`.
 `kref version` follows the same rule: a plain `kref <version>` line by default
@@ -75,17 +83,22 @@ status** is `0` on success and `1` on any error.
 exclusive everywhere — asking for both is a contradiction. `--plain` is
 chrome-free, line-oriented, never colored, never paged.
 
-**`--dir` scope.** `--dir` only selects which repository's ref store is used;
-file *path arguments* (e.g. `ingest ./notes.md`) are still resolved against your
-current working directory, not against `--dir`. By default kref works on the
-repo you are in: like git, it walks up from the current directory to the
-enclosing repository, so commands work from any subdirectory; outside any repo
-it errors cleanly (`.git not found`). If you drive a repo elsewhere via `--dir`,
-give path arguments as absolute paths (or `cd` into that repo) so a relative
-path is not read — or, for `ingest`, written — under the wrong tree. The repo
-directory resolves in the order `--dir` flag > `KREF_DIR` environment variable >
-the current directory, so a host that sets `KREF_DIR` per project (an MCP host
-config, for instance) can run `kref` with no `--dir` and no shell wrapper.
+**`--dir` scope.** `--dir` only selects which repository's ref store is used.
+File *path arguments* (e.g. `ingest ./notes.md`) are still resolved against your
+current working directory, not against `--dir`.
+
+By default kref works on the repo you are in: like git, it walks up from the
+current directory to the enclosing repository, so commands work from any
+subdirectory; outside any repo it errors cleanly (`.git not found`).
+
+If you drive a repo elsewhere via `--dir`, give path arguments as absolute paths
+(or `cd` into that repo) so a relative path is not read — or, for `ingest`,
+written — under the wrong tree.
+
+The repo directory resolves in the order `--dir` flag > `KREF_DIR` environment
+variable > the current directory, so a host that sets `KREF_DIR` per project (an
+MCP host config, for instance) can run `kref` with no `--dir` and no shell
+wrapper.
 
 **Color.** Auto-detected: on for an interactive terminal, off for pipes and
 under `NO_COLOR`. `KREF_COLOR=1` forces it on and `KREF_COLOR=0` forces it off,
@@ -185,11 +198,13 @@ ______________________________________________________________________
 ## `list`: output modes, columns, sorting, paging
 
 On a terminal, bare `kref` — no subcommand — opens an **interactive cockpit**:
-arrow (`↑`/`↓` or `j`/`k`) through the entries — the quarantine review queue is
-grouped on top — and act on the selected row without leaving the view. `Enter`
-opens it (the `kref todo` cockpit for a todo, the `kref show` pager otherwise)
-and returns you to where you were; `e` edits it in `$EDITOR`; `a`/`r`
-approve/reject a quarantine row; `x`/`u` archive/restore; `s` sets status; `f`
+arrow (`↑`/`↓` or `j`/`k`) through the entries — the
+[quarantine review queue](#quarantine-review-queue) is grouped on top — and act
+on the selected row without leaving the view. `Enter`
+opens it (the [`kref todo` cockpit](#todos) for a todo, the `kref show` pager
+otherwise) and returns you to where you were; `e` edits it in your
+[configured editor](#command-reference); `a`/`r` approve/reject a
+[quarantine](#quarantine-review-queue) row; `x`/`u` archive/restore; `s` sets status; `f`
 sets or clears an alias (favorite name); `/` (with `n`/`N`) searches; `,` opens
 view options; `?` shows the keys; `q` quits.
 
@@ -214,8 +229,8 @@ TIER        ID            KIND    STATUS  TITLE
 
 Tiers are colored (private = red `●`, personal = yellow `◐`, shared = green
 `○`); the glyph prints even with `NO_COLOR` or when piped, so the signal never
-depends on color alone. Filter with `--tier`, `--kind`, `--status`, and
-`--label` (repeatable, AND).
+depends on color alone. Filter with `--tier`, `--kind`, `--status`,
+`--open-questions`, and `--label` (repeatable, AND).
 
 ### Three output modes
 
@@ -227,7 +242,7 @@ depends on color alone. Filter with `--tier`, `--kind`, `--status`, and
 
 `--plain` is a global flag with one meaning everywhere (chrome-free,
 line-oriented output for `grep`/`cut`/`xargs`), shared by `list`, `search` (TSV
-rows), and `show` (the verbatim stored body); on commands with nothing to strip
+rows), and `show` (the stored body, plus any comments); on commands with nothing to strip
 it is a harmless no-op. On `list`, `--plain` honors every filter and lists each
 match uncollapsed, one per line. The common "give me the ids matching this
 filter" idiom:
@@ -259,8 +274,9 @@ value) to print the full column list with descriptions. `--wide` (`-w`) is a
 preset: `tier,id,kind,status,author,edited,title`.
 
 `--columns` and `--wide` are list-local: not combinable with `--json` (already
-the full object) or `--new`, and mutually exclusive with each other. `--plain`
-is also not combinable with `--new`.
+the full object) or `--new`, and mutually exclusive with each other. `--new`
+additionally refuses `--plain` and `--sort` (it prints its own incoming/unpushed
+grouping), and `--check` refuses `--plain`.
 
 ### Sorting
 
@@ -290,6 +306,8 @@ nothing to hide) — run bare `kref`.
   pull) and *unpushed* (changed since your last push).
 - `--include-deleted` includes soft-deleted (tombstoned) entries.
 - `--check` flags drifted tracked entries (reads files).
+- `--open-questions` shows only entries carrying an unresolved question
+  [comment](#comments).
 
 ______________________________________________________________________
 
@@ -324,8 +342,8 @@ renderer and wrapped to your terminal width, recognized code and structured text
 prints verbatim. Rendered markdown also reflows: soft-wrapped source lines join
 back into full-width paragraphs, list items, and blockquotes (LLM-authored
 entries typically arrive hard-wrapped at ~78 columns); hard line breaks, code
-blocks, and tables are left untouched, and `--plain` returns the exact stored
-bytes.
+blocks, and tables are left untouched, and `--plain` skips rendering entirely
+and returns the stored body unchanged.
 
 Omit the id to show the most-recently-touched entry. Address an entry by the
 file it came from: `kref show ./docs/note.md`.
@@ -371,10 +389,15 @@ Four flags control the output:
 
 | Flag               | Effect                                                                                                             |
 |--------------------|--------------------------------------------------------------------------------------------------------------------|
-| `--plain` (global) | emit the stored body verbatim, no header (the redirect/byte-fidelity form): `kref show --plain <id> > note.md`     |
+| `--plain` (global) | emit the stored body verbatim, no header, then any [comments](#comments): `kref show --plain <id> > note.md`       |
 | `--no-header`      | omit the metadata block                                                                                            |
 | `--header`         | print *only* the metadata block — no body, no pager (a cheap metadata peek); mutually exclusive with `--no-header` |
 | `--no-pager`       | never page, even on an interactive terminal                                                                        |
+
+`--plain` appends the entry's comments after the body, so the redirect above
+round-trips byte-for-byte only while the entry carries none. `kref show <id>
+--json` keeps them apart: the `body` key is always the stored body alone, and
+`comments` is a separate array.
 
 ______________________________________________________________________
 
@@ -534,7 +557,7 @@ the normal list (its status is preserved, so an `obsolete` entry stays
 after a confirmation (`-y`/`--yes` skips it). Unlike `rm`/tombstone, archiving
 is a pure visibility flag, not a deletion.
 
-### tidy, links, supersede
+### tidy, link, supersede
 
 `kref tidy` is a read-only review surface that clusters the likely-redundant:
 duplicate-title groups, `◆ merged` (diverged) entries, and superseded chains.
@@ -542,16 +565,139 @@ Act on a cluster with `kref supersede <old> <new>`, which links the new entry to
 the old (`supersedes`) and marks the old one superseded so it drops from the
 default list.
 
-Relationships are inspected with `kref links <id>` (incoming and outgoing typed
-edges) and `kref tree <id>` (the parent-child hierarchy). For arbitrary
-relationships beyond supersede, `kref link add <id> <target> --type depends-on`
-creates a generic typed link (free-form `--type`, default `relates`) and `kref
-link rm` removes it; links are one-directional (the `kref links` viewer resolves
-incoming edges by scanning). Linking a more-public entry to a more-private one
-warns that the private entry's id rides along on push but proceeds — the same
-warn-not-block stance `kref retier` takes on cross-tier links. Duplicate
-detection is exact normalized-title matching; fuzzy and semantic similarity are
-deferred to a future search-index tier.
+Relationships are inspected with `kref show <id>` — its expanded metadata block
+lists outgoing then incoming typed edges (press `:` in the viewer, or read the
+`links` key under `--json`) — and with `kref tree <id>` (the parent-child
+hierarchy). There is no separate `kref links` command.
+
+For arbitrary relationships beyond supersede, `kref link add <id> <target>
+--type depends-on` creates a generic typed link (free-form `--type`, default
+`relates`) and `kref link rm` removes it. Links are stored one-directionally, so
+incoming edges are resolved by scanning the other entries.
+
+Linking a more-public entry to a more-private one warns that the private entry's
+id rides along on push but proceeds — the same warn-not-block stance `kref
+retier` takes on cross-tier links. Duplicate detection is exact
+normalized-title matching; fuzzy and semantic similarity are deferred to a
+future search-index tier.
+
+______________________________________________________________________
+
+## Comments
+
+Comments thread discussion onto an entry without touching its body. A comment
+marked as a **question** stays visible as an open thread until someone resolves
+it, which is how kref tracks "this needs an answer" across a team or between you
+and an agent.
+
+```bash
+kref comment <id> -m 'looks good'                  # a plain remark
+kref comment <id> -m 'is the tier right?' -q       # a question (stays open)
+kref comment <id> --reply-to <cid> -m 'yes'        # a threaded reply
+kref comment <id> --resolve <cid> -m 'settled'     # close the question
+kref comment <id> --unresolve <cid>                # reopen it
+kref comment <id> --edit <cid> -m 'revised text'   # edit a comment body
+kref comment <id> --delete <cid> -y                # delete one (-y skips the prompt)
+```
+
+`<cid>` is a comment id prefix, the way `<id>` is an entry id prefix. Read the
+ids from `kref show <id> --json` (the `comments` array) or from the viewer.
+
+| Flag                                    | Effect                                                      |
+|-----------------------------------------|-------------------------------------------------------------|
+| `-m`, `--message`                       | the comment body                                            |
+| `-q`, `--question`                      | mark it a question, so it counts as unresolved until closed |
+| `--reply-to <cid>`                      | nest this comment under an existing one                     |
+| `--resolve <cid>` / `--unresolve <cid>` | close / reopen a question                                   |
+| `--edit <cid>` / `--delete <cid>`       | revise or remove a comment                                  |
+| `--force`                               | store a body the secret scan flagged (see below)            |
+| `-y`, `--yes`                           | skip the delete confirmation                                |
+
+**Finding open questions.** `kref list --open-questions` narrows the list to
+entries carrying at least one unresolved question — the "what is waiting on me"
+view. The viewer's sticky header also shows an unresolved-question count per
+entry.
+
+**Where comments show up.** `kref show` renders them under a `Comments (N)`
+block, replies indented beneath their parent and resolved questions marked `✓`.
+Under `--json` they are a separate `comments` array (so the `body` key stays the
+body alone); under `--plain` they are appended after the body, one per line.
+
+**Editing from the viewer.** In `kref show`'s viewer, `a` starts a comment, `A` a
+question, and `r`/`e`/`d`/`x` reply / edit / delete / toggle-resolve the comment
+under the cursor; `c` opens the same actions as a menu. See
+[`show`: rendering and paging](#show-rendering-and-paging).
+
+**Comments are scanned.** A comment body goes through the same secret scan as an
+entry body, so a comment that trips a rule on a syncable tier is held in the
+[quarantine review queue](#quarantine-review-queue) rather than applied. `--force`
+is the human's one-step override: it parks the comment and immediately approves
+it, leaving the audit trail intact. Agents have no `--force`.
+
+______________________________________________________________________
+
+## Todos
+
+A todo is an ordinary entry with `--kind todo` whose body follows a fixed
+grammar. That grammar buys two things: a **cockpit** that renders the document
+as a navigable outline, and a formatter that keeps the document tidy on every
+write.
+
+```bash
+kref new --kind todo --title Roadmap --file roadmap.md
+kref todo                  # the cockpit over the sole (or default) todo
+kref todo show <id>        # ...over a specific one
+kref todo --no-pager       # the static view, for pipes and scripts
+kref todo --full           # expand the Done section instead of collapsing it
+kref todo fmt              # re-arrange: move done items into Done, normalize
+kref todo lint             # report grammar violations (exit 1 if any)
+```
+
+### The grammar
+
+The body is markdown with exactly one H1 title and a **closed set** of level-2
+sections:
+
+| Heading                    | Holds                                                |
+|----------------------------|------------------------------------------------------|
+| `## Open`                  | work in flight                                       |
+| `## Future / low priority` | the someday pile                                     |
+| `## Done (compact)`        | completed items, collapsed in the cockpit by default |
+
+Level-3 (`###`) subsections are free-named and used to group items inside a
+section. Items are markdown checkboxes — `- [ ]` for open and `- [x]` for done;
+any other character between the brackets is a lint violation.
+
+`kref todo lint` reports what the formatter cannot safely fix on its own:
+
+| Rule              | Meaning                                         |
+|-------------------|-------------------------------------------------|
+| `h1`              | the document does not have exactly one H1 title |
+| `unknown-heading` | a level-2 heading outside the closed set above  |
+| `missing-section` | `## Open` or `## Done (compact)` is absent      |
+| `checkbox-state`  | a checkbox that is neither `[ ]` nor `[x]`      |
+
+`kref todo fmt` fixes *placement*: it moves every `[x]` item into
+`## Done (compact)` and normalizes spacing. It runs automatically on every write
+to a todo entry, so a checked-off item migrates without a second command; pass
+`--no-fmt` to `kref update` to skip it for one write.
+
+### Concurrent edits
+
+Full-body writes to a todo are guarded by an optimistic version check, because a
+todo is the entry most likely to be edited by you and an agent at the same time.
+Every read surfaces the current body version — the `vN` in the cockpit header
+and in `kref log` — and `kref update --if-version N` refuses the write if the
+entry has moved on since you read it:
+
+```bash
+kref update <id> --if-version 7 --file todo.md   # refused as stale if it is no longer v7
+```
+
+Over MCP this is not optional: `kref_update` **requires** `if_version` for a
+`kind:todo` entry, so an agent can never silently clobber a concurrent edit. A
+refused write is not lost — the rejected body is written under
+`$XDG_STATE_HOME/kref/rejected/` and named in the error.
 
 ______________________________________________________________________
 
@@ -764,70 +910,57 @@ ______________________________________________________________________
 
 ## Backing up & recovering private knowledge
 
-The `private` tier never has a remote, so it lives only in this repo and would
-be lost if the repo/disk dies. Two local-only recovery paths fill that gap
-(neither ever touches a network remote):
-
-```bash
-# Portable bundle — your cross-machine / re-clone path. Keep the file wherever.
-kref bundle export --tier private private.bundle
-kref bundle import --tier private private.bundle   # into a fresh clone (authors preserved)
-
-# Local vault — same-machine convenience under $XDG_DATA_HOME (not cache).
-kref vault backup     # mirror private to ~/.local/share/kref/<repo>/private.bundle
-kref vault restore    # bring it back after an rm -rf or a bad purge
-```
-
-`bundle export`/`import` take any tier(s) via repeatable `--tier` (default:
-all), and read/write `-` for stdin/stdout, so an imported entry keeps its
-original author, and you can encrypt a backup by composing with an external
-tool:
-
-```bash
-kref bundle export --tier private - | age -r AGE_RECIPIENT > private.age
-age -d private.age | kref bundle import -
-```
-
-Bundles and the vault are unencrypted (the live `.git` refs are too). Native
-encryption at rest is a deferred decision, captured as the *Encryption at rest
-for the private tier* ADR in kref's own store (`kref list --kind adr`);
-candidates are [SOPS](https://github.com/getsops/sops) and
-[age](https://github.com/FiloSottile/age).
+The `private` tier has no remote, so nothing backs it up for you. Bundles, the
+local vault, and how to restore from either: **[Backup & recovery](backup-recovery.md)**.
 
 ______________________________________________________________________
 
 ## Hooks
 
-Couple kref to git's lifecycle with [lefthook](https://lefthook.dev). lefthook
-is not bundled, so install it first (`go install
-github.com/evilmartians/lefthook@latest`, or your package manager).
+Couple kref to git's lifecycle with [lefthook](https://lefthook.dev). Wiring
+them up takes two separate installs — kref writes the config, lefthook activates
+it — and skipping the second leaves every hook dormant.
+
+**1. Install lefthook.** It is not bundled with kref:
 
 ```bash
-kref hooks install     # writes/merges .lefthook.yml: post-merge/checkout -> sync pull,
-                     # pre-push -> sync push, post-commit -> ingest changed markdown
-                     # under docs/superpowers/plans, specs, .specify, openspec.
-                     # Hooks call kref by ABSOLUTE PATH; --force MERGES into an
-                     # existing .lefthook.yml (your other hooks are preserved).
-lefthook install     # REQUIRED: register the hooks into .git/hooks
-kref hooks print       # print the config instead of writing it
+go install github.com/evilmartians/lefthook@latest   # or your package manager
 ```
 
-`kref hooks install` only writes `.lefthook.yml` (its output reports `"status":
-"written"`); the hooks stay dormant until `lefthook install` registers them into
-`.git/hooks`. Run `lefthook install` again after any edit to `.lefthook.yml`.
+**2. Write the config.** `kref hooks install` writes (or merges) `.lefthook.yml`:
 
-The generated hooks invoke kref by absolute path (so the hook finds the same
-`betterleaks`-sibling binary regardless of the committer's `PATH`). The
-trade-off: if you move or reinstall kref to a new path, the registered hooks
-point at the old location until you re-run `kref hooks install` (and `lefthook
-install`).
+```bash
+kref hooks install
+```
 
-Override the watched directories with repeatable `--ingest-path` flags (default:
-`docs/superpowers/plans specs .specify openspec`):
+That registers `post-merge`/`post-checkout` → `sync pull`, `pre-push` →
+`sync push`, and `post-commit` → ingest changed markdown under
+`docs/superpowers/plans`, `specs`, `.specify`, and `openspec`. Use `--force` to
+merge into an existing `.lefthook.yml` (your other hooks are preserved), or
+`kref hooks print` to print the config instead of writing it.
+
+**3. Activate the hooks.** This step is required — until you run it,
+`.lefthook.yml` exists but git never calls it:
+
+```bash
+lefthook install     # registers the hooks into .git/hooks
+```
+
+`kref hooks install` only writes the file (its output reports `"status":
+"written"`). Re-run `lefthook install` after any edit to `.lefthook.yml`.
+
+**Watched directories.** Override them with repeatable `--ingest-path` flags
+(default: `docs/superpowers/plans specs .specify openspec`):
 
 ```bash
 kref hooks install --ingest-path docs/plans --ingest-path adr
 ```
+
+**A note on paths.** The generated hooks invoke kref by absolute path, so the
+hook finds the same `betterleaks`-sibling binary regardless of the committer's
+`PATH`. The trade-off: if you move or reinstall kref, the registered hooks point
+at the old location until you re-run `kref hooks install` (and `lefthook
+install`).
 
 ______________________________________________________________________
 
@@ -870,11 +1003,11 @@ Three keys record how the interactive viewers look. They are user-file-scoped �
 how you like a viewer to look travels with you, not with the repository, and a
 synced entry must never dictate another machine's rendering.
 
-| Key            | Effect                                                          |
-|----------------|-----------------------------------------------------------------|
-| `line_numbers` | the viewer's line-number gutter (default on; off is clean copy-paste) |
+| Key            | Effect                                                                       |
+|----------------|------------------------------------------------------------------------------|
+| `line_numbers` | the viewer's line-number gutter (default on; off is clean copy-paste)        |
 | `color`        | colour, between the environment and terminal detection (see **Color** above) |
-| `todo_glyphs`  | the `kref todo` cockpit glyph theme: `geometric` (default) or `emoji`    |
+| `todo_glyphs`  | the `kref todo` cockpit glyph theme: `geometric` (default) or `emoji`        |
 
 Editing the file by hand works, but `,` in any viewer is the shorter path: it
 applies the change on the spot and writes it here.
@@ -899,35 +1032,65 @@ same name; create it first with `kref config init --shared`.
 
 ______________________________________________________________________
 
-## MCP server
+## Quarantine review queue
 
-`kref mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
-server over stdio, exposing a curated set of agent tools over the same store the
-CLI uses: `kref_remember`, `kref_recall`, `kref_get`, `kref_update`,
-`kref_patch`, `kref_lifecycle`, `kref_supersede`. `kref_lifecycle` covers the
-reversible document lifecycle (set_status, delete/restore via tombstones,
-archive/unarchive); `purge` (irreversible) and `retier` (a disclosure-sensitive
-move) are deliberately not exposed to agents.
+A write that trips the secret scanner on a syncable tier is neither applied nor
+thrown away: it is parked in a review queue until a human approves or rejects
+it. This section covers that queue — how a write gets held, how you review it,
+and what approve, reject, recover, and purge each do.
 
-The read tools return enough to triage without a second call. `kref_recall`
-reports each hit's kind, version, updated date, and labels, plus — when a
-`search` term is given — how many times it matched (results are relevance-
-ordered); pass `limit` to cap the hit count and it tells you how many were held
-back. `kref_get` returns the entry's kind, content-type, updated date, labels,
-and links alongside the body.
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#2f6dab',
+  'primaryTextColor': '#1e1e1e',
+  'primaryBorderColor': '#7c8ba1',
+  'lineColor': '#7c8ba1',
+  'edgeLabelBackground': '#eef2f8',
+  'tertiaryColor': 'transparent',
+  'tertiaryTextColor': '#7c8ba1',
+  'tertiaryBorderColor': '#7c8ba1',
+  'clusterBkg': 'transparent',
+  'clusterBorder': '#7c8ba1',
+  'titleColor': '#7c8ba1',
+  'noteBkgColor': '#eef2f8',
+  'noteTextColor': '#1e1e1e',
+  'fontFamily': 'system-ui, sans-serif'
+}, 'themeCSS': '.node .nodeLabel{color:#ffffff!important;fill:#ffffff!important;}'}}%%
+stateDiagram-v2
+  [*] --> pending: scanner flags a write
+  pending --> approved: quarantine approve
+  pending --> rejected: quarantine reject
+  rejected --> pending: quarantine recover
+  approved --> [*]: replayed through the normal write path
+  rejected --> purged: quarantine purge
+  purged --> [*]: content excised, irreversible
+  classDef sysA fill:#2f6dab,color:#ffffff,stroke:#7c8ba1
+  classDef sysB fill:#1d7848,color:#ffffff,stroke:#7c8ba1
+  classDef sysC fill:#7457b8,color:#ffffff,stroke:#7c8ba1
+  class pending sysA
+  class approved sysB
+  class rejected,purged sysC
+```
+
+Only `rejected` is purgeable — a pending review is never removed — and a
+rejection stays reversible until you purge it. A pending item that has waited
+more than 7 days is flagged **STALE**.
 
 The write tools scan bodies for secrets before they land. `kref_remember`,
 `kref_update`, `kref_patch`, and `kref_comment` (and the CLI `kref new`,
 `kref update`, `kref comment`) run the text through betterleaks; if it trips the
 scanner on a syncable tier the write is **held for human review** rather than
-applied. Instead of writing to the target tier, the content is diverted into a
-reserved, private-typed `quarantine` namespace (a new entry becomes a draft
-there; an update or comment is parked as an intent-item), a review question-
-comment naming the finding (rule and line, never the secret value) opens on the
-entry, and the live target is left untouched. Nothing is lost and nothing leaves
-the machine unreviewed: the `quarantine` namespace is non-syncable, so a held
-secret can never be pushed. A private target is written normally (it cannot push
-anyway).
+applied.
+
+Instead of writing to the target tier, the content is diverted into a reserved,
+private-typed `quarantine` namespace (a new entry becomes a draft there; an
+update or comment is parked as an intent-item), a review question-comment naming
+the finding (rule and line, never the secret value) opens on the entry, and the
+live target is left untouched.
+
+Nothing is lost and nothing leaves the machine unreviewed: the `quarantine`
+namespace is non-syncable, so a held secret can never be pushed. A private target
+is written normally (it cannot push anyway).
 
 A human then reviews and decides. The natural path is interactive: in the bare
 `kref` cockpit, the review queue is grouped on top — press **Enter** on a review
@@ -938,14 +1101,17 @@ item (static/`--json` off a terminal). The explicit commands remain for scripts:
 
 - `kref quarantine approve <id> [-m note]` applies the held write **through the
   normal write path**, so it inherits the write-lock, todo compare-and-swap, and
-  DAG merge exactly like a fresh write. A parked draft is promoted to its intended
-  tier (the shared-promotion secret gate still applies — approving a secret to a
-  `shared`-typed tier requires the finding to be allowlisted in `.betterleaks.toml`,
-  otherwise the promotion is refused). A parked update/comment is replayed onto the
-  live entry; the held-op item is then archived with a `q-status:approved` label as
-  an audit record. If the target moved since the write was parked (a todo whose
-  version advanced), approval is refused as a stale re-review conflict — re-read
-  and re-apply.
+  DAG merge exactly like a fresh write.
+  - *A parked draft* is promoted to its intended tier. The shared-promotion
+    secret gate still applies: approving a secret onto a `shared`-typed tier
+    requires the finding to be allowlisted in your
+    [betterleaks config](#betterleaks-runtime-dependency), or the promotion is
+    refused.
+  - *A parked update or comment* is replayed onto the live entry. The held-op
+    item is then archived with a `q-status:approved` label as an audit record.
+  - *If the target moved* since the write was parked (a todo whose version
+    advanced), approval is refused as a stale re-review conflict — re-read and
+    re-apply.
 - `kref quarantine reject <id> [-m reason]` discards the write without touching the
   target, preserves the proposed text to the recovery dir (so no work is lost), and
   tombstones the item with `q-status:rejected` for audit.
@@ -968,91 +1134,36 @@ the human's one-step escape: instead of skipping the scan, it parks the write an
 immediately approves it, so the audit trail (a resolved review thread, and a
 `q-status:approved` item for a held op) is preserved.
 
-A held write that lingers surfaces its wait. Each pending item reports its age,
-and one that has awaited review for over 7 days is flagged **STALE** — in the
-`kref list` review banner, in `kref quarantine list` and `kref quarantine show`,
-and in the todo cockpit badge (`⚠ N awaiting review (M stale)`). When at least
-one held write is stale, a mutating command also prints a throttled reminder to
-stderr (at most once per 24h) pointing you at `kref quarantine`. Bare `kref
-quarantine` on a terminal opens the review queue interactively: it walks the
-pending items with `]`/`[` (next/prev), `a`/`r` approve/reject the current item
-with an optional note, `o` opens its target entry, `/` (with `n`/`N`) searches
-the held payload, `,` opens view options, and `q` backs out; deciding an item
-advances to the next. Off a terminal (a pipe, `--plain`, or `--json`) it
-prints the static queue instead, and a cleared queue prints a "review queue is
-clear" line.
+**Aging.** A held write that lingers surfaces its wait. Each pending item reports
+its age, and one that has awaited review for over 7 days is flagged **STALE** —
+in the `kref list` review banner, in `kref quarantine list` and `kref quarantine
+show`, and in the todo cockpit badge (`⚠ N awaiting review (M stale)`). When at
+least one held write is stale, a mutating command also prints a throttled
+reminder to stderr (at most once per 24h) pointing you at `kref quarantine`.
 
-`kref_patch` is the agent editor, and it is deliberately MCP-only (no CLI
-equivalent; a human edits with `kref edit`): it applies a standard unified diff
-to the entry body, the format LLMs emit natively. The applier is lenient where
-models are sloppy and strict where safety demands it: hunk line numbers are
-hints only (each hunk is located by its context lines, matched exactly or up to
-trailing whitespace, and hunks apply in document order), while a hunk whose
-context is missing (stale diff) or ambiguous (identical sections, no usable line
-hint) fails loudly, all-or-nothing, so a patch never half-applies or silently
-lands in the wrong place. Each successful patch is one new body version.
+**The interactive queue.** Bare `kref quarantine` on a terminal opens the review
+queue interactively:
 
-Point an agent host at it per repo:
+| Key           | Action                                                   |
+|---------------|----------------------------------------------------------|
+| `]` / `[`     | next / previous pending item                             |
+| `a` / `r`     | approve / reject the current item, with an optional note |
+| `o`           | open the item's target entry                             |
+| `/` (`n`/`N`) | search the held payload                                  |
+| `,`           | view options                                             |
+| `q`           | back out                                                 |
 
-```json
-{ "mcpServers": { "kref": { "command": "kref", "args": ["--dir", "/path/to/repo", "mcp"] } } }
-```
-
-A host that sets a per-project environment variable can instead point kref via
-`KREF_DIR` (repo precedence: `--dir` > `KREF_DIR` > the current directory), with
-no `--dir` argument:
-
-```json
-{ "mcpServers": { "kref": { "command": "kref", "args": ["mcp"], "env": { "KREF_DIR": "/path/to/repo" } } } }
-```
-
-A single server can serve several repositories: `kref mcp --allow <root>`
-(repeatable) enables **global mode**, where each tool call passes an absolute
-`dir` that must resolve inside an allowed root (canonicalized, so `/x/a` never
-authorizes `/x/ab`). With exactly one allowed root, `dir` may be omitted. Without
-`--allow` the server stays **locked** to its `--dir`/`KREF_DIR` repo, and a
-per-call `dir` naming any other repository is refused — an unbounded per-call
-`dir` would let a prompt-injected agent reach the private tier of any repo the
-user owns, so cross-repo access requires this explicit boundary.
-
-In global mode the server serves only **syncable** (non-private-typed) tiers of
-an addressed repo, even when `--allow` names exactly one root. So a multi-repo
-server never exposes another repo's `private`/`agent` tier or its quarantine
-review queue, which is the cross-repo exfiltration boundary. Locked mode (a
-pinned `--dir`) serves all tiers of its one repo, so that is the mode to use when
-an agent needs private-tier access to a particular repository.
-
-Full-body writes to a `kind:todo` entry are guarded against the lost-update
-problem with an optimistic version check (compare-and-swap). Every read surfaces
-the entry's current body version — the `vN` that `kref log` numbers, returned by
-`kref_get` (`version: N`) and `kref_recall` (`vN` per line) — and `kref_update`
-**requires** `if_version` for a todo: pass the version you read, and the write is
-refused as stale if the entry has since moved on, so a concurrent edit is never
-silently clobbered. A refused write loses nothing — the rejected body is written
-to `$XDG_STATE_HOME/kref/rejected/` and named in the error. `kref_patch` needs no
-version token (its hunks already fail loudly on stale context), which is the
-other reason to prefer it for small edits.
-
-Shell-capable agents mostly don't need it (they already have `--json` on every
-command), but `kref_patch` is the exception worth wiring in: fine-grained edits
-exist only on the MCP surface. MCP writes are recorded as agent provenance.
+Deciding an item advances to the next. Off a terminal (a pipe, `--plain`, or
+`--json`) it prints the static queue instead, and a cleared queue prints a
+"review queue is clear" line.
 
 ______________________________________________________________________
 
-## Agent instructions
+## Agents: MCP & instructions
 
-`kref agents_md` prints a canonical policy block for your global
-`AGENTS.md`/`CLAUDE.md`, the instruction layer that outranks skills, so it can
-override other skills' file-writing defaults (plans, specs, and handoffs become
-kref entries instead of worktree files). `kref agents_md --skill` emits a
-complete `SKILL.md` driving manual for skill-loading agent hosts. The text ships
-in the binary, so it always matches the installed version's commands; regenerate
-after upgrades:
-
-```bash
-kref agents_md >> ~/.claude/CLAUDE.md   # or your global AGENTS.md
-kref agents_md --skill > ~/.claude/skills/kref/SKILL.md
-```
+`kref mcp` (the Model Context Protocol server) and `kref agents_md` (the policy
+block for your `AGENTS.md`/`CLAUDE.md`) have their own page:
+**[kref for agents](agents.md)**.
 
 ______________________________________________________________________
 
@@ -1069,7 +1180,10 @@ kref completion fish --install   # ~/.config/fish/completions/kref.fish
 
 Without `--install` the script goes to stdout. `--install` honors
 `$XDG_DATA_HOME`/`$XDG_CONFIG_HOME`; pass `--dir <path>` to write somewhere else
-(handy for a zsh `fpath` that omits the default). For zsh, `--install` also
+(handy for a zsh `fpath` that omits the default). **Note the local meaning of
+`--dir` here**: on `completion --install` it names the output directory, not the
+repository — this is the one command where it does not
+[select a ref store](#global-flags--output-contracts). For zsh, `--install` also
 prints the `fpath` line to add when the directory is not already on it. kref
 never edits your shell rc files. PowerShell is print-only; add the output to
 your `$PROFILE`.
@@ -1082,13 +1196,18 @@ right thing instead of a stray directory listing:
   beside its title. `restore` offers only soft-deleted entries and `unarchive`
   only archived ones. Typing a `/` or `.md` prefix completes file paths instead.
 - **Fixed vocabularies** where they apply: `kref status <id> <TAB>` → `open
-  active accepted superseded obsolete`; `kref retier <id> <TAB>` and `--tier` →
-  `private personal shared`.
+  active accepted superseded obsolete`.
+- **Tier names** from your store, so [custom tiers](#custom-tiers) complete just
+  like the built-ins: `kref retier <id> <TAB>` and `--tier` offer every declared
+  tier, falling back to `private personal shared` outside an initialized repo.
+  Flags that cannot take a private tier (a remote, for instance) offer only the
+  syncable ones.
 - **Your own values** for `--kind` and `--label`, drawn from the entries in your
   store. `kref ingest --kind <TAB>` and `kref track --kind <TAB>` do the same,
   falling back to `document` in a fresh store.
 - **Command aliases** as first-word completions: `kref imp<TAB>` offers
-  `import`, and a bare `kref <TAB>` lists aliases like `ls`, `cat`, `new`.
+  `import`, and a bare `kref <TAB>` lists aliases like `ls`, `cat`, and `create`
+  alongside the canonical names they stand for.
 - **Column names** for `kref list --columns=<TAB>`, comma-aware: after
   `--columns=id,<TAB>` it offers the remaining columns and keeps the cursor in
   place for chaining. Use the `=` form: a bare `--columns` means "list the
@@ -1153,8 +1272,8 @@ ______________________________________________________________________
 | `kref purge <id> --gc`        | …and run repo-wide `git gc --prune=now` to excise objects now  | Locally yes       |
 | `kref purge <id> --gc --push` | …and delete the ref on the tier's remote                       | Best effort\*     |
 
-`purge` prompts with the full entry and caveats by default; `--force` skips the
-prompt. **`--gc` runs `git gc --prune=now` across your whole repository:** it
+`purge` prompts with the full entry and caveats by default; `-y`/`--yes` skips
+the prompt. **`--gc` runs `git gc --prune=now` across your whole repository:** it
 prunes every unreachable object, including unrelated dangling commits or dropped
 stashes, so use it deliberately (it is the right choice when excising a secret).
 \*Anything already pushed must be assumed compromised, so **rotate the secret**.
@@ -1163,31 +1282,8 @@ ______________________________________________________________________
 
 ## Uninstall
 
-`kref` keeps all of its state inside the repository (git refs and a few git
-config keys) with no `$HOME` footprint, so removing it is per-repo and there is
-no `kref uninstall` command. To excise it from a repo:
-
-```bash
-# 1. Delete kref's ref namespaces (entries — irreversible; the objects are
-#    reclaimed by a later `git gc`).
-git for-each-ref --format='%(refname)' \
-  'refs/kref-private/*' 'refs/kref-personal/*' 'refs/kref-shared/*' 'refs/kref-pushed/*' \
-  | xargs -r -n1 git update-ref -d
-
-# 2. Drop kref's git config keys (discover them first, then unset each).
-git config --get-regexp '^kref\.' | cut -d' ' -f1 | xargs -r -n1 git config --unset
-
-# 3. If you wired hooks, deactivate them and drop kref's entries from .lefthook.yml.
-lefthook uninstall            # if you ran `lefthook install`
-#   then delete the `kref-*` commands from .lefthook.yml (or remove the file).
-
-# 4. Drop the `.kref/` line `kref init` added to .git/info/exclude (it is
-#    local-only and never committed), and delete the `.kref/` directory if
-#    tracking copied any floater files into it.
-```
-
-Finally delete the binaries (`./bin/kref`, `./bin/betterleaks`) and any copy or
-symlink you placed on `PATH`.
+Removing kref from a repo (refs, git config, hooks) and from your machine
+(`$HOME` state, completion files) has its own page: **[Uninstall](uninstall.md)**.
 
 ______________________________________________________________________
 

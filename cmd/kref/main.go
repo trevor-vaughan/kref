@@ -1,3 +1,23 @@
+// Command kref is a repo-resident knowledge base stored as git objects.
+//
+// kref keeps specs, ADRs, plans, memories, and reference notes inside a git
+// repository under their own ref namespaces (refs/kref-<tier>/) instead of in
+// the working tree. Entry bodies travel with the repository through clone,
+// push, and pull without appearing in the file tree, in git log, or in git
+// blame.
+//
+// Entries live in visibility tiers — private (structurally unpushable),
+// personal, and shared — each backed by its own ref namespace and remote,
+// alongside any custom tiers a project declares. Every entry is a
+// Lamport-ordered DAG of operations built on git-bug's entity/dag framework, so
+// edits made on different machines merge without conflicts.
+//
+// The same store is exposed to AI agents over the Model Context Protocol with
+// "kref mcp". Writes are scanned for secrets, and a flagged write is held in a
+// quarantine namespace for human approval rather than reaching a shared tier.
+//
+// Run "kref --help" for the command tree, or see the README at
+// https://github.com/trevor-vaughan/kref for a full guide.
 package main
 
 import (

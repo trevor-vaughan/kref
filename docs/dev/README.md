@@ -9,11 +9,21 @@ The design specs and implementation plans no longer live as files in this tree
 is for: planning material belongs in git refs, not the working tree. Browse them
 with the tool itself:
 
-```
+```bash
 kref list --kind spec        # the architecture design and the per-feature designs
 kref list --kind plan        # the task-by-task implementation plans
 kref show <id>               # read one (use the id from the list)
 ```
+
+> **You need a built binary and the entry refs to read any of this.** Build with
+> `task build` (see the [README](../../README.md#install)). Entries live under
+> `refs/kref-*/*`, which a default `git clone` does **not** fetch, so a fresh
+> clone starts empty. Pull them with the tool:
+>
+> ```bash
+> kref init          # binds the shared tier to origin, if it is not bound yet
+> kref sync pull     # fetches the shared entries (and their author identities)
+> ```
 
 - **Architecture design:** the `spec` titled *Git-Native Knowledge Base —
   Architecture Design* holds the architecture, the key decisions (D1–D6), and
@@ -30,6 +40,18 @@ kref show <id>               # read one (use the id from the list)
 > synthetic AWS keys, so a re-ingest would not re-quarantine them — they remain
 > private because tier assignment is sticky.)
 
+## Reading the spec citations
+
+Sections below cite the architecture design by number — spec section 4.1, spec
+section 11, and so on. Those numbers are **sections inside the
+architecture-design `spec` entry**, not files in this repository, so there is
+nothing to click. To follow one:
+
+```bash
+kref list --kind spec                    # find "Git-Native Knowledge Base — Architecture Design"
+kref show <id>                           # open it, then press / and type the section number
+```
+
 ## Substrate
 
 `kref` is a thin domain layer over git-bug's `entity/dag` framework
@@ -44,33 +66,81 @@ for free:
 We do **not** fork git-bug — we depend on its public `entity/dag`, `identity`,
 and `repository` packages. The single source of truth is the git-object op-DAG;
 any query surface (today an in-memory index; possibly SQLite later) is a
-derived, rebuildable projection. See spec §4.1.
+derived, rebuildable projection. See [spec §4.1](#reading-the-spec-citations).
 
 ## Layout
 
-```
-cmd/kref/            cobra CLI (main.go wires commands; commands.go implements them)
-internal/entry/    the dag entity: Snapshot, operations, Definition, Compile, Read
-internal/store/    Store over the repo: init/open, identity, add/get/list/tombstone,
-                   purge (store.go) and per-tier remotes + sync (sync.go)
-internal/render/   pure human-readable presentation of entries (no TTY/--json logic)
-internal/scan/     betterleaks shell-out (Scan([]byte) -> []Finding)
-internal/bridge/   ingest (scan -> quarantine -> store) + .gitignore guard
-internal/hooks/    lefthook config renderer
-internal/mcpserver/ thin MCP adapter over the store (curated agent tools)
+```text
+cmd/kref/             cobra CLI: main.go wires the command tree and global flags;
+                      commands.go holds most implementations, with the interactive
+                      surfaces split out (viewer.go, listcockpit.go, todo.go,
+                      quarantine.go, comment.go, …)
+
+core
+internal/entry/       the dag entity: Snapshot, operations, Definition, Compile, Read
+internal/store/       Store over the repo: init/open, identity, add/get/list/tombstone,
+                      purge (store.go), per-tier remotes + sync (sync.go), and the
+                      quarantine queue (quarantine_*.go)
+internal/config/      user + project configuration: schema, defaults, layering
+
+write policy (the secret boundary)
+internal/scan/        betterleaks shell-out (Scan([]byte) -> []Finding)
+internal/entryguard/  secret policy for an entry-body write
+internal/commentguard/ secret policy for a comment write
+internal/todoguard/   write-boundary policy for kind:todo entries (the version CAS)
+
+content
+internal/content/     classifies and validates entry body content types
+internal/outline/     markdown body -> ATX-heading tree (drives fold navigation)
+internal/textdiff/    dependency-free line diff between two bodies
+internal/textpatch/   applies unified diffs to a body (backs kref_patch)
+internal/todo/        the todo document model: parse, lint, format, cockpit view
+
+presentation
+internal/render/      pure human-readable presentation of entries (no TTY/--json logic)
+internal/tui/         shared bubbletea widgets (ScrollView) behind every viewer
+
+integration
+internal/bridge/      ingest (scan -> quarantine -> store) + .gitignore guard
+internal/hooks/       lefthook config renderer
+internal/mcpserver/   thin MCP adapter over the store (curated agent tools)
+
+support
+internal/buildinfo/   the build identity `kref version` reports
+internal/watermark/   per-identity record of the body a human last saw
+internal/xdg/         XDG base-directory resolution ($HOME-side paths)
 ```
 
 ### How an entry works
 
-Each **kind** (`spec|adr|plan|memory|reference|document`) is the *same* dag
-entity in a different tier namespace. An entry is a sequence of **operations**
-(`Create`, `SetStatus`, `SetBody`, `SetTitle`, `SetKind`, `AddLabel`,
-`RemoveLabel`, `AddLink`, `RemoveLink`, `Track`, `Untrack`, `RecordOrigin`,
-`Reattribute`, `AckMerge`, `Archive`, `Unarchive`, `Tombstone`, `Restore`), each
-embedding `dag.OpBase` and implementing `Apply(*Snapshot)`. `Entry.Compile()`
-folds the ops into a `Snapshot`. Tiers are `entry.Tier` values whose
-`Namespace()` is `kref-<tier>`; `entry.AllTiers()` drives every store operation,
-so adding a tier or kind is local.
+Every entry is the *same* dag entity regardless of its kind — **kind is a field
+set by an operation** (`SetKind`), not a separate type. What does vary per entry
+is the **tier**, because the tier selects the ref namespace the entity is stored
+under.
+
+An entry is a sequence of **operations**, each embedding `dag.OpBase` and
+implementing `Apply(*Snapshot)`:
+
+- lifecycle: `Create`, `SetStatus`, `Tombstone`, `Restore`, `Archive`,
+  `Unarchive`
+- content: `SetBody`, `SetTitle`, `SetKind`, `SetContentType`
+- metadata: `AddLabel`, `RemoveLabel`, `AddLink`, `RemoveLink`
+- file tracking: `Track`, `Untrack`
+- provenance: `RecordOrigin`, `Reattribute`, `AckMerge`
+- comments: `AddComment`, `EditComment`, `DeleteComment`, `ResolveComment`,
+  `UnresolveComment`
+
+`Entry.Compile()` folds the ops into a `Snapshot`. Tiers are `entry.Tier` values
+whose `Namespace()` is `kref-<tier>`.
+
+**A caveat on `AllTiers()`.** `entry.AllTiers()` returns the three *built-in*
+tiers only. It drives the operations that must know the tier set up front — the
+lamport-clock loaders registered at open time, for instance — but it is no longer
+the whole picture: custom tiers (declared via `kref tier add`, stored in git
+config) are witnessed after open by `witnessTierClocks`, and the reserved
+`entry.TierQuarantine` sits outside it entirely. When adding tier-aware code,
+check whether you need the built-ins or every declared tier
+(`Store.Tiers()`).
 
 ### Adding a new operation
 
@@ -87,6 +157,45 @@ structurally unpushable, which is the core security property. `Push` sends the
 author **identity** (`identity.Push`) before the entries (`dag.Push`) so authors
 resolve remotely; `Pull` does `identity.Pull` then `dag.Pull` (merge). This
 identity-before-entries ordering is why hub (shared-origin) sync works.
+
+The ordering is the whole trick, and it is easy to invert by accident: an entry's
+operations reference their author by identity id, so if the entry ops land on the
+remote before the identity object does, a second clone pulling them cannot
+resolve who wrote what.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#2f6dab',
+  'primaryTextColor': '#1e1e1e',
+  'primaryBorderColor': '#7c8ba1',
+  'lineColor': '#7c8ba1',
+  'edgeLabelBackground': '#eef2f8',
+  'tertiaryColor': 'transparent',
+  'tertiaryTextColor': '#7c8ba1',
+  'tertiaryBorderColor': '#7c8ba1',
+  'clusterBkg': 'transparent',
+  'clusterBorder': '#7c8ba1',
+  'titleColor': '#7c8ba1',
+  'noteBkgColor': '#eef2f8',
+  'noteTextColor': '#1e1e1e',
+  'fontFamily': 'system-ui, sans-serif'
+}, 'themeCSS': '.node .nodeLabel{color:#ffffff!important;fill:#ffffff!important;}'}}%%
+sequenceDiagram
+  participant L as local store
+  participant H as hub remote
+  participant P as peer clone
+  Note over L,H: Push — identity first
+  L->>H: identity.Push (refs/identities/*)
+  L->>H: dag.Push (refs/kref-shared/*)
+  Note over H: entry ops can now resolve<br/>their author objects
+  Note over H,P: Pull — same order
+  H->>P: identity.Pull
+  H->>P: dag.Pull (merge)
+  P->>P: compile snapshots, authors resolve
+```
+
+`private` never appears in this picture by construction — `SyncableTiers` omits
+it, so there is no code path that could push it.
 
 ## Sensitive data
 
@@ -109,7 +218,10 @@ a leaked secret that was ever pushed must be rotated.
 ## Known limitations / deferred
 
 - **No cryptographic signing.** git-bug v0.10.1 exposes no public API to equip
-  an identity with a signing key and cannot use system GPG/gpg-agent. Spec §10,
-  §11. Attribution is git-identity-based and unsigned.
-- **No encryption at rest** for the private/personal tiers (spec §11).
-- **No vector index / semantic search** yet (spec §11).
+  an identity with a signing key and cannot use system GPG/gpg-agent.
+  [Spec §10, §11](#reading-the-spec-citations). Attribution is
+  git-identity-based and unsigned.
+- **No encryption at rest** for the private/personal tiers
+  ([spec §11](#reading-the-spec-citations)).
+- **No vector index / semantic search** yet
+  ([spec §11](#reading-the-spec-citations)).
