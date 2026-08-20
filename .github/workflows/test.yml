@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26.5", "stable"]
+        go: ["1.26.7", "stable"]
     steps:
       # Floating tags kept intentionally so this internal CI tracks the latest
       # toolchain/test images; unpinned-uses suppressed per that decision.
@@ -42,7 +42,7 @@ jobs:
       # Tidiness is Go-version-sensitive; run it only in the go.mod-pinned leg so
       # the floating `stable` toolchain can't turn PRs red on tidy-output drift.
       - name: Verify go.mod is tidy
-        if: matrix.go == '1.26.5'
+        if: matrix.go == '1.26.7'
         run: |
           go mod tidy
           git diff --exit-code
@@ -65,3 +65,26 @@ jobs:
             .test-output/reports/
           if-no-files-found: ignore
           retention-days: 14
+
+  # Build every target the release builds, using the release config itself so the
+  # two cannot drift. The unit suite only ever compiles for the runner's GOOS, so
+  # a platform-specific compile error (a syscall field that exists only on unix,
+  # say) would otherwise stay invisible until the release tag runs — at which
+  # point it fails the release outright and publishes nothing.
+  crosscompile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          version: "~> v2"
+          args: build --snapshot --clean
