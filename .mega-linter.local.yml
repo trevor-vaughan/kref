@@ -1,0 +1,30 @@
+# Local MegaLinter overrides for kref.
+#
+# The runner detects this file and passes MEGALINTER_CONFIG=.mega-linter.local.yml
+# to MegaLinter, staging the shared .mega-linter.yml as .mega-linter.shared.yml
+# so we can inherit from it with EXTENDS.
+#
+# Local overrides are honoured on BOTH full runs and changed-files runs.
+
+EXTENDS: .mega-linter.shared.yml
+
+# MegaLinter's UpdatedSourcesReporter lists the files the linters rewrote. It
+# runs unconditionally and ends on an unguarded repo.index.diff(None)
+# (https://github.com/oxsecurity/megalinter/issues/8649).
+#
+# The runner mounts the workspace read-only for lint-only runs, so that diff
+# re-reads work-tree content whenever the index is stat-dirty -- the norm in CI,
+# where the index is written by the runner uid and the diff runs as container
+# root. Re-reading docs/demo/*.gif, which .gitattributes puts under filter=lfs,
+# invokes the git-lfs clean filter, which needs scratch space under
+# .git/lfs/tmp and has none. git exits 128 and the reporter raises, failing a
+# run in which every linter passed -- after the SARIF is already written. That
+# is why every push-to-main and scheduled megalint run failed while PR runs
+# passed: the runner only mounts .git read-write when VALIDATE_ALL_CODEBASE is
+# false, which is the PR path.
+#
+# Nothing can rewrite a read-only workspace, so this reporter has nothing to
+# report on a CI run. The cost is local `APPLY_FIXES=all` runs, where the
+# workspace IS writable and the list of rewritten files would have been useful.
+# Drop this override once megalinter#8649 is fixed upstream.
+UPDATED_SOURCES_REPORTER: false
