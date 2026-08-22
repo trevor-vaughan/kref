@@ -31,6 +31,20 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
 
+      # setup-go unconditionally exports GOTOOLCHAIN=local, which forbids Go
+      # from provisioning the toolchain go.mod asks for. `stable` resolves out
+      # of the actions/go-versions manifest, which lags upstream — it tops out
+      # at 1.26.6 today while go.mod requires 1.26.7 — so every `go` command in
+      # that leg aborts before it runs. Restoring `auto` makes the leg test the
+      # newest Go that satisfies go.mod rather than fail outright, and is a
+      # no-op for the pinned leg, where setup-go installs go.mod's version.
+      #
+      # This has to go through GITHUB_ENV: a job-level `env:` lands in the same
+      # dictionary GITHUB_ENV writes to, so setup-go's export — which runs after
+      # job setup — would simply overwrite it.
+      - name: Let Go provision the toolchain go.mod requires
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
       - uses: arduino/setup-task@v3 # zizmor: ignore[unpinned-uses]
         with:
           version: 3.x
@@ -80,9 +94,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # cache: false — GoReleaser makes this a publishing job as far as
+      # zizmor's cache-poisoning audit is concerned, and the audit cannot see
+      # that `build --snapshot` publishes nothing. Disabling the cache answers
+      # it the same way release.yml does, and keeps this rehearsal faithful:
+      # the release builds with no cache, so this must too, or a dependency
+      # that only resolves from a warm cache would pass here and fail there.
       - uses: actions/setup-go@v7 # zizmor: ignore[unpinned-uses]
         with:
           go-version-file: go.mod
+          cache: false
 
       - uses: goreleaser/goreleaser-action@v7 # zizmor: ignore[unpinned-uses]
         with:
