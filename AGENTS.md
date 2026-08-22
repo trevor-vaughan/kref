@@ -5,6 +5,10 @@ mechanics and the full convention list, read [`CONTRIBUTING.md`](CONTRIBUTING.md
 first — this file records only the conventions that are easy to violate by
 omission.
 
+## Housekeeping
+
+- DO NOT UPDATE CHANGELOG.md. This repo uses Conventional Commits so it will be generated.
+
 ## CLI command aliases (syntactic sugar)
 
 Every user-facing command exposes short, conventional verb aliases via cobra's
