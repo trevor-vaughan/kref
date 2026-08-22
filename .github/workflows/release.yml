@@ -57,6 +57,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Without this, GoReleaser derives the release tag from git state:
+          # `git tag --points-at HEAD --sort -version:refname`, first line wins.
+          # That sort is not semver-aware, so when v0.1.0 and v0.1.0-rc2 both
+          # pointed at one commit it ranked the -rc higher and re-published the
+          # rc release, failing on already_exists. Pin the release to the tag
+          # that triggered this run.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
       # SLSA build provenance over every file the release publishes: the
       # archives, their SBOMs, checksums.txt, and the cosign bundle. The action
