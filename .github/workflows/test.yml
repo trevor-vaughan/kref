@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26.5", "stable"]
+        go: ["1.26.7", "stable"]
     steps:
       # Floating tags kept intentionally so this internal CI tracks the latest
       # toolchain/test images; unpinned-uses suppressed per that decision.
@@ -30,6 +30,20 @@ jobs:
       - uses: actions/setup-go@v7 # zizmor: ignore[unpinned-uses]
         with:
           go-version: ${{ matrix.go }}
+
+      # setup-go unconditionally exports GOTOOLCHAIN=local, which forbids Go
+      # from provisioning the toolchain go.mod asks for. `stable` resolves out
+      # of the actions/go-versions manifest, which lags upstream — it tops out
+      # at 1.26.6 today while go.mod requires 1.26.7 — so every `go` command in
+      # that leg aborts before it runs. Restoring `auto` makes the leg test the
+      # newest Go that satisfies go.mod rather than fail outright, and is a
+      # no-op for the pinned leg, where setup-go installs go.mod's version.
+      #
+      # This has to go through GITHUB_ENV: a job-level `env:` lands in the same
+      # dictionary GITHUB_ENV writes to, so setup-go's export — which runs after
+      # job setup — would simply overwrite it.
+      - name: Let Go provision the toolchain go.mod requires
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - uses: arduino/setup-task@v3 # zizmor: ignore[unpinned-uses]
         with:
@@ -42,7 +56,7 @@ jobs:
       # Tidiness is Go-version-sensitive; run it only in the go.mod-pinned leg so
       # the floating `stable` toolchain can't turn PRs red on tidy-output drift.
       - name: Verify go.mod is tidy
-        if: matrix.go == '1.26.5'
+        if: matrix.go == '1.26.7'
         run: |
           go mod tidy
           git diff --exit-code
@@ -65,3 +79,33 @@ jobs:
             .test-output/reports/
           if-no-files-found: ignore
           retention-days: 14
+
+  # Build every target the release builds, using the release config itself so the
+  # two cannot drift. The unit suite only ever compiles for the runner's GOOS, so
+  # a platform-specific compile error (a syscall field that exists only on unix,
+  # say) would otherwise stay invisible until the release tag runs — at which
+  # point it fails the release outright and publishes nothing.
+  crosscompile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # cache: false — GoReleaser makes this a publishing job as far as
+      # zizmor's cache-poisoning audit is concerned, and the audit cannot see
+      # that `build --snapshot` publishes nothing. Disabling the cache answers
+      # it the same way release.yml does, and keeps this rehearsal faithful:
+      # the release builds with no cache, so this must too, or a dependency
+      # that only resolves from a warm cache would pass here and fail there.
+      - uses: actions/setup-go@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: goreleaser/goreleaser-action@v7 # zizmor: ignore[unpinned-uses]
+        with:
+          version: "~> v2"
+          args: build --snapshot --clean

@@ -14,21 +14,21 @@ sugar that resolve to it natively.
 Current map (keep it in sync with the `command aliases` spec in
 `cmd/kref/cli_test.go`, which asserts the same table):
 
-| Canonical | Aliases |
-|---|---|
-| `new` | `create` |
-| `update` | `set` |
-| `ingest` | `import`, `add` |
-| `show` | `cat`, `view`, `get` |
-| `list` | `ls` |
-| `log` | `audit` |
-| `rm` | `remove`, `delete`, `del` |
-| `purge` | `destroy` |
-| `remote` | `remotes` |
-| `version` | `ver` |
-| `retier` | `mv` |
-| `fav` | `alt` |
-| `agents_md` | `agents-md` |
+| Canonical   | Aliases                   |
+|-------------|---------------------------|
+| `new`       | `create`                  |
+| `update`    | `set`                     |
+| `ingest`    | `import`, `add`           |
+| `show`      | `cat`, `view`, `get`      |
+| `list`      | `ls`                      |
+| `log`       | `audit`                   |
+| `rm`        | `remove`, `delete`, `del` |
+| `purge`     | `destroy`                 |
+| `remote`    | `remotes`                 |
+| `version`   | `ver`                     |
+| `retier`    | `mv`                      |
+| `fav`       | `alt`                     |
+| `agents_md` | `agents-md`               |
 
 Rules:
 
@@ -108,13 +108,13 @@ same binary is both a scriptable CLI and a TUI, and you choose which by how you
 invoke it — `--plain`/`--json`/a pipe for assertions, tmux for the interactive
 surface.
 
-| Surface | Command | Implementation |
-|---|---|---|
-| Entry viewer (read + comment write) | `kref show <id>` | `RunViewer`, `cmd/kref/viewer.go:1223` |
-| Todo cockpit (viewer + todo header) | `kref todo <id>` | `runTodoCockpit`, `cmd/kref/todo.go:77` |
-| List cockpit (row nav + actions) | `kref` (no arguments) | `runRootBrowse`, `cmd/kref/listcockpit.go:719` |
-| Quarantine review queue | `kref quarantine` | `runReviewModel`, `cmd/kref/quarantine_review_view.go:277` |
-| Static pager (no model) | `kref search`, `kref diff` | `Page`, `cmd/kref/pager.go:263` |
+| Surface                             | Command                    | Implementation                                             |
+|-------------------------------------|----------------------------|------------------------------------------------------------|
+| Entry viewer (read + comment write) | `kref show <id>`           | `RunViewer`, `cmd/kref/viewer.go:1223`                     |
+| Todo cockpit (viewer + todo header) | `kref todo <id>`           | `runTodoCockpit`, `cmd/kref/todo.go:77`                    |
+| List cockpit (row nav + actions)    | `kref` (no arguments)      | `runRootBrowse`, `cmd/kref/listcockpit.go:719`             |
+| Quarantine review queue             | `kref quarantine`          | `runReviewModel`, `cmd/kref/quarantine_review_view.go:277` |
+| Static pager (no model)             | `kref search`, `kref diff` | `Page`, `cmd/kref/pager.go:263`                            |
 
 ### Recipe
 

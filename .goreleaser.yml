@@ -41,15 +41,72 @@ sboms:
 
 checksum:
   name_template: "checksums.txt"
+  algorithm: sha256
 
+# Keyless cosign signature over checksums.txt. Signing the checksum file
+# transitively covers every artifact listed in it (all archives and their
+# SBOMs), so one signature authenticates the whole release. The bundle is a
+# published asset and needs no key distribution to verify:
+#
+#   cosign verify-blob checksums.txt \
+#     --bundle checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github\.com/trevor-vaughan/kref/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
+# cosign is put on PATH by release.yml and signs keylessly against the release
+# job's OIDC token; there is no private key anywhere in this repo or its secrets.
+signs:
+  - id: cosign-keyless
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+# Release notes are grouped from Conventional Commit subjects. A commit lands in
+# the first group whose regexp matches, so the breaking-change group (the `!`
+# marker, any type) is ordered ahead of the per-type groups. Anything that
+# matches no group falls into "Other Changes" rather than being dropped.
 changelog:
   sort: asc
+  abbrev: -1
   filters:
+    # Scoped forms too (`docs(readme):`), which a bare "^docs:" would miss.
     exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+      - '^docs(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^chore(\(.+\))?:'
+      - '^style(\(.+\))?:'
       - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: Breaking Changes
+      regexp: '^[a-z]+(\(.+\))?!:'
+      order: 0
+    - title: Features
+      regexp: '^feat(\(.+\))?:'
+      order: 1
+    - title: Bug Fixes
+      regexp: '^fix(\(.+\))?:'
+      order: 2
+    - title: Performance
+      regexp: '^perf(\(.+\))?:'
+      order: 3
+    - title: Refactors
+      regexp: '^refactor(\(.+\))?:'
+      order: 4
+    - title: Dependencies
+      regexp: '^build\(deps\)?:'
+      order: 5
+    - title: Build & CI
+      regexp: '^(build|ci)(\(.+\))?:'
+      order: 6
+    - title: Other Changes
+      order: 999
 
 release:
   draft: false

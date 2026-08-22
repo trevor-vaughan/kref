@@ -22,7 +22,7 @@ vars:
   GOLANGCI_LINT_VERSION: v2.12.2
   GOVULNCHECK_VERSION: v1.5.0
 
-# go.mod requires Go >= 1.26.5 (for the stdlib security fixes). Let Go provision
+# go.mod requires Go >= 1.26.7 (for the stdlib security fixes). Let Go provision
 # that toolchain automatically so a slightly older local Go still works. Set in
 # every file that shells out to `go` — root env does not cross include boundaries.
 env:

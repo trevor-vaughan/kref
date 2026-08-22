@@ -19,6 +19,11 @@ docs/superpowers/
 docs/dev/plans/
 docs/dev/specs/
 
+# Written by `kref hooks install`, which embeds the absolute path of the kref
+# binary it was run from. The file is therefore specific to one checkout on one
+# machine and cannot be shared; each contributor generates their own.
+/.lefthook.yml
+
 # throwaway cockpit demo repo (hands-on TUI testing)
 .cockpit-demo/
 

@@ -24,9 +24,9 @@ set -euo pipefail
 # found from the script's own location rather than the caller's cwd.
 SOURCE="${BASH_SOURCE[0]}"
 while [[ -L "$SOURCE" ]]; do
-    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-    SOURCE="$(readlink "$SOURCE")"
-    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+	DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+	SOURCE="$(readlink "$SOURCE")"
+	[[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
@@ -34,11 +34,11 @@ REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 if [[ -x "$REPO_ROOT/bin/kref" ]]; then
-    exec "$REPO_ROOT/bin/kref" mcp "$@"
+	exec "$REPO_ROOT/bin/kref" mcp "$@"
 fi
 
 if command -v kref >/dev/null 2>&1; then
-    exec kref mcp "$@"
+	exec kref mcp "$@"
 fi
 
 cat >&2 <<MSG

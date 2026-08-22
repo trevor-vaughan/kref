@@ -4,635 +4,353 @@ All notable changes to `kref` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-08-19
 
-`kref` is pre-release; nothing has shipped yet. This section summarizes what the
-first release will contain. Granular, release-to-release entries start once
-there is a tagged release to diff against.
+First release. Everything below is new, so this entry describes what `kref`
+does rather than what changed — release-to-release `Changed`/`Fixed`/`Removed`
+entries begin with 0.2.0, once there is a published version to diff against.
 
-### Changed
-
-- **BREAKING: the interactive cockpit moved from `kref list` to bare `kref`.**
-  `ls` is the name with the strongest print-and-exit expectation in Unix, and it
-  was the one command that could take over the terminal instead. `kref list` /
-  `kref ls` now always prints a static table and exits, and its `--no-pager` flag
-  is removed — with no interactive mode left, it had nothing to opt out of. Bare
-  `kref` takes the same entry-selection flags (`--kind`, `--status`, `--tier`,
-  `--label`, `--all`, `--archived`, `--include-deleted`, `--open-questions`,
-  `--sort`), so `kref --tier private` opens the cockpit over one tier; it still
-  prints help when stdout is not a terminal, and refuses `--json`/`--plain` by
-  name rather than emitting help into a machine contract. `--columns`, `--wide`,
-  `--check`, `--new`, `--plain`, and `--json` on `list` are unchanged.
-- **The `t` colour hotkey is gone from every viewer.** Toggling colour lives in
-  the view-options menu (`,`), which each interactive surface now has: the entry
-  viewer, the bare-`kref` cockpit, the `kref search`/`kref diff` pager and the
-  quarantine review. The key was dropped rather than reassigned — the hotkey set
-  needs a considered pass, and a menu is where a setting lives until a key is
-  earned. Colour is a saved preference now, so it also survives the session
-  instead of resetting on the next launch.
-- **The saved colour preference is applied, not just written.** `color:` in
-  `~/.config/kref/config.yaml` was recorded by the menu and then ignored by every
-  command — the resolution order still ran env, then terminal detection, with no
-  step that read it. Interactive surfaces now resolve colour as: `KREF_COLOR` or
-  `NO_COLOR` (per-invocation intent) → the saved preference → terminal
-  detection. Static and piped output is unchanged and still ignores the file, so
-  a redirect's bytes never depend on a preference.
-- **The `kref search`/`kref diff` pager honors colour at all.** It hardcoded
-  colour on for its own chrome, so `NO_COLOR` and `--plain` styled the frame
-  anyway; and turning colour off left the body's ANSI in place, because the lines
-  arrive pre-rendered. The pager now takes its initial colour from the caller and
-  strips the body's escapes while colour is off, restoring them when it goes back
-  on.
-- **`kref version` reports the commit date.** `kref version` and `kref --version`
-  now print `kref <version> (commit <UTC RFC3339>)`, and `--json` carries a
-  `commit_date` key alongside `version` (empty, not absent, when unknown — the
-  key set is stable). Builds with no injected version fall back to the VCS
-  information the Go toolchain embeds, so a binary built from a checkout reports
-  its short commit and date instead of a bare `dev`. Release archives stamp the
-  commit date rather than the wall-clock build time and pin file mtimes to it,
-  making them byte-for-byte reproducible and so verifiable against the published
-  SBOM and provenance attestations.
-- **Quarantine queue navigation moved from `n`/`p` to `]`/`[`.** `n`/`N` now mean
-  "next/previous search match" on every interactive surface, including the
-  review viewer, which also gains `/` search. Previously `n` stepped the queue
-  here and cycled matches everywhere else.
-- **`G` scrolls to the end of the content in the entry viewer**, matching the
-  pager and the list cockpit. It used to stop at the last cursor item, which on
-  a body whose final heading is not its final line left content unreachable in
-  one key.
-- **`esc` is a layered dismiss on every surface** — modal, then help popup, then
-  a committed search, then quit. It previously quit the pager, list and review
-  viewer outright and did nothing at all in the entry viewer.
-- **Footers scale with the terminal width.** The cockpit and quarantine
-  review footers spelled out every key unconditionally and needed 111 and 82
-  columns, so on an 80-column terminal `? keys` and the quit hint were clipped
-  off the end. They now offer progressively terser variants and show the widest
-  that fits: a 130-column terminal gets the full hint line, an 80-column one a
-  trimmed set, and below about 34 columns the position indicator gives way
-  before the help and quit hints do. Chrome never wraps — the sticky row count
-  is fixed and the viewport height derives from it.
-- **Folding in the entry viewer is `space` and `^space` only.** `space` folds the
-  section under the cursor; `^space` (ctrl+space) folds everything, or unfolds
-  everything when any section is already folded. The old `o`/`c` (open/close the
-  current section) and `O`/`C` (open/close all) bindings are retired and now do
-  nothing: they were a second way to do what `space` already did, and `o` reads
-  as "open the entry" in the list and quarantine cockpits.
-- **`g` jumps to the top in every viewer.** The entry viewer and the
-  `kref search`/`kref diff` pager required the vim `gg` chord while the bare-`kref`
-  cockpit took a single `g`, so the key a reader had just learned did nothing one
-  Enter away. Bare `g` now goes to the top everywhere; `gg` still works (the
-  second `g` is a no-op) and `<n>g` is unchanged. The help key is likewise
-  labelled `? keys` in all four viewers, matching the popup's own title.
-- **`kref purge` now skips its prompt with `-y`/`--yes`, not `--force`.** Every
-  other confirming command (`archive`, `retier`, `update --all`, `reconcile`,
-  `quarantine`) already used `-y`/`--yes`, while `--force` elsewhere means
-  "override a safety check" — the secret scan, the reconcile guard, `tier rm`'s
-  orphan check. `purge` was the one place that flag silently meant "yes, hard-delete
-  it." `kref retier` also gains the `-y` shorthand it was missing.
-
-### Fixed
-
-- **The viewer's sticky top line shows metadata again.** It was built by joining
-  the static header block into one line, and that block's first row is the
-  entry's full 64-character id — which consumed the whole strip at 140 columns,
-  let alone 80, hiding tier, status, labels, origin and links from the one
-  surface a human actually reads. The strip now carries purpose-built fields
-  (tier/status, version, link count, open questions) and fits itself to the
-  terminal, dropping the rightmost fields as the window narrows and shortening
-  the title before dropping any of them. `kref todo`'s strip gained the same
-  treatment, with its alert signals ranked above its counts. Static `--header`,
-  `--plain` and `--json` output is unchanged.
-
-- **`home` jumps to the top in the entry viewer.** `end` was bound to the bottom
-  but `home` fell through to the viewport and did nothing, while the bare-`kref`
-  cockpit and the pager both bound the pair. A pending `<n>` count is discarded
-  by `home`, so `12` then `home` goes to the top rather than to body line 12.
-
-- **Writing the user config no longer drops settings it does not know about.**
-  `config.WriteFile` renders through a canonical template that omitted
-  `todo_glyphs` and `todo_default`, so any code path that rewrote the file
-  silently deleted them — now reachable, since toggling a display preference in
-  the viewer rewrites the file. All settable keys round-trip, with a spec that
-  fails if a future field is added to the struct but not the template.
-
-- **Agent writes through the `kref todo` cockpit are attributed correctly.** The
-  cockpit resolved the actor but dropped the name, so a reply made under
-  `--actor`/`KREF_ACTOR` stored no actor and rendered as the human operator.
-- **Quarantine decisions record the real reviewer.** Both interactive decision
-  paths wrote the literal string `me` as the approver (and an empty rejecter)
-  instead of the resolved identity.
-- **Chrome is truncated by display width, not byte length.** Titles carrying an
-  em-dash or the todo header's ANSI lost their ellipsis, could emit a partial
-  escape sequence, and under-filled the bar by roughly 25 columns. Footers were
-  not truncated at all and overflowed the pane.
-- **Search backspace deletes a whole rune.** Backspacing over a non-ASCII
-  character left invalid UTF-8, so the query silently matched nothing while
-  still displaying as the text the reader intended.
-- **`ctrl+c` works inside a viewer modal.** Every modal swallowed it, including
-  the delete confirmation. A non-empty draft is preserved to the recovery tree
-  and the path reported, so the escape hatch never costs the author their text.
-- **The delete confirmation names the comment it will destroy.**
-- **The mouse wheel scrolls in every surface.** All four enable mouse capture,
-  but only the pager forwarded the events.
-- **`g`/`G` work in the quarantine review viewer**, which bound neither.
-- **A search no longer discards the reader's folds permanently** — dismissing it
-  with `esc` restores them.
-- **`kref list` reports a store read failure** instead of rendering an empty
-  list that reads as an empty repository.
-- **The list cockpit reports its search position** (`match i/N`) and keeps the
-  search when you open an entry and come back; it used to answer `n` with "no
-  matches".
-- **Keys the interface advertises account for themselves** — `e`/`x`/`u`/`s`/`f`
-  on a quarantine row said nothing at all; the pager offered `<n>g` where there
-  is no line-number gutter to aim at.
-- **The help popup says when it does not fit** on a short pane instead of
-  silently dropping its last rows, which is where the quit key lives.
-- **The quarantine review viewer clears stale detail** when an item fails to
-  load, instead of showing the previous held write under the new item's index.
-- **Quarantine notices use short ids**, like every listing.
-- **`t` toggles colour in the list, pager and review viewer**, not just the
-  entry viewer.
-- **`j`/`k` move the status picker**, matching every other surface. It switched
-  on the key type and so accepted only the arrow keys.
-- **The viewer's write keys explain themselves.** `?` advertises `r`/`e`/`d`/`x`
-  unconditionally, but on an entry with no comments — the common case for
-  `kref show` — each did nothing at all: no message, no beep. They now say why
-  ("no comment selected — this entry has none yet", "only a question can be
-  resolved"), the way the list cockpit already answered an inapplicable key.
-- **`--json` collections are always arrays.** An array-valued key is now always
-  present and always an array, so a consumer can iterate it unconditionally.
-  Previously `kref list --json` emitted `null` when nothing matched (while
-  `kref search`, `kref fav ls`, and `kref quarantine list` emitted `[]`),
-  `links`/`labels`/`provenance` were `null` on an entry that had none, and
-  `comments` disappeared entirely — three different encodings of "empty" in one
-  object, one of which crashes a naive `for` loop. The rule is recorded in
-  `AGENTS.md` and asserted across commands by the `JSON collection shape` spec.
-- **`kref new` now reads a body from piped/redirected stdin** when `--body` is
-  omitted, matching `kref update` and the documented agent guidance to pipe a
-  body on stdin. Previously `kref new … < file` silently created an entry with
-  an empty body. An interactive terminal is still never consumed (it would block
-  on an EOF that never comes), and an explicit `--body` still wins.
-- `kref bundle export <file>` reported success even when the final flush to
-  disk failed (e.g. disk full), which could leave a truncated backup bundle.
-  The file close is now checked and a failure is returned as an error.
-- Failing to append the `.kref/` line to `.git/info/exclude` during tracking
-  setup was silently ignored; it now surfaces as an error.
-- `kref update <id> --kind <kind>` (or `--title`) on an interactive terminal
-  hung forever waiting on stdin. Stdin is now read as the body source only when
-  it is actually piped or redirected; a bare interactive `kref update <id>`
-  errors with guidance instead of hanging.
+`kref` stores specs, ADRs, plans, memories, and reference notes inside a git
+repository as git objects under their own ref namespaces — not in the working
+tree and not on `main`. Entry bodies travel with the repo through clone, push,
+and pull without touching your file tree, `git log`, or `git blame`.
 
 ### Added
 
-- **`kref new --file <path>`** reads the new entry's body from a file, matching
-  `kref update --file`; it previously failed with a bare `unknown flag: --file`.
-  The body resolves as `--body`, else `--file`, else piped stdin, and the two
-  flags together are an error — the same order and rule `update` uses. A
-  `kref-id` trailer in the file is stripped, so re-creating from an exported body
-  does not bake the marker in. `--file` takes content only; `kref ingest` remains
-  the verb that records the source path and detects the content type.
-- **Horizontal scroll for wide lines** — the interactive bare-`kref` cockpit and
-  the `kref search`/`kref diff` pager pan left/right with `←`/`h` and `→`/`l`, so
-  a title or diff line wider than the window can be read without wrapping.
-- **`kref show` is interactive** — on a terminal, `kref show <id>` now opens the
-  same viewer as `kref todo`: section fold, search, the numbered gutter with
-  `<n>g`, and the full comment writer (reply, edit, resolve/reopen, delete) on
-  any entry. Comment threads render in a discussion zone above the body. Piped
-  output, `--plain`, `--no-pager`, and `--header` are unchanged.
-- **Reopen a resolved question** — `kref comment <id> --unresolve <cid>` flips a
-  resolved question back to open (the inverse of `--resolve`); in the viewer,
-  `x` now toggles resolve↔reopen on a question thread, and MCP `kref_comment`
-  gains an `unresolve` action. A reopened question re-enters the `awaiting-you`
-  count.
-- **Viewer line numbers and content-type rendering** — the interactive viewer
-  (the `kref todo` cockpit, and `kref show` once converged) renders any content
-  type: Markdown folds by section, while code and other types render as a single
-  syntax-highlighted block. A line-number gutter runs down the body — `<n>g`
-  jumps to a body line — and search ignores the gutter, so a numeric query
-  matches body text rather than a line number.
-- **`KREF_DIR` environment variable** — the repository directory now resolves in
-  the order `--dir` flag > `KREF_DIR` > the current directory, so a host that sets
-  a per-project environment variable (an MCP host config, for instance) can run
-  `kref` with no `--dir` argument and no shell wrapper.
-- **MCP global mode** — `kref mcp --allow <root>` (repeatable) lets one server
-  serve several repositories: each tool call passes an absolute `dir` that must
-  resolve inside an allowed root (canonicalized and segment-checked, so `/x/a`
-  never authorizes `/x/ab`); with exactly one root, `dir` may be omitted. Without
-  `--allow` the server stays locked to its `--dir`/`KREF_DIR` repo and a per-call
-  `dir` naming any other repository is refused — the boundary that keeps an
-  agent from reaching an unrelated repo's private tier.
-- **MCP tier scoping in global mode** — a `--allow` server serves only syncable
-  (non-private-typed) tiers of an addressed repo. Cross-repo `private`/`agent`
-  tiers and the quarantine review queue are never served — the exfiltration
-  boundary called for by the global-server safety design. Reaching a repo's
-  private tiers over MCP takes a locked-mode server pinned to it with `--dir`.
-- **`kref_update` labels and links** — the MCP `kref_update` tool now takes
-  optional `add_labels`/`remove_labels` and `add_links` (`[{to, type?}]`, type
-  defaulting to `relates`)/`remove_links` arrays, so an agent manages metadata
-  without extra tools; `body` is optional for a metadata-only update. A
-  secret-bearing label value on a syncable tier is refused.
-- **Concurrent-write safety** — every entity write now takes a per-repo advisory
-  lock (an `flock` on `.git/kref/write.lock`) for the whole read-modify-write, so
-  two kref processes on one checkout can no longer lose an operation on the same
-  git ref. On contention a write prints a brief notice and retries a few times
-  before erroring; reads are never blocked.
-- **Interactive todo cockpit** — on a terminal, `kref todo` (and `kref todo show`)
-  now opens an interactive view instead of printing and exiting. A sticky two-line
-  header stays put while you scroll: the global signal (awaiting-you count,
-  open/done, version) on top, and the local context (what the cursor is on) below.
-  The entry's comment threads render as a discussion zone above the body — open
-  questions with `◉`, plain comments with `·`; a resolved question starts folded to
-  its head, body, and a `▸ N replies` hint. Navigation reads like `kref show`:
-  `↑`/`↓` or `j`/`k` scroll one line, `PageUp`/`PageDown` (and `ctrl+d`/`ctrl+u`)
-  scroll a page/half while a single always-on action-cursor stays put. The cursor
-  moves with `Tab`/`Shift-Tab` (next/previous comment or heading) and `←`/`→` or
-  `h`/`l` (walk the thread tree — out to the parent, into the first reply);
-  `gg`/`G` jump it to the first/last item; it follows back into view when you act.
-  Headings fold at every level (`#` through `######`, so `###` subsections fold
-  too): `Space` folds/unfolds whatever the cursor is on — a comment folds just its
-  own replies (at any depth), a heading folds its section to a `▸ N lines` hint;
-  `o`/`c` open/close the section under the cursor and `O`/`C` open/close every
-  section (Done starts collapsed; `--full` starts it expanded).
-  A footer marker (`top`/`NN%`/`bot`/`all`, plus `↓N` lines below the cursor)
-  shows where you are. `t` toggles colour — styled markdown versus the raw source (as
-  `show --plain`), and also drops the chrome styling (title-bar reverse, faint
-  footer) so the whole view goes plain, not just the content. `?` shows a key
-  popup; `q` or `ctrl+c` quits, leaving the last
-  view in the scrollback (`esc` is reserved for dismissing dialogs, not quitting).
-  Writes happen in a centred modal: `r` replies under the cursor, `e` edits
-  (pre-filled), `x` resolves the thread's open question (optional closing note),
-  each with `ctrl+s` to submit, `ctrl+o` to compose in `$EDITOR`, and `esc` to
-  cancel; `d` deletes with a `y/n` confirm. Long comment bodies wrap to the width.
-  `ctrl+r` refreshes and the awaiting-you count updates after each write. Piping,
-  `--plain`, or the `--no-pager` flag keep the previous static render for scripts and
-  demos. The cockpit and `kref show` share one `internal/tui.ScrollView` component.
-- **Quarantine recover / purge** — a rejection is reversible until purged:
-  `kref quarantine list --rejected` browses tombstoned rejections,
-  `kref quarantine recover <id>` returns one to the pending queue, and
-  `kref quarantine purge [<id>]` hard-deletes rejected items — pruning the history
-  so a held secret is excised (not just hidden) and removing the recovery files
-  (one item, or all rejected with `-y`). A read-only `kref_quarantine` MCP tool
-  (list/show) lets agents see the queue without the secret; approve/reject/purge
-  stay human/CLI actions.
-- **Quarantine review in place** — `kref quarantine show <id>` opens a review
-  view for a held write: its findings and the proposed change (a current→proposed
-  diff for a body write), with `a`/`r` to approve/reject and `o` to open the target
-  entry — no leaving to type another command. Pressing Enter on a review row in the
-  bare-`kref` cockpit opens the same view. The viewer is shared between both entry
-  points (built on `internal/tui.ScrollView`).
-- **Quarantine review polish** — held writes now show their age and a STALE
-  marker past 7 days (in `kref list`, `kref quarantine list`/`show`, and the todo
-  cockpit badge); a throttled post-command reminder fires when stale writes await
-  review; and bare `kref quarantine` on a terminal opens the interactive review
-  queue (`n`/`p` between held writes, `a`/`r` to decide, decide-and-advance).
-- **Interactive bare-`kref` cockpit** — on a terminal, bare `kref` is now
-  navigable: arrow through the entries (the quarantine review queue grouped on
-  top) and act on the selected row without retyping ids. `Enter` opens it (the
-  `kref todo` cockpit for a todo, the `kref show` pager otherwise) and returns to
-  the saved cursor; `e` edits in `$EDITOR`; `a`/`r` approve/reject a quarantine
-  row; `x`/`u` archive/restore; `s` sets status; `f` sets/clears an alias; `/`
-  `n` `N` search; `?` keys; `q` quits. Rows render through the same formatter as
-  the static table (extracted `render.ListLines`); opening reuses the existing
-  viewers. `kref list` prints that static table and exits.
-- **Unified reader — `kref show` gains fold + shared search** — the `show` pager
-  and the todo cockpit now share one reading model (new `internal/outline`).
-  Markdown bodies in `kref show` fold by heading at **every** level (`#`…`######`):
-  `space` folds the section at the viewport top, `o`/`c` open/close it, `O`/`C`
-  every section; a folded section collapses to a `▸ N lines` hint and headings gain
-  `▾`/`▸` markers (so `show`'s rendered markdown now carries fold affordances). The
-  trailing **Comments** block folds as one section. Both the pager and the cockpit
-  gain incremental search — `/` then a query, `n`/`N` to cycle matches — and
-  committing a search opens any folds so a hit is never hidden. `kref show` also
-  gains `Tab`/`Shift-Tab` to jump to the next/previous heading (parity with the
-  cockpit; `j`/`k` still scroll line by line). Both views now show the same
-  `top`/`NN%`/`bot`/`all` scroll marker — with a `↓N` count of the lines below the
-  cursor (cockpit) or the visible window (pager) — and reload on `ctrl+r` (the
-  pager keeps `r` as an alias). Non-markdown entries (code, JSON) don't fold —
-  `space` pages as before. `--plain` and piped output are unchanged.
-- **Show & pager UX** — `kref show` no longer clears the screen on quit: the last
-  view you were reading stays in the terminal scrollback (`less -X` behaviour).
-  Help is now a centred popup on `?` instead of a footer swap. The standalone
-  `kref links` command is removed; `show --json` still carries outgoing links.
-  Incoming-link lookups are now served from the excerpt cache (no full-history
-  scan). The expandable header that was to carry an entry's history and links
-  is not wired up yet — `render.ExtendedHeader` has no caller, and in the viewer
-  `e` edits the selected comment — so links currently have no human-readable
-  surface. Tracked as an open item.
-- **Comments & questions** — `kref comment <id>` threads append-only comments on
-  an entry: `-m` for the body (or piped stdin), `-q` to mark it a question,
-  `--reply-to <cid>` to reply, and `--resolve <cid>` to close a question (with an
-  optional closing note via `-m`). Comment ids are addressed by prefix within the
-  entry. `kref show` renders a threaded **Comments** section after the body —
-  open questions (`◉`), resolved ones (`✓`), and indented replies — on every view
-  path (styled, `--plain`, and the pager). `kref list --open-questions` filters
-  to entries that still have an unanswered question. Comments are their own DAG
-  operations, so they merge cleanly and never touch the body version — a comment
-  on a `kind:todo` entry can't lose a stale-write race. `--edit <cid>` revises a
-  comment body (shown with `· edited`) and `--delete <cid>` soft-deletes one
-  (rendered `[deleted]`, with its thread replies kept intact; `-y` skips the
-  confirmation prompt). Edit and delete are themselves append-only ops, so a
-  delete redacts only the working view, not the pushed history. Comment bodies
-  are secret-scanned at write time — a secret on a syncable entry is refused, the
-  text preserved to the recovery dir and the finding named, so nothing is lost;
-  `--force` overrides a betterleaks false positive — and the push boundary now
-  also scans comment op-history (including deleted and edited-away comments) as a
-  backstop. Open questions now live only as `-q` comments — the old
-  `- [?]` todo body marker is retired (it lints as an invalid checkbox state), and
-  `kref todo`'s "awaiting you" signal counts unresolved question-comments instead
-  of body markers.
-- **Todo cockpit render polish** — `kref todo` now annotates each `##`/`###`
-  section heading with its open-item count (e.g. `### Priority (next up) (3)`),
-  numbers the awaiting-you questions, and shows an edited-staleness field in the
-  header (`edited 2h ago (2026-07-08)`). A new `--full` flag expands the Done
-  section instead of collapsing it. All four are display-only — the stored body,
-  the formatter/linter, and the seen-body watermark are untouched.
-- **`kref todo show [id]`** — an explicit subcommand for the todo cockpit,
-  alongside the bare `kref todo` shortcut. It gives `kref todo show <TAB>` a
-  clean list of todo ids to pick from, while `kref todo <TAB>` now lists the
-  `show`/`fmt`/`lint` subcommands instead of mixing verbs and ids in one grid.
-  `kref todo` and `kref todo <id>` are unchanged.
-- **Todo stale-write guard (compare-and-swap)** — writes to a `kind:todo` entry
-  now carry an optimistic version check so a concurrent edit is never silently
-  clobbered. The token is the body version `kref log` numbers as `vN`
-  (`len(BodyVersions)`). `kref update --if-version N` refuses the write when the
-  entry has moved past `N`; omitting it on a todo still writes but prints a loud
-  "unguarded todo write" warning. `kref edit` checks implicitly (the version it
-  opened versus head at save). The MCP `kref_update` tool **requires**
-  `if_version` for a todo and refuses a stale one (`kref_patch` needs no token —
-  its hunks already fail on stale context). A refused write never loses content:
-  the body is preserved to `$XDG_STATE_HOME/kref/rejected/` and named in the
-  error. The current version is surfaced so callers can supply it — the
-  `kref todo` header (`· vN`), `kref_get` (`version: N`), and `kref_recall`
-  (`vN` per line) — and `kref show --json`/`kref list --json` gain a `version`
-  field.
-- **`kref show --header`** — print only the metadata block (no body, no pager):
-  a cheap, token-light metadata peek, symmetric with `--no-header` (the two are
-  mutually exclusive).
-- **`kref init` adopts `origin`** — when the repository already has an `origin`
-  git remote, `init` binds the `shared` tier to it automatically (and reports
-  it), so the common case needs no follow-up `kref remote set`. When no remote
-  exists, `init` warns that sync is impossible until one is configured. `--json`
-  gains a `shared_remote` field.
-- **`kref archive --accepted`** — bulk-archive every `accepted` entry in one go,
-  mirroring `--obsolete` (same confirmation prompt and `-y`/`--yes` bypass). The
-  two status flags are mutually exclusive.
-- **`edited` timestamp** — a distinct "last body change" time, separate from
-  `updated` (last change of *any* kind). It is derived from the entry's
-  `SetBody` operations, so it needs no migration and reads correctly for
-  existing entries. `edited` is a sortable `--sort` key and a `--columns=edited`
-  column, and `kref list` now **defaults to `--sort edited`** so metadata churn
-  (labels, links, status, retier) no longer resurfaces entries whose prose is
-  unchanged; `--wide` shows `edited` in place of `updated`. `--json` gains an
-  `edited_at` field. Use `--sort updated` for the previous last-touched order.
-  Sort direction stays the `:asc`/`:desc` suffix (no `--asc`/`--desc` flags).
-- Rendered markdown now **reflows** soft-wrapped source to the display width:
-  paragraphs, list items, and blockquotes hard-wrapped in the stored body
-  (LLM-authored entries typically arrive at ~78 columns) join back into
-  full-width lines in `kref show`, the pager, and pipes. Hard line breaks
-  (trailing two spaces or a backslash), code blocks, and tables are left
-  untouched; `--plain` and `--json` output is unaffected. Rendering itself
-  moved to glamour v2 (`charm.land/glamour/v2`) for clean blockquote wrapping.
-- `--plain` is now a **global** flag with one meaning everywhere — chrome-free,
-  line-oriented output for `grep`/`cut`/`xargs`: TSV for `kref list`
-  (behavior unchanged) and `kref search` (new: matches/tier/id/kind/title, no
-  header or footer), the verbatim stored body with no header for `kref show`.
-  It implies no color and no pager, and is mutually exclusive with `--json`.
-  **BREAKING:** `kref show --raw` is removed — `kref show --plain` is the
-  byte-fidelity form (`--no-header` still gives a rendered, headerless view).
-- **Custom tiers**: declare any number of personal- or shared-typed tiers
-  (`kref tier add <name> --type … [--remote …]`), each with its own remote;
-  reads discover undeclared namespaces from refs so teammates' tiers render
-  instead of vanishing. Colors/glyphs follow the tier's TYPE. **BREAKING:**
-  `kref promote` and `kref private` are removed — `kref retier <id> <tier>`
-  is the single movement verb (same fail-closed secret gate on any
-  shared-typed destination).
-- `kref remote list` shows every tier's configured remote (name, URL, and
-  syncability — the private tier is listed as never-syncing); bare
-  `kref remote` runs it. `kref remote get <tier>` prints one tier's remote and
-  errors when the tier is unconfigured (or private), so scripts can probe
-  configuration. Both honor `--json`.
-- kref now nudges about un-synced work: `kref init` notes that no sync remote
-  is configured yet, and after an op-creating command (new/ingest/update/…) a
-  warning fires — at most once per day, tracked in local git config — when
-  syncable entries exist but no tier has a remote. Read-only commands and
-  `--json` runs stay quiet.
-- A missing betterleaks binary no longer hard-fails every content path:
-  `ingest`/`track`/`reconcile`/`update --file` proceed with a loud UNSCANNED
-  warning (and an `unscanned` flag in `--json`), while `sync push` stays
-  fail-closed — unscanned content never leaves the machine unless you say so:
-  `sync push --force` overrides the missing-scanner refusal (loud UNSCANNED
-  warning; a secret detected by a working scanner still blocks). Errors and
-  warnings carry the install hint
-  (`go install github.com/betterleaks/betterleaks@latest`).
-- `kref agents_md` prints a canonical agent-policy block for a global
-  AGENTS.md/CLAUDE.md (the instruction layer that outranks skills — it
-  overrides other skills' file-writing defaults so knowledge becomes kref
-  entries, not worktree files); `--skill` emits a complete SKILL.md driving
-  manual. The text ships in the binary so it tracks the installed version,
-  the `kref completion` pattern applied to agents.
-- The MCP server covers the full reversible document lifecycle: the new
-  `kref_lifecycle` tool handles set_status (validated against the canonical
-  vocabulary, now exported as `entry.Statuses`), delete/restore (tombstones),
-  and archive/unarchive. `purge` and `retier` are deliberately not exposed —
-  destruction and disclosure-sensitive moves stay human.
-- Threaded discussion for agents: the `kref_comment` MCP tool mirrors
-  `kref_lifecycle` (one tool, `action` enum) with `add` (`question`/`reply_to`
-  for open questions and threading), `resolve` (with an optional closing note),
-  `edit`, and `delete`. Comment bodies are betterleaks-scanned (shared
-  `internal/commentguard` policy): a flagged `add`, `edit`, or resolve-note on a
-  syncable entry is held for human review (see the quarantine-review entry below).
-- Quarantine review for flagged writes: a body or comment that trips betterleaks
-  on a syncable tier is now **held for human review** instead of refused, across
-  every write surface — CLI `new`/`update`/`comment` and MCP `kref_remember`/
-  `kref_update`/`kref_patch`/`kref_comment`. The content is diverted into a new
-  reserved, private-typed `quarantine` namespace (a new entry becomes a draft; an
-  update or comment is parked as a `kind:quarantine` intent-item recording the
-  intended write and the base version), a review question-comment naming the
-  finding (rule and line, never the value) opens on the entry, and the live
-  target is left untouched. `kref quarantine approve <id>` then applies the held
-  write **through the normal write path** (inheriting the write-lock, todo CAS,
-  and DAG merge): a draft is promoted to its tier (the shared-promotion secret
-  gate still applies unless the finding is allowlisted), an update/comment is
-  replayed onto the live entry and the item archived `q-status:approved`; a write
-  whose target moved since parking (a todo whose version advanced) is refused as a
-  stale re-review conflict. `kref quarantine reject <id>` discards the write,
-  preserves the text to the recovery dir, and tombstones the item
-  `q-status:rejected`. The `quarantine` namespace is non-syncable, so a held
-  secret never leaves the machine; the push scan remains the backstop.
-  `internal/entryguard` and `internal/commentguard` are the shared scan policy;
-  scanning now covers every CLI body source (not just `--file`). Approving a
-  false positive is a human decision: the MCP tools have no `force`; at the CLI,
-  `--force` on `new`/`update`/`comment` parks the write and approves it in one
-  step (no longer a scan-skip), keeping the audit trail.
-- Richer MCP read tools so an agent can triage without a follow-up call:
-  `kref_recall` now reports each hit's kind, version, updated date, and labels,
-  and — when a `search` term is given — the per-entry match count (results
-  relevance-ordered); a new `limit` caps the hit count to the most relevant and
-  reports how many were held back. `kref_get` now returns kind, content-type,
-  updated date, and links alongside the version, labels, and body it already
-  gave.
-- Fine-grained edits for agents: the `kref_patch` MCP tool applies a unified
-  diff to an entry's body with a lenient, LLM-tolerant applier — hunk line
-  numbers are hints only; each hunk is located by its context lines (exact or
-  trailing-whitespace-insensitive), hunks apply in document order, and git
-  preamble/file headers/no-newline markers are tolerated. Safety stays strict:
-  missing context (a stale diff) or ambiguous context (identical sections with
-  no usable line hint) fails loudly and application is all-or-nothing, so a
-  patch never half-applies or silently lands in the wrong section. Each
-  successful patch is one new body version. Deliberately MCP-only — a human
-  edits with `kref edit`, and full-body replacement (`kref update
-  --body/--file`) remains the CLI path.
-- `--sort <field>[:asc|:desc]` on `kref list` and `kref search` orders the
-  table, `--plain`, and `--json` output by `tier|id|kind|status|title|author|
-  created|updated` (search adds `matches`). Bare keys sort ascending, except
-  the date fields (`created`, `updated`), which put the newest at the top;
-  tab completion offers every key and its non-default direction form.
-  `kref list`'s default order is `updated` (most recently touched first, in
-  every output mode); `--sort tier` restores visibility grouping.
-- Tab completion for `kref list --columns=<TAB>` offers the column vocabulary
-  with descriptions, comma-aware: already-chosen columns drop out and the
-  completion continues after each comma.
-- `kref search <query>` replaces `kref list --search`: a dedicated command that
-  shows how many times the query occurs in each matching entry (title + body,
-  case-insensitive), most matches first, with a `N entries, M matches` footer.
-  It keeps the `--kind`/`--status`/`--tier`/`--label` filters, pages on a
-  terminal, and adds a `matches` field to each `--json` object.
-- `kref list` pages its table on an interactive terminal, using a lean variant
-  of the pager (no line-number gutter, no `<n>g` line jumps — scrolling and `/`
-  search only). Pipes, `--plain`, and `--json` bypass it; `--no-pager` opts out.
-- The `kref show` pager gained an `r` hotkey: re-read the entry through a fresh
-  store handle and re-render in place (scroll position preserved) — for
-  watching an entry another process (an agent, a sync) is updating.
-- `kref log` numbers body versions (`v1`, `v2`, …) and shows a compact change
-  summary per edit (`+318/-42 chars, +7/-2 lines`) instead of just the new
-  total. `kref diff` now renders inline colored diffs by default (additions
-  green, removals red, unchanged context between): bare walks every version
-  pair, `kref diff <id> <n>` shows what vN changed, `kref diff <id> <m> <n>`
-  spans a range, and `--full` keeps the whole-bodies recovery view. `--json`
-  still emits the full version set.
-- `KREF_COLOR` environment variable: `KREF_COLOR=1` forces ANSI color on and
-  `KREF_COLOR=0` forces it off, overriding both `NO_COLOR` and terminal
-  detection (recording environments like VHS set `NO_COLOR` in their session;
-  this is the escape hatch). `--json` output is never colored. Any other value
-  falls back to auto-detection.
-- `kref show` now renders entries before printing: markdown via a rich terminal
-  renderer, recognized code and structured text (JSON, YAML, Go, Python, shell,
-  TypeScript, etc.) with syntax highlighting, and everything else verbatim. On an
-  interactive terminal output is paged in a full-screen viewer (scroll with
-  `j`/`k`, page with `ctrl+d`/`ctrl+u`, search with `/`, quit with `q`); piped
-  output skips the pager. Flags: the global `--plain` (emit the stored body
-  verbatim, no header), `--no-header` (omit the metadata block), `--no-pager`
-  (never page).
-  The same pager backs `kref diff` (with a line-number gutter so `<n>g` jumps to
-  a version line); `kref diff --no-pager` opts out.
-- Entries carry a MIME content type (default `text/markdown`). `kref new` and
-  `kref update` accept `--content-type <type>` to set it. Supported types:
-  `text/markdown`, `text/plain`, `application/json`, `application/yaml`,
+#### Storage model
+
+- Repo-resident knowledge base stored as git objects under `refs/kref-<tier>/*`,
+  built on [git-bug](https://github.com/git-bug/git-bug)'s `entity/dag`. Every
+  entry is a Lamport-ordered DAG of operations that merges conflict-free across
+  machines and teammates.
+- **Three visibility tiers** — `private` (structurally unpushable; refused at
+  every layer, so it never leaves the machine), `personal`, and `shared` — as
+  separate ref namespaces, each with its own remote.
+- **Custom tiers**: declare any number of personal- or shared-typed tiers with
+  `kref tier add <name> --type … [--remote …]`. Reads discover undeclared
+  namespaces from refs, so a teammate's tier renders rather than vanishing.
+  Colors and glyphs follow the tier's type.
+- `kref retier <id> <tier>` (alias `mv`) is the single movement verb between
+  tiers, with a fail-closed secret gate on any shared-typed destination. Entry
+  ids are stable across a move.
+
+#### Entries
+
+- **Typed entries** — `spec`, `adr`, `plan`, `memory`, `reference`, `document`
+  (plus any free-form `--kind`) — each with a status
+  (`open`/`active`/`accepted`/`superseded`/`obsolete`), labels, typed links,
+  supersede/merge tracking, and append-only provenance.
+- Lifecycle verbs: `new`, `update`/`edit`, `status`, `rm`/`restore` (reversible
+  tombstones), `archive`/`unarchive` (hide without deleting;
+  `archive --obsolete` and `archive --accepted` bulk-archive a status), and
+  `purge` (irreversible; `--gc` to excise objects now, `--push` to delete the
+  ref on the remote).
+- `kref new` takes its body from `--body`, else `--file <path>`, else piped
+  stdin. A `kref-id` trailer in a `--file` body is stripped, so re-creating from
+  an exported body does not bake the marker in.
+- **Entries carry a MIME content type** (default `text/markdown`), settable with
+  `--content-type`: `text/plain`, `application/json`, `application/yaml`,
   `application/toml`, `text/x-go`, `text/x-python`, `text/x-shellscript`,
   `text/javascript`, `text/x-typescript`. Binary content is rejected.
-- `kref ingest` detects the content type from the file extension. Markdown files
-  behave as before (trailer written, file tracked). Non-markdown text files are
-  stored content-only: the detected type is recorded, no trailer is written, and
-  the file is not tracked. Binary files are rejected.
-- `--json` output from `kref show` and `kref list` includes a `content_type`
-  field on every entry.
-- Repo-resident knowledge base stored as git objects under `refs/kref-<tier>/*`
-  (built on git-bug's `entity/dag`), so knowledge travels with the repo without
-  touching the working tree or `main`'s history.
-- Three visibility tiers — `private` (structurally unpushable, never leaves the
-  machine), `personal`, and `shared` — as separate ref namespaces, with per-tier
-  `sync push`/`pull` to configured remotes.
-- Typed entries (`spec`, `adr`, `plan`, `memory`, `reference`, `document`) with
-  status (`open`/`active`/`accepted`/`superseded`/`obsolete`), labels, typed
-  links, supersede/merge tracking, and append-only provenance; git-identity
-  attribution propagates alongside entries and can be corrected with
-  `update --reset-author`/`--author`.
-- Entry lifecycle and discovery: `new`, `ingest` (idempotent, multi-path,
-  `--kind`), `update`/`edit`, `status`, `retier` (alias `mv`), `rm`/`restore`,
-  `archive`/`unarchive` (hide entries without deleting; `archive --obsolete`
-  bulk-archives), `purge`, plus history and divergence views (`log` (alias
-  `audit`), `diff`, `list --new`, `tidy`, `tree`).
-- Secret-scanning boundary: betterleaks runs on `ingest` and on `sync push`,
-  failing closed and quarantining detected secrets to the private tier.
-- Human-readable output by default with a global `--json` flag, plus a
-  shell-friendly `list --plain` (TSV) with selectable `--columns=…` / `--wide`
-  and an `--archived` view; an MCP stdio server (`kref mcp`) exposing curated
-  tools; lefthook wiring via `kref hooks install`; build-time version embedding
-  (`kref version`).
-- `SECURITY.md` with the trust model and a private vulnerability reporting
-  channel (GitHub security advisories, with maintainer email as a fallback).
-- **Favorites pin to the top of `kref list`.** Entries with a favorite name
-  (user or shared layer) float above the rest in every view — table, `--plain`,
-  and `--json` — with the active `--sort` (or the default order) applied *within*
-  the favorite and non-favorite groups. `kref fav add` now takes its arguments
-  **id first** (`kref fav add <id> <name>`), so `kref fav add <TAB>` completes the
-  entry you are naming and the following word is the free-form name. `kref fav rm
-  <TAB>` completes the favorite names in the layer it will act on (or an
-  ActiveHelp hint when there are none), and a bare `kref fav` now defaults to
-  `kref fav ls`.
+- **Attribution and provenance** — git identity propagates alongside entries and
+  can be corrected with `update --reset-author`/`--author`. Every `new`/`ingest`
+  appends an origin event (actor, human-vs-agent, source path).
+- **History** — `kref log` numbers body versions (`v1`, `v2`, …) with a per-edit
+  change summary (`+318/-42 chars, +7/-2 lines`). `kref diff` renders inline
+  colored diffs; `kref diff <id> <n>` shows one version's change, a range spans
+  versions, and `--full` gives the whole-bodies recovery view.
+- **Divergence is surfaced, never silent** — an entry edited on two machines
+  merges conflict-free and is flagged `◆ merged` until `kref resolve` acks it.
+- **Hygiene** — `kref tidy` clusters likely-redundant entries (duplicate titles,
+  merged entries, superseded chains); `kref supersede <old> <new>` links and
+  retires; `kref link add/rm` creates free-form typed edges; `kref tree` shows
+  the parent-child hierarchy.
+- **Concurrent-write safety** — every entity write takes a per-repo advisory
+  lock (`flock` on `.git/kref/write.lock`) across the whole read-modify-write,
+  so two kref processes on one checkout cannot lose an operation. Contention
+  retries briefly before erroring; reads are never blocked.
 
-### Added
+#### Finding and reading
 
-- **`kref show` displays an entry's links.** Outgoing and incoming typed edges
-  appear in the metadata header with their type, short id and title. They were
-  previously reachable only through `show --json`: `kref links` had been retired
-  on the grounds that links live in the expanded header, and the expanded header
-  is what the viewer rework deferred. Long edge lists are capped at ten so a
-  hub entry cannot push its own body off the screen.
-- **Start a comment thread from the viewer.** `a` posts a comment and `A` raises
-  a question on the entry itself. Previously `r` could only reply to an existing
-  comment, so raising the first question on an entry meant leaving the viewer for
-  `kref comment`.
-- **`c` opens a comment menu** listing reply, edit, delete, resolve and the two
-  new verbs, each with its accelerator beside it. Actions that cannot run right
-  now stay visible with the reason attached, instead of the key appearing to do
-  nothing until you press it.
-- **`,` opens view options** on every interactive surface, each offering only what
-  it can act on: the entry viewer has the line-number gutter (turn it off for
-  clean copy-paste) and colour; `kref todo` adds the cockpit glyph theme, which
-  cycles between the geometric and emoji sets and redraws the header on the spot;
-  the bare-`kref` cockpit and the quarantine review have colour; the `kref diff`
-  pager has colour and its own line numbers, which `kref search` omits rather
-  than showing inert — it has no gutter to hide. Every setting persists to
-  `~/.config/kref/config.yaml`, and the menu stays open on the row you just
-  changed, so changing two settings, or changing your mind about one, is a single
-  visit.
-- **Expanding the header is back**, as a command in the palette. It shows the
-  entry's op-log — created, edited, editors, recent body versions — plus the
-  complete link list the header caps.
-- **`:` opens the commands that have no hotkey**, filtered as you type. It is
-  not a second help popup: `?` tells you what the keys are, `:` tells you what
-  else there is, and nothing appears in both. Actions can now live in the palette
-  without a key of their own, so a key is something an action earns by being
-  reached for rather than something assigned when it is written.
+- `kref list` prints a static table with a color-coded tier column and a glyph
+  that survives `NO_COLOR` and pipes, filtered by `--tier`, `--kind`,
+  `--status`, `--label` (repeatable, AND), `--open-questions`, `--archived`,
+  `--all`, `--include-deleted`, and `--new` (what arrived or went unpushed since
+  your last sync). `--columns=…`/`--wide` select columns and `--check` flags
+  drifted tracked files.
+- `kref search <query>` counts occurrences per entry (title + body,
+  case-insensitive), most matches first, with a `N entries, M matches` footer.
+- **Sorting** — `--sort <field>[:asc|:desc]` over
+  `tier|id|kind|status|title|author|created|updated|edited` (`search` adds
+  `matches`). Date fields put newest first by default. `kref list` defaults to
+  `--sort edited`, so metadata churn (labels, links, status, retier) does not
+  resurface an entry whose prose is unchanged; `--sort updated` gives
+  last-touched-by-anything order.
+- **An `edited` timestamp** distinct from `updated`, derived from the entry's
+  `SetBody` operations, so it needs no migration and reads correctly for
+  existing entries.
+- **Favorites pin to the top** — entries with a favorite name float above the
+  rest in every output mode, with the active sort applied within the favorite
+  and non-favorite groups. `kref fav add <id> <name>`, `kref fav rm`, and a bare
+  `kref fav` listing.
+- `kref show` renders before printing: aligned metadata, rich markdown, syntax
+  highlighting for recognized code and structured text, and everything else
+  verbatim. Rendered markdown **reflows** soft-wrapped source to the display
+  width — hard breaks, code blocks, and tables are left untouched. Outgoing and
+  incoming typed links appear in the metadata header, capped at ten so a hub
+  entry cannot push its own body off screen. Omit the id for the
+  most-recently-touched entry, or address one by the file it came from.
+
+#### Interactive surfaces
+
+On a terminal, bare `kref` opens a cockpit over your entries, `kref show` and
+`kref todo` open a full-screen viewer, and `kref search`/`kref diff` page. All
+four are built on one shared component and share a key vocabulary.
+
+- **Navigation** — `j`/`k` and arrows scroll a line, `ctrl+d`/`ctrl+u` a half
+  page, `g`/`G` and `home`/`end` jump to top and bottom, `<n>g` jumps to a body
+  line, and `←`/`→` (`h`/`l`) pan wide lines or walk a comment thread.
+- **Folding** — `space` folds the section under the cursor, `^space` folds
+  everything or unfolds it when anything is folded. Markdown folds at every
+  heading level; a folded section collapses to a `▸ N lines` hint.
+- **Search** — `/` with `n`/`N` to cycle matches, on every surface. Committing a
+  search opens any folds so a hit is never hidden; dismissing it with `esc`
+  restores the folds you had.
+- **Acting in place** — the cockpit opens an entry with `Enter` and returns you
+  to your cursor; `e` edits, `x`/`u` archive/restore, `s` sets status, `f`
+  sets or clears a favorite name, and `a`/`r` approve/reject a quarantine row.
+- **Menus** — `?` shows the keys, `:` lists commands that have no key (including
+  the expanded header: the entry's op-log, editors, recent versions, and the
+  complete link list), `c` opens the comment menu, and `,` opens view options.
+  Actions that cannot run right now stay visible with the reason attached rather
+  than appearing to do nothing.
+- **View options persist** — the line-number gutter, colour, and the `kref todo`
+  glyph theme save to `~/.config/kref/config.yaml` and survive the session.
+  Colour resolves as `KREF_COLOR`/`NO_COLOR` → saved preference → terminal
+  detection; static and piped output ignores the file, so a redirect's bytes
+  never depend on a preference.
+- **Chrome adapts to the terminal** — the sticky header carries purpose-built
+  fields (tier/status, version, link count, open questions), dropping the
+  rightmost as the window narrows and shortening the title before dropping any
+  of them. Footers offer progressively terser variants and show the widest that
+  fits. Truncation is by display width, so an em-dash or ANSI never produces a
+  partial escape.
+- `ctrl+r` re-reads the entry from the store and re-renders in place — for
+  watching an entry an agent or a sync is updating. `esc` is a layered dismiss
+  (modal, then popup, then a committed search, then quit); quitting leaves the
+  last view in the scrollback rather than clearing the screen.
+
+#### Comments and questions
+
+- `kref comment <id>` threads append-only comments: `-m` for the body (or piped
+  stdin), `-q` to mark it a question, `--reply-to <cid>` to reply,
+  `--resolve <cid>`/`--unresolve <cid>` to close and reopen, `--edit <cid>` and
+  `--delete <cid>` to revise or redact. Comment ids are addressed by prefix.
+- Comments are their own DAG operations, so they merge cleanly and never touch
+  the body version — a comment on a `kind:todo` entry cannot lose a stale-write
+  race. Edit and delete are themselves append-only, so a delete redacts the
+  working view, not the pushed history.
+- `kref show` renders a threaded discussion — open questions `◉`, resolved `✓`,
+  indented replies — on every path (styled, `--plain`, and the viewer).
+  `kref list --open-questions` filters to entries with an unanswered question.
+- In the viewer, `a` posts a comment and `A` raises a question on the entry
+  itself, while `r`/`e`/`d`/`x` reply, edit, delete, and resolve↔reopen the
+  comment under the cursor. Drafts survive `ctrl+c`: a non-empty draft is
+  preserved to the recovery tree and its path reported.
+
+#### Todos
+
+- A `kind:todo` entry follows a fixed grammar — one H1 and the sections
+  `## Open`, `## Future / low priority`, and `## Done (compact)` — which buys a
+  navigable cockpit and a formatter that keeps the document tidy on every write.
+- `kref todo` opens the cockpit (`kref todo show [id]` for a specific one), with
+  an awaiting-you count, per-section open-item counts, numbered open questions,
+  and edited-staleness in the header. `--full` expands the Done section;
+  `--no-pager` prints the static view.
+- `kref todo fmt` moves done items into `## Done (compact)` and normalizes
+  spacing — it runs automatically on every todo write, and `update --no-fmt`
+  skips it. `kref todo lint` reports what the formatter cannot safely fix
+  (`h1`, `unknown-heading`, `missing-section`, `checkbox-state`).
+- **Stale-write guard (compare-and-swap)** — `kref update --if-version N`
+  refuses a todo write when the entry has moved past `N`; omitting it warns
+  loudly. `kref edit` checks implicitly. A refused write never loses content:
+  the body is preserved to `$XDG_STATE_HOME/kref/rejected/` and named in the
+  error.
+
+#### Files: ingest and tracking
+
+- `kref ingest <path>…` walks a tree or takes single files, writing a `kref-id`
+  trailer back into markdown so re-ingesting is idempotent. The content type is
+  detected from the extension; non-markdown text is stored content-only (typed,
+  no trailer, not tracked) and binary files are rejected.
+- `kref track <file>` keeps a file and its entry in sync. `kref reconcile` pulls
+  file edits into the entry and `kref reconcile --write` pushes entry edits back
+  out — without ever committing the file.
+
+#### Sync and backup
+
+- Per-tier `kref sync push`/`pull` to configured remotes. Push sends author
+  identities before entries so attribution resolves remotely, which is what
+  makes hub (shared-origin) sync work.
+- `kref init` adopts your git identity and binds the `shared` tier to `origin`
+  when one exists, so the common case needs no follow-up `kref remote set`.
+  With no remote it says so, and a throttled warning (at most once a day) fires
+  after op-creating commands while syncable entries have nowhere to go.
+- `kref remote list`/`get`/`set` show and configure each tier's remote,
+  including the private tier's permanent never-syncing status.
+- **Backup for the unpushable tier** — `kref bundle export`/`import` produce a
+  portable bundle for any tier (repeatable `--tier`, `-` for stdin/stdout, so
+  you can pipe through `age` or `sops`), and `kref vault backup`/`restore`
+  mirror the private tier under `$XDG_DATA_HOME`.
+
+#### Secret handling and quarantine review
+
+- [betterleaks](https://github.com/betterleaks/betterleaks) scans on the way in
+  (`ingest`, `track`, `reconcile`, `update --file`) and on the way out
+  (`sync push` scans the delta about to leave and fails closed before the remote
+  is contacted).
+- **Flagged writes are held for human review, not refused.** A body or comment
+  that trips the scanner on a syncable tier is diverted into a reserved,
+  private-typed `quarantine` namespace — a new entry becomes a draft, an update
+  or comment is parked as an intent-item recording the intended write and its
+  base version — and a review question-comment naming the finding (rule and
+  line, never the value) opens on the entry. The live target is untouched, and
+  the namespace is non-syncable, so a held secret cannot be pushed.
+- `kref quarantine approve <id>` applies the held write **through the normal
+  write path**, inheriting the write-lock, todo compare-and-swap, and DAG merge.
+  A write whose target moved since parking is refused as a stale re-review
+  conflict. `kref quarantine reject <id>` discards it, preserves the text to the
+  recovery dir, and tombstones the item for audit.
+- A rejection is reversible until purged: `kref quarantine list --rejected`
+  browses tombstoned rejections, `recover` returns one to the queue, and
+  `purge` hard-deletes rejected items — pruning history so a held secret is
+  excised, not just hidden. Only rejected items are purgeable.
+- Held writes report their age and are marked **STALE** past 7 days, in
+  `kref list`'s banner, `kref quarantine list`/`show`, and the todo cockpit
+  badge. A throttled reminder fires after a mutating command while stale writes
+  await review.
+- Bare `kref quarantine` on a terminal opens the review queue: `]`/`[` between
+  held writes, `a`/`r` to decide with an optional note, `o` to open the target,
+  and decide-and-advance. `kref quarantine show <id>` opens the same review for
+  one item, as does `Enter` on a review row in the cockpit.
+- Approving a false positive is a **human** decision — the MCP tools have no
+  `force`. At the CLI, `--force` on `new`/`update`/`comment` parks the write and
+  approves it in one step rather than skipping the scan, so the audit trail
+  survives.
+- A missing betterleaks binary degrades by surface instead of failing
+  everything: content paths proceed with a loud UNSCANNED warning (and an
+  `unscanned` flag under `--json`), while `sync push` stays fail-closed —
+  `sync push --force` overrides the missing-scanner refusal, but a secret found
+  by a working scanner still blocks.
+
+#### Agents
+
+- `kref mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+  server over stdio exposing `kref_remember`, `kref_recall`, `kref_get`,
+  `kref_update`, `kref_patch`, `kref_lifecycle`, `kref_comment`,
+  `kref_supersede`, and a read-only `kref_quarantine`. `purge` and `retier` are
+  deliberately not exposed — destruction and disclosure-sensitive moves stay
+  human.
+- **`kref_patch` is the agent editor**, MCP-only by design (a human edits with
+  `kref edit`). It applies a unified diff with an LLM-tolerant applier — hunk
+  line numbers are hints, each hunk is located by its context — while staying
+  strict on safety: missing or ambiguous context fails loudly and application is
+  all-or-nothing, so a patch never half-applies or lands in the wrong section.
+- **Read tools return enough to triage without a second call** — `kref_recall`
+  reports kind, version, updated date, labels, and per-entry match counts, with
+  `limit` capping results and reporting how many were held back; `kref_get`
+  returns kind, content-type, updated date, labels, and links with the body.
+- **Repo scoping is explicit.** Without `--allow`, the server is locked to its
+  `--dir`/`KREF_DIR` repo and a per-call `dir` naming another repository is
+  refused. `kref mcp --allow <root>` (repeatable) enables global mode, where
+  each call passes an absolute `dir` inside an allowed root (canonicalized and
+  segment-checked, so `/x/a` never authorizes `/x/ab`). Global mode serves only
+  syncable tiers, so a multi-repo server never exposes another repo's
+  private-typed tiers or its review queue.
+- `kref_update` also takes `add_labels`/`remove_labels` and
+  `add_links`/`remove_links`, so an agent manages metadata without extra tools;
+  `body` is optional for a metadata-only update.
+- `kref agents_md` prints a canonical agent-policy block for a global
+  `AGENTS.md`/`CLAUDE.md`, and `--skill` emits a complete `SKILL.md` driving
+  manual. The text ships in the binary, so it tracks the installed version.
+
+#### Output contracts and shell integration
+
+- Human-readable output by default. **`--json`** gives stable, script-friendly
+  objects; an array-valued key is always present and always an array, so a
+  consumer can iterate unconditionally. Errors are a single-line
+  `{"error": "…"}` on stderr, and exit status is `0` or `1`.
+- **`--plain`** is chrome-free and line-oriented everywhere — TSV for `list` and
+  `search`, the stored body (followed by any comments) for `show`. It implies no
+  colour and no pager, and is mutually exclusive with `--json`.
+- **`--dir`** selects the repo; path arguments still resolve against the current
+  directory. The repo resolves as `--dir` > `KREF_DIR` > the current directory,
+  so an MCP host that sets a per-project variable needs no shell wrapper. Like
+  git, kref walks up to the enclosing repository from any subdirectory.
+- **`kref help` adapts to context** — a concise grouped list on a terminal, the
+  full recursive tree when piped (what an agent sees), with `--long`/`--short`
+  to force either.
+- **Shell completion** for bash, zsh, and fish, with `--install` to write it to
+  the shell's standard directory. Completion is store-backed: entry ids beside
+  their titles (`restore` offers only tombstoned entries, `unarchive` only
+  archived), declared tier names including custom ones, your own `--kind` and
+  `--label` values, and comma-aware `--columns=`.
+- `kref version` reports `kref <version> (commit <UTC RFC3339>)`, with
+  `commit_date` under `--json`. Builds without an injected version fall back to
+  the VCS information the Go toolchain embeds. Release archives stamp the commit
+  date rather than build time and pin file mtimes to it, making them
+  byte-for-byte reproducible and verifiable against the published SBOM and
+  provenance attestations.
+- `KREF_COLOR=1`/`=0` forces colour on or off, overriding `NO_COLOR` and
+  terminal detection. `--json` output is never coloured.
+
+#### Configuration and hooks
+
+- Two config layers — a machine-local user file at
+  `$XDG_CONFIG_HOME/kref/config.yaml` over a shared project entry — with a
+  deliberate local-then-project trust model. All settable keys round-trip, so
+  rewriting the file from a viewer preference never drops a setting it does not
+  know about.
+- `kref hooks install` writes or merges `.lefthook.yml` wiring pull on merge,
+  scan-and-push on push, and ingest-changed-markdown on commit, with repeatable
+  `--ingest-path` to choose the watched directories. Hooks call kref by absolute
+  path so they find the same `betterleaks` sibling regardless of the committer's
+  `PATH`. [lefthook](https://lefthook.dev) is not bundled, and `lefthook install`
+  is required to register the hooks into `.git/hooks`.
 
 ### Security
 
-- betterleaks scans every ingest and push to keep secrets out of syncable tiers.
-- **Comments written in the interactive viewer are scanned.** `kref comment` and
-  the MCP tool already diverted a secret-bearing comment into the quarantine
-  review queue, but replies, edits and resolve notes typed in the viewer went
-  straight to the DAG unscanned — the one comment-writing surface outside the
-  policy. They now park like every other surface: the footer reports the write as
-  held rather than applied, and the review thread the park opens is visible in
-  the discussion you are already reading. A flagged closing note parks the
-  resolve as a single held operation instead of storing the note and resolving
-  anyway.
-- Scratch files (editor buffers for `kref edit`, bundle export/import staging,
-  betterleaks reports) are created under `$XDG_CACHE_HOME/kref/tmp`
-  (`~/.cache/kref/tmp`, mode 0700) instead of the shared system temp dir —
-  they can carry entry bodies, including private-tier content. HOME-less
-  environments fall back to the system temp dir (files remain 0600).
+- betterleaks scans every ingest and every push, and every comment-writing
+  surface — including replies, edits, and resolve notes typed in the viewer — so
+  no write path bypasses the policy.
+- The `private` tier is structurally unpushable, refused at `SetRemote`, `Push`,
+  `Pull`, and `SyncableTiers`. The `quarantine` namespace holding flagged writes
+  is likewise non-syncable.
+- Scratch files (editor buffers, bundle staging, scanner reports) are created
+  under `$XDG_CACHE_HOME/kref/tmp` (mode 0700) rather than the shared system
+  temp dir, since they can carry private-tier bodies. HOME-less environments
+  fall back to the system temp dir with files at 0600.
 - Dependencies and the Go toolchain are pinned to versions with no known
-  vulnerabilities; CI runs `govulncheck`, CodeQL, golangci-lint, and a
-  betterleaks scan of the repository's own history on every change, with
-  findings surfaced as SARIF in the Security tab.
-- Tagged releases are built by GoReleaser in CI and ship with an SPDX SBOM
-  per archive and a Sigstore build-provenance attestation
-  (`gh attestation verify` against the release workflow).
+  vulnerabilities. CI runs `govulncheck`, CodeQL, golangci-lint, and a
+  betterleaks scan of the repository's own history on every change, surfacing
+  findings as SARIF in the Security tab.
+- Releases are built by GoReleaser in CI, from a tree that has passed the same
+  quality gate a pull request must pass. Each ships an SPDX SBOM per archive, a
+  keyless cosign signature over `checksums.txt`, and a Sigstore
+  build-provenance attestation covering every published file — verifiable with
+  `gh attestation verify … --repo trevor-vaughan/kref` and
+  `cosign verify-blob --bundle checksums.txt.sigstore.json …`.
+- `SECURITY.md` documents the trust model and a private vulnerability reporting
+  channel.
 
 ### Known limitations
 
-- Operations are attributed but **not cryptographically signed** — git-bug
-  v0.10.1 exposes no API to equip an identity with a signing key.
-- No encryption at rest; no semantic/vector search yet.
+- **Operations are attributed but not cryptographically signed.** git-bug
+  v0.10.1 exposes no API to equip an identity with a signing key, so attribution
+  is forgeable.
+- **No encryption at rest.** The `private` tier stays local but is not encrypted
+  on disk, and neither are bundles or the vault.
+- **No semantic search.** Matching is substring and exact normalized-title; a
+  derived vector index is planned, not built.
+
+[0.1.0]: https://github.com/trevor-vaughan/kref/releases/tag/v0.1.0
