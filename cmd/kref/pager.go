@@ -319,10 +319,14 @@ func (m pagerModel) View() string {
 	return m.sv.Render(m.footerInfo())
 }
 
-// echoExit prints the pager's last visible window to w so the content stays in
+// visibleWindower is any full-screen surface that can report the content lines
+// currently on screen, so its last window can be left in scrollback on exit.
+type visibleWindower interface{ visibleWindow() []string }
+
+// echoExit prints v's last visible window to w so the content stays in
 // scrollback after the alt-screen is torn down.
-func echoExit(w io.Writer, m pagerModel) {
-	win := m.visibleWindow()
+func echoExit(w io.Writer, v visibleWindower) {
+	win := v.visibleWindow()
 	if len(win) == 0 {
 		return
 	}

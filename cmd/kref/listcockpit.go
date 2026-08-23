@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -41,7 +42,11 @@ type cockpitRow struct {
 type listActions interface {
 	QuarantineQueue() ([]store.QuarantineItem, error)
 	QuarantineDetail(id entity.Id) (store.QuarantineDetail, error)
-	ListEntries() ([]*entry.Snapshot, error)
+	// ListEntries returns the rows and, for a search-filtered cockpit, each
+	// entry's match count keyed by id string (nil otherwise). One call returns
+	// both so a reload after a mutation re-derives the ranking instead of
+	// leaving stale counts behind.
+	ListEntries() ([]*entry.Snapshot, map[string]int, error)
 	ApproveQuarantine(id entity.Id, note, approver, actorKind string) error
 	RejectQuarantine(id entity.Id, note, rejecter, actorKind string) (string, error)
 	Archive(id entity.Id) error
@@ -53,8 +58,10 @@ type listActions interface {
 }
 
 // buildCockpitRows renders the quarantine group (top) then the entry rows, using
-// the same formatter as the static table so a row looks identical.
-func buildCockpitRows(queue []store.QuarantineItem, entries []*entry.Snapshot, opts render.ListOptions) []cockpitRow {
+// the same formatter as the static table so a row looks identical. The column
+// header comes back with them: the rows are a bare column of values, and what
+// names them is needed by the scrollback echo.
+func buildCockpitRows(queue []store.QuarantineItem, entries []*entry.Snapshot, opts render.ListOptions) (string, []cockpitRow) {
 	var rows []cockpitRow
 	now := time.Now()
 	for i := range queue {
@@ -66,7 +73,7 @@ func buildCockpitRows(queue []store.QuarantineItem, entries []*entry.Snapshot, o
 			qitem: &queue[i],
 		})
 	}
-	_, lines, ids := render.ListLines(entries, opts)
+	header, lines, ids := render.ListLines(entries, opts)
 	byID := make(map[entity.Id]*entry.Snapshot, len(entries))
 	for _, e := range entries {
 		byID[e.ID] = e
@@ -74,7 +81,7 @@ func buildCockpitRows(queue []store.QuarantineItem, entries []*entry.Snapshot, o
 	for i, ln := range lines {
 		rows = append(rows, cockpitRow{kind: rowEntry, id: ids[i], line: ln, snap: byID[ids[i]]})
 	}
-	return rows
+	return header, rows
 }
 
 type listInputMode int
@@ -86,6 +93,16 @@ const (
 	listModeSearch               // / search
 	listModeStatus               // status picker
 )
+
+// cockpitProfile is what distinguishes the two surfaces that share this model:
+// bare `kref` (the whole store, with the quarantine review queue on top) and
+// `kref search` (relevance-ranked hits, no queue, results echoed on exit).
+// Everything else — keys, actions, reload semantics — is identical by design.
+type cockpitProfile struct {
+	title      string // ScrollView title
+	queue      bool   // fetch and render the quarantine review queue
+	echoOnExit bool   // reprint the visible rows to scrollback on quit
+}
 
 // listModel is the interactive list cockpit. In-place actions mutate through
 // acts and reload; open/edit exit with a result the RunE loop dispatches.
@@ -102,6 +119,7 @@ type listModel struct {
 	actorKind string
 
 	rows   []cockpitRow
+	header string // the column header the rows are aligned to, for the exit echo
 	cursor int
 
 	mode      listInputMode
@@ -112,6 +130,8 @@ type listModel struct {
 	settings viewSettings // the `,` view-options overlay
 
 	search pagerSearch // shared incremental search (/, n/N) — same as the viewer and pager
+
+	profile cockpitProfile // which surface this is: bare `kref` or `kref search`
 
 	noteApprove bool       // note mode: approve (true) vs reject
 	result      listResult // set on exit for a full-screen action
@@ -124,23 +144,32 @@ type listResult struct {
 	cursor int
 }
 
-func newListModel(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string) *listModel {
-	// The cockpit is what bare `kref` opens; `kref list` is the static table.
-	sv := tui.NewScrollView("kref")
+func newListModel(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string, profile cockpitProfile) *listModel {
+	// The cockpit is what bare `kref` opens (`kref list` is the static table)
+	// and what `kref search` opens over its hits; profile says which.
+	sv := tui.NewScrollView(profile.title)
 	sv.SetPlain(!color)
-	sv.SetHelpRows(listHelpRows())
+	sv.SetHelpRows(listHelpRows(profile.queue))
 	sv.SetHorizontalStep(8) // ←/h →/l pan to read titles wider than the window
 	return &listModel{
 		sv: sv, acts: acts, opts: opts, filter: filter, color: color,
 		actor: actor, actorKind: actorKind, input: textinput.New(),
+		profile: profile,
 	}
 }
 
 // reload refetches the queue + entries, rebuilds the rows, and keeps the cursor
 // on the same id when it survives.
 func (m *listModel) reload() {
-	q, qErr := m.acts.QuarantineQueue()
-	e, lErr := m.acts.ListEntries()
+	// A surface without the review queue does not ask for it: `kref search`
+	// answers a question about entries, and a failed queue read must not become
+	// an error message on a view that would never have shown the queue anyway.
+	var q []store.QuarantineItem
+	var qErr error
+	if m.profile.queue {
+		q, qErr = m.acts.QuarantineQueue()
+	}
+	e, matches, lErr := m.acts.ListEntries()
 	// An unreadable store must not render as an empty repository: "nothing here"
 	// and "the read failed" are different facts, and the reader needs to know
 	// which one they are looking at. The entry list is the headline, so it wins
@@ -155,7 +184,8 @@ func (m *listModel) reload() {
 	if m.cursor >= 0 && m.cursor < len(m.rows) {
 		keep = m.rows[m.cursor].id
 	}
-	m.rows = buildCockpitRows(q, e, m.opts)
+	m.opts.Matches = matches
+	m.header, m.rows = buildCockpitRows(q, e, m.opts)
 	m.cursor = 0
 	for i, r := range m.rows {
 		if r.id == keep {
@@ -182,6 +212,52 @@ func (m *listModel) syncContent() {
 	}
 	m.sv.SetContent(strings.TrimRight(b.String(), "\n"))
 	m.sv.SetStatus(m.statusLine())
+}
+
+// visibleWindow returns the rendered rows currently shown in the viewport, so
+// `kref search` can leave its results in scrollback on quit the way the text
+// pager it replaced did. nil before the first size message.
+func (m *listModel) visibleWindow() []string {
+	if !m.sv.Ready() {
+		return nil
+	}
+	top := max(m.sv.YOffset(), 0)
+	end := min(top+m.sv.Height(), len(m.rows))
+	if top > end {
+		top = end
+	}
+	out := make([]string, 0, end-top)
+	for _, r := range m.rows[top:end] {
+		out = append(out, r.line)
+	}
+	return out
+}
+
+// echoResults prints the parting block `kref search` leaves in scrollback: the
+// column header, the rows still on screen, and the tally. The rows alone are a
+// column of bare integers with nothing naming them — the text pager this
+// replaced echoed the framed table, and the docs still promise that.
+func (m *listModel) echoResults(w io.Writer) {
+	win := m.visibleWindow()
+	if len(win) == 0 {
+		return
+	}
+	if m.header != "" {
+		fmt.Fprintln(w, m.header)
+	}
+	fmt.Fprintln(w, strings.Join(win, "\n"))
+	// Matches is set only on a search, and only a search has a tally to print.
+	if m.opts.Matches != nil {
+		entries, total := 0, 0
+		for _, r := range m.rows {
+			if r.kind != rowEntry {
+				continue
+			}
+			entries++
+			total += m.opts.Matches[r.id.String()]
+		}
+		fmt.Fprintf(w, "\n%s\n", render.SearchTally(entries, total))
+	}
 }
 
 func (m *listModel) statusLine() string {
@@ -339,6 +415,10 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.SetValue("")
 					m.input.Focus()
 					return m, textinput.Blink
+				}
+				if !m.profile.queue {
+					m.err = "no review queue here — run `kref` or `kref quarantine` to decide held writes"
+					return m, nil
 				}
 				m.err = "not a quarantine item"
 				return m, nil
@@ -639,9 +719,15 @@ func (m *listModel) footer() string {
 	// unconditionally and needed 111 columns, so on an 80-column terminal it was
 	// clipped and both "? keys" and "q quit" fell off the end; capping it at the
 	// narrow form instead would have starved wide terminals of the same hints.
+	// The a/r hint follows the same rule as the help popup: a surface without
+	// the review queue must not advertise keys that have nothing to act on.
+	review := ""
+	if m.profile.queue {
+		review = "a/r review · "
+	}
 	return m.sv.Fit(withHead(head,
-		"↑↓ move · enter open · a/r review · e edit · x/u arch · s status · f alias · / search · ? keys · q quit",
-		"↑↓ move · enter open · a/r review · e edit · / search · ? keys · q quit",
+		"↑↓ move · enter open · "+review+"e edit · x/u arch · s status · f alias · / search · ? keys · q quit",
+		"↑↓ move · enter open · "+review+"e edit · / search · ? keys · q quit",
 		"↑↓ move · enter open · / search · ? keys · q quit",
 		"? keys · q quit",
 	)...)
@@ -659,16 +745,25 @@ func withHead(head string, variants ...string) []string {
 	return append(out, variants[len(variants)-1])
 }
 
-func listHelpRows() []string {
-	return []string{
+// listHelpRows returns the help key rows. The approve/reject row appears only
+// on a surface that carries the review queue: `kref search` has no quarantine
+// rows, so advertising a/r there would promise keys with nothing to act on.
+func listHelpRows(queue bool) []string {
+	rows := []string{
 		"↑/↓ j/k   move             enter   open (show/todo)",
 		"←/→ h/l   pan title        g / G   top / bottom",
-		"a / r     approve/reject   e       edit ($EDITOR)",
+	}
+	if queue {
+		rows = append(rows, "a / r     approve/reject   e       edit ($EDITOR)")
+	} else {
+		rows = append(rows, "e         edit ($EDITOR)")
+	}
+	return append(rows,
 		"x / u     archive/restore  s       status",
 		"f         alias            /       search   n/N next/prev",
 		",         view options",
 		"? q esc   keys / quit",
-	}
+	)
 }
 
 func clamp(v, lo, hi int) int {
@@ -684,14 +779,14 @@ func clamp(v, lo, hi int) int {
 // runListCockpit runs the interactive list, looping: run the model, and when it
 // exits for a full-screen action (open/edit) dispatch to the real viewer/editor
 // via handle, then re-enter at the saved cursor. Quit ends the loop.
-func runListCockpit(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string, handle func(res listResult) error) error {
+func runListCockpit(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string, profile cockpitProfile, handle func(res listResult) error) error {
 	cursor := 0
 	// The model is rebuilt on every return from a full-screen action, which used
 	// to discard the search silently — after which n reported "no matches",
 	// reading as "your query found nothing" rather than "your query is gone".
 	var search pagerSearch
 	for {
-		m := newListModel(acts, opts, color, filter, actor, actorKind)
+		m := newListModel(acts, opts, color, filter, actor, actorKind, profile)
 		m.reload()
 		m.cursor = clamp(cursor, 0, max(len(m.rows)-1, 0))
 		m.search = search
@@ -703,6 +798,12 @@ func runListCockpit(acts listActions, opts render.ListOptions, color bool, filte
 		}
 		fm, ok := out.(*listModel)
 		if !ok || fm.result.action == "" {
+			// `kref search` replaced a pager that left its results on screen;
+			// echoing the last window keeps that, so quitting does not wipe
+			// the answer you just asked for.
+			if ok && profile.echoOnExit {
+				fm.echoResults(os.Stdout)
+			}
 			return nil // quit
 		}
 		cursor, search = fm.result.cursor, fm.search
@@ -762,9 +863,11 @@ func runBrowse(cmd *cobra.Command, dir *string, s *store.Store, lf store.ListFil
 	}
 	acts := listCockpitActions{s: s, filter: lf}
 	actor, actorKind := resolveActor(cmd, s)
-	return runListCockpit(acts, opts, color, lf, actor, actorKind, func(res listResult) error {
-		switch res.action {
-		case "review":
+	profile := cockpitProfile{title: "kref", queue: true}
+	return runListCockpit(acts, opts, color, lf, actor, actorKind, profile, func(res listResult) error {
+		// The review queue is bare `kref`'s alone; everything else is the
+		// entry dispatch both cockpits share.
+		if res.action == "review" {
 			queue, qerr := acts.QuarantineQueue()
 			if qerr != nil {
 				return qerr
@@ -788,24 +891,87 @@ func runBrowse(cmd *cobra.Command, dir *string, s *store.Store, lf store.ListFil
 				return openEntry(cmd, dir, s, snap)
 			}
 			return nil
-		case "open":
-			snap, gerr := s.Get(res.id)
-			if gerr != nil {
-				return gerr
-			}
-			return openEntry(cmd, dir, s, snap)
-		case "edit":
-			return editEntry(cmd, s, res.id)
 		}
-		return nil
+		return dispatchEntryAction(cmd, dir, s, res)
 	})
+}
+
+// dispatchEntryAction carries out the full-screen action a cockpit exited for:
+// open the entry in its viewer, or hand it to $EDITOR. Shared by bare `kref`
+// and `kref search`; the quarantine review case stays in runBrowse, the only
+// surface that carries the queue.
+func dispatchEntryAction(cmd *cobra.Command, dir *string, s *store.Store, res listResult) error {
+	switch res.action {
+	case "open":
+		snap, err := s.Get(res.id)
+		if err != nil {
+			return err
+		}
+		return openEntry(cmd, dir, s, snap)
+	case "edit":
+		return editEntry(cmd, s, res.id)
+	}
+	return nil
+}
+
+// runSearchBrowse opens the interactive cockpit over a query's hits: the same
+// model bare `kref` uses, with the relevance column, no review queue, and the
+// results echoed to scrollback on exit so quitting does not wipe the answer.
+func runSearchBrowse(cmd *cobra.Command, dir *string, s *store.Store, lf store.ListFilter, sortBy, query string, primed []store.SearchResult) error {
+	acts := listCockpitActions{s: s, filter: lf, sortBy: sortBy, primed: &primedSearch{results: primed}}
+	color := resolveColor(cmd, s.EffectiveConfig())
+	opts := searchListOptions(color)
+	actor, actorKind := resolveActor(cmd, s)
+	profile := cockpitProfile{title: "kref search — " + query, echoOnExit: true}
+	return runListCockpit(acts, opts, color, lf, actor, actorKind, profile,
+		func(res listResult) error {
+			return dispatchEntryAction(cmd, dir, s, res)
+		})
+}
+
+// searchListOptions is how the search cockpit renders: the relevance column, and
+// the ranking ListEntries computed left exactly as it came. It is a function
+// rather than a literal inside runSearchBrowse so a spec can assert the option
+// set the production path actually uses — asserting a copy of it proves only
+// that the renderer honours those options, never that this caller still passes
+// them.
+func searchListOptions(color bool) render.ListOptions {
+	return render.ListOptions{
+		Columns: render.SearchColumns,
+		Color:   color,
+		// Search shows every hit: no same-title collapsing, no superseded drop.
+		ShowAll: true,
+		// PreserveOrder keeps the ranking ListEntries computed. A nil Sort is
+		// NOT enough — sortListRows falls through to the default
+		// tier→kind→title order without it. Favorites stays nil, so pinning
+		// cannot outrank relevance.
+		PreserveOrder: true,
+	}
+}
+
+// primedSearch is a search the caller already ran, handed to the cockpit so the
+// first paint does not repeat the scan. `kref search` has to run the query
+// anyway to know whether there is anything to open, and store.Search re-reads
+// and recompiles every entry in the store.
+//
+// Consumed once: every reload after that goes back to the store, which is what
+// makes a mutation show up. Held by pointer because listCockpitActions is copied
+// by value, and the copies have to agree on whether it has been spent.
+type primedSearch struct {
+	results []store.SearchResult
+	used    bool
 }
 
 // listCockpitActions adapts *store.Store to listActions. Favorites are user-scope
 // config writes, so those delegate to the fav.go helpers, not the store.
+//
+// sortBy is the raw --sort value for a search cockpit. It is reapplied on every
+// reload so a mutation does not silently revert the ordering to matches:desc.
 type listCockpitActions struct {
 	s      *store.Store
 	filter store.ListFilter
+	sortBy string
+	primed *primedSearch
 }
 
 func (a listCockpitActions) QuarantineQueue() ([]store.QuarantineItem, error) {
@@ -814,7 +980,41 @@ func (a listCockpitActions) QuarantineQueue() ([]store.QuarantineItem, error) {
 func (a listCockpitActions) QuarantineDetail(id entity.Id) (store.QuarantineDetail, error) {
 	return a.s.QuarantineDetail(id)
 }
-func (a listCockpitActions) ListEntries() ([]*entry.Snapshot, error) { return a.s.List(a.filter) }
+
+// ListEntries serves the plain cockpit from List and a search cockpit from
+// Search, which is List plus a per-entry match count and a matches:desc order.
+// The --sort override is reapplied here rather than only at startup, so it
+// survives the reload that follows every mutation.
+func (a listCockpitActions) ListEntries() ([]*entry.Snapshot, map[string]int, error) {
+	if a.filter.Search == "" {
+		items, err := a.s.List(a.filter)
+		return items, nil, err
+	}
+	var results []store.SearchResult
+	// A nil result slice is "not primed", never "primed with nothing": an empty
+	// search never opens a cockpit, so honouring it would render a store full of
+	// matches as one with none.
+	if a.primed != nil && !a.primed.used && a.primed.results != nil {
+		// Already sorted by the caller that ran it; re-sorting is not merely
+		// redundant, it would apply --sort a second time.
+		a.primed.used, results = true, a.primed.results
+	} else {
+		var err error
+		if results, err = a.s.Search(a.filter); err != nil {
+			return nil, nil, err
+		}
+		if err := sortSearchResults(results, a.sortBy); err != nil {
+			return nil, nil, err
+		}
+	}
+	items := make([]*entry.Snapshot, len(results))
+	matches := make(map[string]int, len(results))
+	for i, r := range results {
+		items[i] = r.Snapshot
+		matches[r.ID.String()] = r.Matches
+	}
+	return items, matches, nil
+}
 func (a listCockpitActions) ApproveQuarantine(id entity.Id, note, ap, k string) error {
 	return a.s.ApproveQuarantine(id, note, ap, k)
 }

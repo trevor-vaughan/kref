@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -96,6 +97,15 @@ func pad(s string, w int) string {
 	return s + spaces(w-n)
 }
 
+// padLeft right-aligns s in w columns (rune-counted), for numeric cells.
+func padLeft(s string, w int) string {
+	n := utf8.RuneCountInString(s)
+	if n >= w {
+		return s
+	}
+	return spaces(w-n) + s
+}
+
 func spaces(n int) string {
 	b := make([]byte, n)
 	for i := range b {
@@ -132,8 +142,9 @@ func tierLess(a, b *entry.Snapshot) bool {
 }
 
 type listRow struct {
-	snap  *entry.Snapshot
-	count int
+	snap    *entry.Snapshot
+	count   int
+	matches int
 }
 
 // Column is a selectable list column.
@@ -155,6 +166,12 @@ const (
 	ColTracked Column = "tracked"
 	ColPath    Column = "path"
 	ColSource  Column = "source"
+
+	// ColMatches is an INTERNAL column: the per-entry match count for
+	// `kref search`. It is deliberately absent from AllColumns, which keeps it
+	// out of --columns, that flag's completion, and ColumnHelp — `kref list`
+	// has no query, so the column would only ever render 0 there.
+	ColMatches Column = "matches"
 )
 
 // AllColumns is the canonical, ordered registry of every column — the single
@@ -170,11 +187,15 @@ var DefaultColumns = []Column{ColTier, ColID, ColKind, ColStatus, ColTitle}
 // WideColumns adds author and edited to the default set.
 var WideColumns = []Column{ColTier, ColID, ColKind, ColStatus, ColAuthor, ColEdited, ColTitle}
 
+// SearchColumns is the `kref search` layout, shared by the static table and the
+// interactive search cockpit so both render the same columns in the same order.
+var SearchColumns = []Column{ColMatches, ColTier, ColID, ColKind, ColTitle}
+
 var columnHeaders = map[Column]string{
 	ColTier: "TIER", ColID: "ID", ColFullID: "ID", ColKind: "KIND", ColStatus: "STATUS",
 	ColTitle: "TITLE", ColAuthor: "AUTHOR", ColEmail: "EMAIL", ColCreated: "CREATED",
 	ColUpdated: "UPDATED", ColEdited: "EDITED", ColLabels: "LABELS", ColTracked: "TRACKED", ColPath: "PATH",
-	ColSource: "SOURCE",
+	ColSource: "SOURCE", ColMatches: "MATCHES",
 }
 
 // HeaderFor returns the column header label (exported for the consistency specs).
@@ -231,12 +252,15 @@ func validColumns() string {
 }
 
 // ParseColumns turns "a,b,c" into ordered columns, erroring on unknown tokens.
+// Validity is membership in AllColumns — the same set validColumns() reports —
+// so what is accepted and what is advertised cannot drift, and internal columns
+// (ColMatches) stay unreachable from --columns.
 func ParseColumns(s string) ([]Column, error) {
 	parts := strings.Split(s, ",")
 	cols := make([]Column, 0, len(parts))
 	for _, p := range parts {
 		c := Column(strings.TrimSpace(p))
-		if _, ok := columnHeaders[c]; !ok {
+		if !slices.Contains(AllColumns, c) {
 			return nil, fmt.Errorf("unknown column %q (valid: %s)", p, validColumns())
 		}
 		cols = append(cols, c)
@@ -252,6 +276,15 @@ type ListOptions struct {
 	ShowAll   bool
 	Sort      *SortSpec       // nil = the default order (table: tier→kind→title; plain: store order)
 	Favorites map[string]bool // favorited entry ids (id string → true); these pin above every other row
+	// Matches maps entry id → query match count, for the ColMatches column.
+	// Nil for every view without a query.
+	Matches map[string]int
+	// PreserveOrder keeps items in the order the caller supplied them, skipping
+	// the row sort entirely. `kref search` ranks by match count before it gets
+	// here, and a nil Sort is NOT enough to protect that: sortListRows falls
+	// through to the default tier→kind→title order, which every other view
+	// depends on. "No sort spec" and "already ordered" are different requests.
+	PreserveOrder bool
 }
 
 // SortSpec is a parsed --sort value: the field to order by and a direction.
@@ -382,6 +415,8 @@ func tableCell(col Column, r listRow) string {
 	switch col {
 	case ColTier:
 		return tierPlain(it.Tier, it.TierType)
+	case ColMatches:
+		return strconv.Itoa(r.matches)
 	case ColTitle:
 		title := it.Title
 		if it.Deleted {
@@ -468,7 +503,7 @@ func RenderList(w io.Writer, items []*entry.Snapshot, opts ListOptions) {
 		renderPlain(w, items, cols, opts.ShowAll)
 		return
 	}
-	renderTable(w, items, cols, opts.Color, opts.ShowAll, opts.Sort, opts.Favorites)
+	renderTable(w, items, cols, opts)
 }
 
 // renderPlain emits one tab-separated line per entry, uncollapsed, no chrome.
@@ -488,20 +523,25 @@ func renderPlain(w io.Writer, items []*entry.Snapshot, cols []Column, showAll bo
 }
 
 // renderTable reproduces the aligned, collapsed table for arbitrary columns.
-// A non-nil sortSpec replaces the default tier→kind→title order; it applies to
+// A non-nil opts.Sort replaces the default tier→kind→title order; it applies to
 // the post-collapse rows (each group is placed by its representative). Favorited
-// ids (favs) pin their rows to the top ahead of either ordering.
-func renderTable(w io.Writer, items []*entry.Snapshot, cols []Column, color, showAll bool, sortSpec *SortSpec, favs map[string]bool) {
-	rows := listRows(items, showAll)
+// ids (opts.Favorites) pin their rows to the top ahead of either ordering.
+//
+// It takes the whole ListOptions rather than six loose parameters: it has one
+// caller, and the option set it needs keeps growing.
+func renderTable(w io.Writer, items []*entry.Snapshot, cols []Column, opts ListOptions) {
+	rows := listRows(items, opts.ShowAll, opts.Matches)
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "no entries")
 		return
 	}
-	sortListRows(rows, sortSpec, favs)
+	if !opts.PreserveOrder {
+		sortListRows(rows, opts.Sort, opts.Favorites)
+	}
 	widths := columnWidths(rows, cols)
 	fmt.Fprintln(w, strings.Join(headerCells(cols, widths), "  "))
 	for _, r := range rows {
-		fmt.Fprintln(w, strings.Join(rowCells(r, cols, widths, color), "  "))
+		fmt.Fprintln(w, strings.Join(rowCells(r, cols, widths, opts.Color), "  "))
 	}
 	noun := "entries"
 	if len(rows) == 1 {
@@ -519,8 +559,10 @@ func ListLines(items []*entry.Snapshot, opts ListOptions) (header string, lines 
 	if len(cols) == 0 {
 		cols = DefaultColumns
 	}
-	rows := listRows(items, opts.ShowAll)
-	sortListRows(rows, opts.Sort, opts.Favorites)
+	rows := listRows(items, opts.ShowAll, opts.Matches)
+	if !opts.PreserveOrder {
+		sortListRows(rows, opts.Sort, opts.Favorites)
+	}
 	widths := columnWidths(rows, cols)
 	header = strings.Join(headerCells(cols, widths), "  ")
 	for _, r := range rows {
@@ -593,15 +635,20 @@ func rowCells(r listRow, cols []Column, widths []int, color bool) []string {
 	cells := make([]string, len(cols))
 	for i, c := range cols {
 		last := i == len(cols)-1
-		if c == ColTier {
+		switch {
+		case c == ColTier:
 			wdt := widths[i]
 			if last {
 				wdt = 0
 			}
 			cells[i] = tierCell(r.snap.Tier, r.snap.TierType, wdt, color)
-		} else if last {
+		case c == ColMatches:
+			// Numeric: right-aligned regardless of position, matching the %*d
+			// the search table has always used.
+			cells[i] = padLeft(tableCell(c, r), widths[i])
+		case last:
 			cells[i] = tableCell(c, r)
-		} else {
+		default:
 			cells[i] = pad(tableCell(c, r), widths[i])
 		}
 	}
@@ -611,38 +658,44 @@ func rowCells(r listRow, cols []Column, widths []int, color bool) []string {
 // listRows applies the clean-view transforms. With showAll, every item is its
 // own row. Otherwise superseded entries drop out and entries sharing a
 // normalized title collapse to one row (representative = most recently updated,
-// tie-broken by id) carrying the group count.
-func listRows(items []*entry.Snapshot, showAll bool) []listRow {
+// tie-broken by id) carrying the group count. matches (nil outside search)
+// annotates each row with its query match count.
+func listRows(items []*entry.Snapshot, showAll bool, matches map[string]int) []listRow {
+	var rows []listRow
 	if showAll {
-		rows := make([]listRow, 0, len(items))
+		rows = make([]listRow, 0, len(items))
 		for _, it := range items {
 			rows = append(rows, listRow{snap: it, count: 1})
 		}
-		return rows
-	}
-	groups := map[string][]*entry.Snapshot{}
-	var order []string
-	for _, it := range items {
-		if it.Status == "superseded" {
-			continue
-		}
-		key := entry.NormalizeTitle(it.Title)
-		if _, ok := groups[key]; !ok {
-			order = append(order, key)
-		}
-		groups[key] = append(groups[key], it)
-	}
-	rows := make([]listRow, 0, len(order))
-	for _, key := range order {
-		g := groups[key]
-		rep := g[0]
-		for _, it := range g[1:] {
-			if it.UpdatedAt.After(rep.UpdatedAt) ||
-				(it.UpdatedAt.Equal(rep.UpdatedAt) && it.ID.String() < rep.ID.String()) {
-				rep = it
+	} else {
+		groups := map[string][]*entry.Snapshot{}
+		var order []string
+		for _, it := range items {
+			if it.Status == "superseded" {
+				continue
 			}
+			key := entry.NormalizeTitle(it.Title)
+			if _, ok := groups[key]; !ok {
+				order = append(order, key)
+			}
+			groups[key] = append(groups[key], it)
 		}
-		rows = append(rows, listRow{snap: rep, count: len(g)})
+		rows = make([]listRow, 0, len(order))
+		for _, key := range order {
+			g := groups[key]
+			rep := g[0]
+			for _, it := range g[1:] {
+				if it.UpdatedAt.After(rep.UpdatedAt) ||
+					(it.UpdatedAt.Equal(rep.UpdatedAt) && it.ID.String() < rep.ID.String()) {
+					rep = it
+				}
+			}
+			rows = append(rows, listRow{snap: rep, count: len(g)})
+		}
+	}
+	// Indexing a nil map yields 0, so the non-search callers need no branch.
+	for i := range rows {
+		rows[i].matches = matches[rows[i].snap.ID.String()]
 	}
 	return rows
 }
@@ -658,68 +711,52 @@ type SearchHit struct {
 // column ahead of the familiar tier/id/kind/title columns, with a footer
 // tallying entries and total matches. Rows arrive pre-sorted (most matches
 // first); no collapsing — search shows every hit.
+//
+// The table itself comes from ListLines, so the static output and the
+// interactive search cockpit are the same table by construction. Three options
+// carry the search semantics: ShowAll keeps every hit (no collapsing, no
+// superseded drop), PreserveOrder leaves the incoming relevance ranking alone,
+// and a nil Favorites keeps pinning from outranking it.
 func SearchResults(w io.Writer, hits []SearchHit, color bool) {
 	if len(hits) == 0 {
 		fmt.Fprintln(w, "no matches")
 		return
 	}
-	cols := []Column{ColTier, ColID, ColKind, ColTitle}
-	mw := len("MATCHES")
-	widths := make([]int, len(cols))
-	for i, c := range cols {
-		widths[i] = utf8.RuneCountInString(columnHeaders[c])
-	}
-	for _, h := range hits {
-		r := listRow{snap: h.Snap, count: 1}
-		for i, c := range cols {
-			if n := utf8.RuneCountInString(tableCell(c, r)); n > widths[i] {
-				widths[i] = n
-			}
-		}
-	}
-
-	hdr := make([]string, 0, len(cols)+1)
-	hdr = append(hdr, pad("MATCHES", mw))
-	for i, c := range cols {
-		if i == len(cols)-1 {
-			hdr = append(hdr, columnHeaders[c])
-		} else {
-			hdr = append(hdr, pad(columnHeaders[c], widths[i]))
-		}
-	}
-	fmt.Fprintln(w, strings.Join(hdr, "  "))
-
+	items := make([]*entry.Snapshot, len(hits))
+	matches := make(map[string]int, len(hits))
 	total := 0
-	for _, h := range hits {
+	for i, h := range hits {
+		items[i] = h.Snap
+		matches[h.Snap.ID.String()] = h.Matches
 		total += h.Matches
-		r := listRow{snap: h.Snap, count: 1}
-		cells := []string{fmt.Sprintf("%*d", mw, h.Matches)}
-		for i, c := range cols {
-			last := i == len(cols)-1
-			switch {
-			case c == ColTier:
-				wdt := widths[i]
-				if last {
-					wdt = 0
-				}
-				cells = append(cells, tierCell(h.Snap.Tier, h.Snap.TierType, wdt, color))
-			case last:
-				cells = append(cells, tableCell(c, r))
-			default:
-				cells = append(cells, pad(tableCell(c, r), widths[i]))
-			}
-		}
-		fmt.Fprintln(w, strings.Join(cells, "  "))
+	}
+	header, lines, _ := ListLines(items, ListOptions{
+		Columns:       SearchColumns,
+		Color:         color,
+		ShowAll:       true,
+		PreserveOrder: true,
+		Matches:       matches,
+	})
+	fmt.Fprintln(w, header)
+	for _, ln := range lines {
+		fmt.Fprintln(w, ln)
 	}
 
+	fmt.Fprintf(w, "\n%s\n", SearchTally(len(hits), total))
+}
+
+// SearchTally is the count line that closes a search result table — "3 entries,
+// 7 matches", singularized. Shared by the static table and the cockpit's exit
+// echo so the two cannot word the same fact differently.
+func SearchTally(entries, matches int) string {
 	entriesNoun, matchesNoun := "entries", "matches"
-	if len(hits) == 1 {
+	if entries == 1 {
 		entriesNoun = "entry"
 	}
-	if total == 1 {
+	if matches == 1 {
 		matchesNoun = "match"
 	}
-	fmt.Fprintf(w, "\n%d %s, %d %s\n", len(hits), entriesNoun, total, matchesNoun)
+	return fmt.Sprintf("%d %s, %d %s", entries, entriesNoun, matches, matchesNoun)
 }
 
 // PlainSearchResults emits one tab-separated row per hit — matches, tier, id,
