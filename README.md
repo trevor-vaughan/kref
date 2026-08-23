@@ -198,7 +198,7 @@ kref new --kind spec --body $'# Auth design\n\nprose...' --label area:auth  # ti
 ```bash
 kref                        # interactive cockpit over your entries (q quits)
 kref list                   # ...or a static list across tiers (add --tier to filter)
-kref search auth            # recall by a title/body substring, with match counts
+kref search auth            # recall by a title/body substring, ranked by match count
 kref show <id>              # view one — rendered and paged; --plain for the stored body
 kref show                   # ...or omit the id to see the most-recently-touched entry
 ```
@@ -236,6 +236,8 @@ TIER        ID            KIND    STATUS  TITLE
 Every command that prints results takes the global `--json` (machine objects) or `--plain` (chrome-free, line-oriented for `grep`/`cut`/`xargs`) flag. The interactive cockpit is the one exception: a TUI cannot honour a machine contract, so bare `kref --json` tells you to use `kref list --json` instead.
 
 `list`, `search`, and `show` have rich terminal rendering, paging, sorting, and column control.
+
+On a terminal, `kref search <query>` is interactive like bare `kref`: hits are ranked by match count, `↑`/`↓` moves between them, `enter` opens one and `e` edits it, and the results stay in your scrollback when you quit. Add `--no-pager` for the static table; `--plain` and `--json` behave as everywhere else, and piping does the right thing on its own.
 
 See **[the usage reference](docs/usage.md)** for full details.
 

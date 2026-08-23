@@ -326,10 +326,33 @@ MATCHES  TIER        ID            KIND      TITLE
 ```
 
 It composes with the same `--kind`/`--status`/`--tier`/`--label` filters as
-`kref list`, pages on a terminal (`--no-pager` opts out), and under `--json`
-emits the full entry objects plus a `matches` field. `kref search <query> --plain` emits
-one tab-separated row per hit (matches, tier, id, kind, title) with no header or
-footer, for the same `grep`/`cut`/`xargs` pipelines as `list --plain`.
+`kref list`, and under `--json` emits the full entry objects plus a `matches`
+field. `kref search <query> --plain` emits one tab-separated row per hit
+(matches, tier, id, kind, title) with no header or footer, for the same
+`grep`/`cut`/`xargs` pipelines as `list --plain`.
+
+On a terminal, search is **interactive**: the table above becomes the same
+cockpit bare `kref` opens, with the cursor on the top hit.
+
+| Key             | Effect                                            |
+|-----------------|---------------------------------------------------|
+| `↑` `↓` `k` `j` | move between hits                                 |
+| `enter`         | open the hit (entry viewer, or the todo cockpit)  |
+| `e`             | open it in `$EDITOR`                              |
+| `x` `u`         | archive / restore                                 |
+| `s` `f`         | status picker / alias                             |
+| `/` `n` `N`     | find within the rows on screen                    |
+| `,` `?`         | view options / key help                           |
+| `q`             | quit, echoing the hits with header and tally      |
+
+Opening a hit and quitting the viewer returns you to the results at the same
+row, so you can work down a list without re-running the query. The review queue
+that bare `kref` shows is deliberately absent — a search answers a question
+about entries, and unrelated held writes would take the top row.
+
+Add `--no-pager` for the static table, or pipe the output; `--plain` and
+`--json` are unaffected. A query with no hits prints `no matches` rather than
+opening an empty full-screen view.
 
 ______________________________________________________________________
 

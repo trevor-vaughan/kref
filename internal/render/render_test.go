@@ -657,6 +657,28 @@ var _ = Describe("PlainSearchResults", func() {
 	})
 })
 
+var _ = Describe("SearchTally", func() {
+	DescribeTable("singularizes each noun independently",
+		func(entries, matches int, want string) {
+			Expect(render.SearchTally(entries, matches)).To(Equal(want))
+		},
+		Entry("both plural", 3, 7, "3 entries, 7 matches"),
+		Entry("one entry, several matches", 1, 3, "1 entry, 3 matches"),
+		Entry("one of each", 1, 1, "1 entry, 1 match"),
+		Entry("none", 0, 0, "0 entries, 0 matches"),
+	)
+
+	It("is the line SearchResults closes with, so the two cannot drift", func() {
+		snap := &entry.Snapshot{
+			ID:   entity.Id("fdd23cc786c4ff4b732b38773a69a55cbc70aab1"), // DevSkim: ignore DS173237
+			Kind: "spec", Title: "Auth flow", Tier: "shared", TierType: "shared",
+		}
+		var b bytes.Buffer
+		render.SearchResults(&b, []render.SearchHit{{Snap: snap, Matches: 3}}, false)
+		Expect(b.String()).To(HaveSuffix("\n" + render.SearchTally(1, 3) + "\n"))
+	})
+})
+
 var _ = Describe("edited column and sort key", func() {
 	It("registers ColEdited in AllColumns and sortableColumns", func() {
 		Expect(render.AllColumns).To(ContainElement(render.ColEdited))
@@ -1024,5 +1046,140 @@ var _ = Describe("StripFields", func() {
 		render.ShowHeader(&b2, base(), render.ShowOptions{})
 		Expect(b2.String()).To(Equal(b.String()))
 		Expect(b.String()).To(ContainSubstring("Title"))
+	})
+})
+
+var _ = Describe("SearchResults golden output", func() {
+	// Pins the exact bytes of the search table so the ListLines consolidation
+	// cannot change what a user sees. Any diff here is a decision, not a detail.
+	It("renders the pinned table for a mixed-tier result set", func() {
+		hits := []render.SearchHit{
+			{Snap: &entry.Snapshot{
+				ID: "aaaaaaaaaaaaaaaa", Tier: "shared", TierType: "shared",
+				Kind: "spec", Status: "open", Title: "Auth flow rewrite",
+			}, Matches: 14},
+			{Snap: &entry.Snapshot{
+				ID: "bbbbbbbbbbbbbbbb", Tier: "personal", TierType: "personal",
+				Kind: "note", Status: "open", Title: "auth notes",
+			}, Matches: 6},
+			{Snap: &entry.Snapshot{
+				ID: "cccccccccccccccc", Tier: "private", TierType: "private",
+				Kind: "todo", Status: "open", Title: "stray auth mention",
+			}, Matches: 1},
+		}
+		var buf bytes.Buffer
+		render.SearchResults(&buf, hits, false)
+
+		Expect(buf.String()).To(Equal(
+			"MATCHES  TIER        ID            KIND  TITLE\n" +
+				"     14  ○ shared    aaaaaaaaaaaa  spec  Auth flow rewrite\n" +
+				"      6  ◐ personal  bbbbbbbbbbbb  note  auth notes\n" +
+				"      1  ● private   cccccccccccc  todo  stray auth mention\n" +
+				"\n3 entries, 21 matches\n"))
+	})
+
+	It("renders the singular nouns for one entry with one match", func() {
+		hits := []render.SearchHit{
+			{Snap: &entry.Snapshot{
+				ID: "aaaaaaaaaaaaaaaa", Tier: "shared", TierType: "shared",
+				Kind: "spec", Status: "open", Title: "Only",
+			}, Matches: 1},
+		}
+		var buf bytes.Buffer
+		render.SearchResults(&buf, hits, false)
+		Expect(buf.String()).To(HaveSuffix("\n1 entry, 1 match\n"))
+	})
+
+	It("prints no matches for an empty result set", func() {
+		var buf bytes.Buffer
+		render.SearchResults(&buf, nil, false)
+		Expect(buf.String()).To(Equal("no matches\n"))
+	})
+})
+
+var _ = Describe("ColMatches", func() {
+	items := []*entry.Snapshot{
+		{ID: "aaaaaaaaaaaaaaaa", Tier: "shared", TierType: "shared",
+			Kind: "spec", Status: "open", Title: "Alpha"},
+		{ID: "bbbbbbbbbbbbbbbb", Tier: "shared", TierType: "shared",
+			Kind: "note", Status: "open", Title: "Beta"},
+	}
+	matches := map[string]int{
+		"aaaaaaaaaaaaaaaa": 14,
+		"bbbbbbbbbbbbbbbb": 6,
+	}
+
+	It("right-aligns the count under a MATCHES header", func() {
+		header, lines, ids := render.ListLines(items, render.ListOptions{
+			Columns:       render.SearchColumns,
+			ShowAll:       true,
+			Matches:       matches,
+			PreserveOrder: true,
+		})
+		Expect(header).To(HavePrefix("MATCHES"))
+		Expect(lines).To(HaveLen(2))
+		Expect(lines[0]).To(HavePrefix("     14  "))
+		Expect(lines[1]).To(HavePrefix("      6  "))
+		Expect(ids).To(Equal([]entity.Id{"aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"}))
+	})
+
+	It("renders zero when an entry is absent from the matches map", func() {
+		_, lines, _ := render.ListLines(items, render.ListOptions{
+			Columns:       render.SearchColumns,
+			ShowAll:       true,
+			Matches:       map[string]int{"aaaaaaaaaaaaaaaa": 14},
+			PreserveOrder: true,
+		})
+		Expect(lines[1]).To(HavePrefix("      0  "))
+	})
+
+	It("keeps the caller's order under PreserveOrder", func() {
+		// Relevance is ranked upstream, so the row sort must not run at all.
+		_, _, ids := render.ListLines(items, render.ListOptions{
+			Columns:       render.SearchColumns,
+			ShowAll:       true,
+			Matches:       matches,
+			PreserveOrder: true,
+		})
+		Expect(ids).To(Equal([]entity.Id{"aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"}))
+	})
+
+	It("still applies the default order without PreserveOrder", func() {
+		// The guard that makes PreserveOrder necessary: a nil Sort does NOT mean
+		// "leave it alone" — sortListRows falls through to tier→kind→title, which
+		// every other view relies on. Beta (note) precedes Alpha (spec) there.
+		_, _, ids := render.ListLines(items, render.ListOptions{
+			Columns: render.SearchColumns,
+			ShowAll: true,
+			Matches: matches,
+		})
+		Expect(ids).To(Equal([]entity.Id{"bbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaa"}))
+	})
+})
+
+var _ = Describe("ParseColumns validation", func() {
+	It("rejects the internal matches column", func() {
+		_, err := render.ParseColumns("matches")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(`unknown column "matches"`))
+	})
+
+	It("still accepts every advertised column", func() {
+		for _, c := range render.AllColumns {
+			cols, err := render.ParseColumns(string(c))
+			Expect(err).NotTo(HaveOccurred(), "column %q must parse", c)
+			Expect(cols).To(Equal([]render.Column{c}))
+		}
+	})
+
+	It("never advertises a column it would reject", func() {
+		// The error message is built from validColumns(), i.e. AllColumns. If
+		// acceptance were keyed off a different set, the two could drift.
+		_, err := render.ParseColumns("definitely-not-a-column")
+		Expect(err).To(HaveOccurred())
+		for _, c := range render.AllColumns {
+			Expect(err.Error()).To(ContainSubstring(string(c)))
+		}
+		Expect(err.Error()).NotTo(ContainSubstring("matches"))
 	})
 })

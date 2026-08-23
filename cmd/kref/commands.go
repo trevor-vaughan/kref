@@ -1207,8 +1207,13 @@ func newSearchCmd(dir *string) *cobra.Command {
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Short:             "Search entries and count matches per entry",
 		Args:              cobra.ExactArgs(1),
+		Long: "Search titles and bodies, ranked by match count. On a terminal this opens " +
+			"the interactive cockpit: ↑/↓ moves between hits, enter opens one, e edits it, " +
+			"and the results stay in your scrollback on quit. Use --no-pager, --plain or " +
+			"--json for static output; piping does the same automatically.",
 		Example: exampleBlock([]string{
-			"kref search auth                # case-insensitive title/body substring",
+			"kref search auth                # interactive; enter opens a hit",
+			"kref search auth --no-pager     # static table",
 			"kref search auth --tier shared  # composes with the list filters",
 		}),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1225,9 +1230,14 @@ func newSearchCmd(dir *string) *cobra.Command {
 				}
 				t = tdef.Name
 			}
-			results, err := s.Search(store.ListFilter{
+			// One filter value, used for both the search and the cockpit it
+			// may open: two literals here drifted the moment a flag was added
+			// to one and not the other, and the cockpit would then show a
+			// different result set than the static table.
+			lf := store.ListFilter{
 				Kind: kind, Status: status, Tier: t, Search: args[0], Labels: labels,
-			})
+			}
+			results, err := s.Search(lf)
 			if err != nil {
 				return err
 			}
@@ -1246,20 +1256,22 @@ func newSearchCmd(dir *string) *cobra.Command {
 				}
 				render.SearchResults(w, hits, color)
 			}
-			if usePager(cmd) && !noPager {
-				pagerColor := resolveColor(cmd, s.EffectiveConfig())
-				var buf bytes.Buffer
-				human(&buf, pagerColor)
-				return Page(pagerContent{
-					title: "kref search — " + args[0],
-					body:  strings.Split(strings.TrimRight(buf.String(), "\n"), "\n"),
-					color: pagerColor,
-				})
+			// usePager is already false under --json/--plain, so an interactive
+			// verdict here means a terminal: open the cockpit over the hits
+			// rather than a page of text you cannot act on.
+			switch searchOutputMode(usePager(cmd) && !noPager, len(results)) {
+			case searchEmpty:
+				fmt.Fprintln(cmd.OutOrStdout(), "no matches")
+				return nil
+			case searchCockpit:
+				// The search already ran; hand it over so the first paint does
+				// not scan the whole store a second time.
+				return runSearchBrowse(cmd, dir, s, lf, sortBy, args[0], results)
 			}
 			return emit(cmd, human, results)
 		},
 	}
-	c.Flags().BoolVar(&noPager, "no-pager", false, "do not page output even on a terminal")
+	c.Flags().BoolVar(&noPager, "no-pager", false, "print the static table instead of the interactive cockpit")
 	c.Flags().StringVar(&kind, "kind", "", "filter by kind")
 	c.Flags().StringVar(&status, "status", "", "filter by status")
 	c.Flags().StringVar(&tier, "tier", "", "filter by tier (kref tier list shows them)")
@@ -1269,6 +1281,30 @@ func newSearchCmd(dir *string) *cobra.Command {
 	_ = c.RegisterFlagCompletionFunc("status", fixedFlag(statusValues))
 	_ = c.RegisterFlagCompletionFunc("sort", fixedFlag(sortFlagValues("matches")))
 	return c
+}
+
+// searchOutput is what `kref search` does with the hits it found.
+type searchOutput int
+
+const (
+	searchStatic  searchOutput = iota // the table, for a pipe or --no-pager
+	searchCockpit                     // the interactive cockpit
+	searchEmpty                       // one line: an empty cockpit is a worse answer
+)
+
+// searchOutputMode picks between them. Split out of RunE because the terminal
+// check behind `interactive` cannot be reached from a test — every harness
+// captures into a buffer — which left the empty-result guard deletable with the
+// whole suite still green.
+func searchOutputMode(interactive bool, hits int) searchOutput {
+	switch {
+	case !interactive:
+		return searchStatic
+	case hits == 0:
+		return searchEmpty
+	default:
+		return searchCockpit
+	}
 }
 
 // sortSearchResults reorders results per a --sort value, which for search

@@ -114,11 +114,17 @@ surface.
 
 | Surface                             | Command                    | Implementation                                             |
 |-------------------------------------|----------------------------|------------------------------------------------------------|
-| Entry viewer (read + comment write) | `kref show <id>`           | `RunViewer`, `cmd/kref/viewer.go:1223`                     |
-| Todo cockpit (viewer + todo header) | `kref todo <id>`           | `runTodoCockpit`, `cmd/kref/todo.go:77`                    |
-| List cockpit (row nav + actions)    | `kref` (no arguments)      | `runRootBrowse`, `cmd/kref/listcockpit.go:719`             |
-| Quarantine review queue             | `kref quarantine`          | `runReviewModel`, `cmd/kref/quarantine_review_view.go:277` |
-| Static pager (no model)             | `kref search`, `kref diff` | `Page`, `cmd/kref/pager.go:263`                            |
+| Entry viewer (read + comment write) | `kref show <id>`           | `RunViewer`, `cmd/kref/viewer.go:1601`                     |
+| Todo cockpit (viewer + todo header) | `kref todo <id>`           | `runTodoCockpit`, `cmd/kref/todo.go:100`                   |
+| List cockpit (row nav + actions)    | `kref` (no arguments)      | `runRootBrowse`, `cmd/kref/listcockpit.go:789`             |
+| Search cockpit (hits, ranked)       | `kref search <query>`      | `runSearchBrowse`, `cmd/kref/listcockpit.go:889`           |
+| Quarantine review queue             | `kref quarantine`          | `runReviewModel`, `cmd/kref/quarantine_review_view.go:318` |
+| Static pager (no model)             | `kref diff`                | `Page`, `cmd/kref/pager.go:336`                            |
+
+The list and search cockpits are one `listModel`; a `cockpitProfile` supplies
+the title, whether the quarantine queue is fetched, and whether the results are
+echoed to scrollback on quit. So a key that works in one works in the other,
+and `kref search --no-pager` still prints the static table.
 
 ### Recipe
 
@@ -144,7 +150,7 @@ tmux send-keys -t kref 'q'
 tmux kill-session -t kref; tmux kill-session -t holder
 ```
 
-Press `?` in any of the four TUIs rather than trusting a key table in a doc —
+Press `?` in any of the five TUIs rather than trusting a key table in a doc —
 the popup is generated from the model's own bindings, so it cannot drift.
 
 ### Cross-surface conventions
@@ -164,9 +170,9 @@ than drifting quietly. Keep this list and the specs in sync.
   reservation — and would change it again whenever the search indicator appears,
   resizing the viewport under the reader mid-scroll. Pick a shorter variant
   instead. (`stays a single row at every width`)
-- **`g` goes to the top and `G` to the bottom** in all four surfaces.
+- **`g` goes to the top and `G` to the bottom** in all five surfaces.
   (`TUI navigation convention`)
-- **`n`/`N` cycle search matches** in all four. The quarantine queue steps with
+- **`n`/`N` cycle search matches** in all five. The quarantine queue steps with
   `]`/`[`. (`review viewer navigation`, `cmd/kref/quarantine_review_view_test.go`)
 - **`esc` is a layered dismiss**: modal → help popup → committed search → quit.
 - **`ctrl+c` always quits**, from any layer. A modal holding a draft spills it to

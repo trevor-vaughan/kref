@@ -3744,3 +3744,50 @@ var _ = Describe("bare kref", func() {
 			To(ContainSubstring("Core Commands:"))
 	})
 })
+
+var _ = Describe("kref search interactive gating", func() {
+	It("documents the interactive default and the static escape hatches", func() {
+		out := run("help", "search")
+		// Phrases from the Long description alone. "interactive", "--no-pager",
+		// "--plain" and "--json" all appear in the flag usage blocks cobra
+		// prints anyway, so asserting those passes with the Long text deleted.
+		Expect(out).To(ContainSubstring("enter opens one"))
+		Expect(out).To(ContainSubstring("stay in your scrollback"))
+		Expect(out).To(ContainSubstring("piping does the same automatically"))
+	})
+
+	DescribeTable("picks its output mode from the terminal and the hit count",
+		func(interactive bool, hits int, want searchOutput) {
+			Expect(searchOutputMode(interactive, hits)).To(Equal(want))
+		},
+		// The terminal check behind `interactive` is unreachable from any
+		// harness here, so this is the only layer that can hold the
+		// empty-result guard in place.
+		Entry("a pipe or --no-pager gets the table", false, 3, searchStatic),
+		Entry("a terminal with hits gets the cockpit", true, 3, searchCockpit),
+		Entry("a terminal with no hits gets one line, not an empty cockpit", true, 0, searchEmpty),
+		Entry("no hits and no terminal still gets the table", false, 0, searchStatic),
+	)
+
+	It("keeps the static table reachable, with the MATCHES column intact", func() {
+		// An isolated repo, not the ambient one: a query against live data
+		// tests today's contents, not the code.
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		run("--dir", dir, "new", "--kind", "spec", "--title", "Auth flow", "--body", "auth auth")
+
+		out := run("--dir", dir, "search", "--no-pager", "auth")
+		Expect(out).To(ContainSubstring("MATCHES"))
+		Expect(out).To(ContainSubstring("Auth flow"))
+		Expect(out).To(ContainSubstring("1 entry, 3 matches"))
+	})
+
+	It("says no matches for a query that hits nothing", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		run("--dir", dir, "new", "--kind", "spec", "--title", "Auth flow", "--body", "auth")
+
+		out := run("--dir", dir, "search", "--no-pager", "nothinghere")
+		Expect(out).To(ContainSubstring("no matches"))
+	})
+})
