@@ -8,14 +8,14 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
-	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/git-bug/git-bug v0.10.1
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/gofrs/flock v0.13.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/muesli/termenv v0.16.0
-	github.com/onsi/ginkgo/v2 v2.31.0
-	github.com/onsi/gomega v1.42.0
+	github.com/onsi/ginkgo/v2 v2.32.1
+	github.com/onsi/gomega v1.42.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.8.5
