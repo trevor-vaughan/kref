@@ -1,0 +1,51 @@
+AGENTS.md
+  s_9e26faccfffcfb::t_a18f7a004666f6 34,100-120
+README.md
+  s_9e26faccfffcfb::t_03354716966d20 278-282,284-286,439-440
+cmd/kref/argcomplete.go
+  s_9e26faccfffcfb::t_75283789d0623a 174-210
+cmd/kref/cli_test.go
+  s_9e26faccfffcfb::t_081af9a944366b 460,2670-2739,3865-3920
+cmd/kref/commands.go
+  s_9e26faccfffcfb::t_e4ed3050f08a44 191-200,211-212,1432-1617
+cmd/kref/listflags.go
+  s_9e26faccfffcfb::t_d7d94610a901c1 25,38-40,62
+cmd/kref/main.go
+  s_9e26faccfffcfb::t_4bd756642215c5 162,170
+docs/backup-recovery.md
+  s_9e26faccfffcfb::t_3138f554be60e2 42-71
+docs/usage.md
+  s_9e26faccfffcfb::t_342e159d6e89bd 481-482,934-1075
+internal/store/identity_profile.go
+  s_9e26faccfffcfb::t_df7bc1ddf48f61 1-203
+internal/store/identity_profile_test.go
+  s_9e26faccfffcfb::t_40fe13978b18f9 1-107
+internal/store/resign.go
+  s_9e26faccfffcfb::t_25613008aeb58a 1-301
+internal/store/signature.go
+  s_9e26faccfffcfb::t_57117f5f1dda00 1-121
+internal/store/signingrepo.go
+  s_9e26faccfffcfb::t_a9a10ce6a2f3af 1-299
+internal/store/signingrepo_test.go
+  s_9e26faccfffcfb::t_c7c4ced7f3b81f 1-290
+internal/store/store.go
+  s_9e26faccfffcfb::t_6f5a3715e9a705 60,64-66,71,111-112,116-119,131-132,136-138,143-144,186-199,275,279-284,294,308-312,331-334,371-373
+internal/store/sync_test.go
+  s_9e26faccfffcfb::t_039d77ecab5fa0 242-305
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "a202e9f19c6b10e872a3c7641cff1613e75b656f",
+  "prompts": {},
+  "sessions": {
+    "s_9e26faccfffcfb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f274cb3a-6dff-40fc-a58c-6b388f1775c2",
+        "model": "unknown"
+      },
+      "human_author": "Trevor Vaughan <peiriannydd@gmail.com>"
+    }
+  }
+}
