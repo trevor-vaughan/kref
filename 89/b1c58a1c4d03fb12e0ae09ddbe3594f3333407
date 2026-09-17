@@ -1,0 +1,48 @@
+internal/store/signature.go
+  s_cbe4f09d57ea5b::t_d76438a5c43b9e 211-222
+docs/usage.md
+  s_cbe4f09d57ea5b::t_bb97e9b345dec6 1145-1146,1153-1160
+  s_cbe4f09d57ea5b::t_036bf5ddbed4b3 1176-1180
+  s_cbe4f09d57ea5b::t_d161abc486da06 1161
+internal/entry/operations.go
+  s_cbe4f09d57ea5b::t_e3718e5f253a09 227-239
+internal/entry/operations_test.go
+  s_cbe4f09d57ea5b::t_9c2067c2b203a3 532-540,544-548
+  s_cbe4f09d57ea5b::t_e654c3512c7d6d 4
+internal/store/attest.go
+  s_cbe4f09d57ea5b::t_4461b70dbee37f 109-115,117-120,126
+  s_cbe4f09d57ea5b::t_4465126bf898f8 64,72-80
+internal/entry/snapshot.go
+  s_cbe4f09d57ea5b::t_a5205ca1b82d91 51-59
+internal/store/signingrepo.go
+  s_cbe4f09d57ea5b::t_9ebfe53c44a432 379-380,385-390
+  s_cbe4f09d57ea5b::t_1fecf96b916712 338-342
+  s_cbe4f09d57ea5b::t_e961b1bf1d3231 407-421,423-426
+  s_cbe4f09d57ea5b::t_53677be984ea12 18
+cmd/kref/attest_test.go
+  s_cbe4f09d57ea5b::t_e599ddcd8bc136 36-38,40
+internal/store/attest_test.go
+  s_cbe4f09d57ea5b::t_b6bf418e69a05f 73-86
+internal/store/signature_test.go
+  s_cbe4f09d57ea5b::t_0de01dafcbd5d2 550-551
+  s_cbe4f09d57ea5b::t_0e2df828432241 720-727
+  s_cbe4f09d57ea5b::t_95a73cb476dc86 8
+  s_cbe4f09d57ea5b::t_63322ea3361760 493-526,529-549,552-555
+  s_cbe4f09d57ea5b::t_79dbb86e7807bc 556
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "89b1c58a1c4d03fb12e0ae09ddbe3594f3333407",
+  "prompts": {},
+  "sessions": {
+    "s_cbe4f09d57ea5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "430bf6e2-f09e-4940-a814-ad9f2bd7e29f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+AGENTS.md
+  s_9e26faccfffcfb::t_a18f7a004666f6 34,100-114,119,129
+README.md
+  s_9e26faccfffcfb::t_03354716966d20 278-282,284-286,439-440
+cmd/kref/argcomplete.go
+  s_9e26faccfffcfb::t_75283789d0623a 174-202,204-208
+cmd/kref/cli_test.go
+  s_9e26faccfffcfb::t_081af9a944366b 460,2670-2687,2727,2742-2754,2758-2760,2785-2799,2863-2867,2889-2898,4024-4078,4149
+cmd/kref/commands.go
+  s_9e26faccfffcfb::t_e4ed3050f08a44 191-200,211-212,1435-1516,1522-1526,1528-1585,1596,1603-1604,1639-1646,1648-1650,1665-1688
+cmd/kref/listflags.go
+  s_9e26faccfffcfb::t_d7d94610a901c1 25,38,71
+cmd/kref/main.go
+  s_9e26faccfffcfb::t_4bd756642215c5 162,170
+docs/backup-recovery.md
+  s_9e26faccfffcfb::t_3138f554be60e2 42-64,75-79
+docs/usage.md
+  s_9e26faccfffcfb::t_342e159d6e89bd 483-484,947-984,986-987,995-1004,1024-1027,1038,1041-1045,1065-1077,1083-1088,1090,1099,1116-1144,1147-1151,1156,1168-1174
+internal/store/identity_profile.go
+  s_9e26faccfffcfb::t_df7bc1ddf48f61 1-66,71,72-204
+internal/store/identity_profile_test.go
+  s_9e26faccfffcfb::t_40fe13978b18f9 1-5,7-27,39-95,122-144,177
+internal/store/resign.go
+  s_9e26faccfffcfb::t_25613008aeb58a 1-27,32-36,42-43,49-56,83-89,95-98,103-108,116-118,122-169,172-174,176-331,351-368
+internal/store/signature.go
+  s_9e26faccfffcfb::t_57117f5f1dda00 1-11,12,14-15,16-18,20,22-23,29-34,39-42,74-75,80-81,83,85-86,95,105-106,119,137,141,182-183,197-200,201,204,243-244,246,256,260-261
+internal/store/signingrepo.go
+  s_9e26faccfffcfb::t_a9a10ce6a2f3af 1-71,81-82,85-100,102-140,152-318
+internal/store/signingrepo_test.go
+  s_9e26faccfffcfb::t_c7c4ced7f3b81f 1-11,15-78,80-85,86-202,355-433
+internal/store/store.go
+  s_9e26faccfffcfb::t_6f5a3715e9a705 64,68-69,75,132-133,137-139,155-156,160-161,167,220-233,368-372,435-436
+internal/store/sync_test.go
+  s_9e26faccfffcfb::t_039d77ecab5fa0 242-290,301-302,306-308,310-312
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "e63c1bde5cd04dca04288755c7d91daa3a99ac66",
+  "prompts": {},
+  "sessions": {
+    "s_9e26faccfffcfb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f274cb3a-6dff-40fc-a58c-6b388f1775c2",
+        "model": "unknown"
+      },
+      "human_author": "Trevor Vaughan <peiriannydd@gmail.com>"
+    }
+  }
+}
