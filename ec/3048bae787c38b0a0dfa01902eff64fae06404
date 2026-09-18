@@ -1,0 +1,27 @@
+.taskfiles/dev.yml
+  s_4bc92f8f2a9b5e::t_4d7a84d8a9c537 123,130,135
+  s_4bc92f8f2a9b5e::t_b1c10aaabd9c93 99-105,110-112
+internal/store/gpghome_test.go
+  s_4bc92f8f2a9b5e::t_dad2b7649b32f3 1-40
+internal/store/store_suite_test.go
+  s_4bc92f8f2a9b5e::t_26a841175a070d 4,13,18-35
+  s_4bc92f8f2a9b5e::t_0fc3d01803af78 36-37
+.github/workflows/test.yml
+  s_4bc92f8f2a9b5e::t_08eaa5d7578bf7 64-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ec3048bae787c38b0a0dfa01902eff64fae06404",
+  "prompts": {},
+  "sessions": {
+    "s_4bc92f8f2a9b5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9660d4ab-a832-4933-9ff9-f06f1fda79e8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
