@@ -1,0 +1,25 @@
+internal/store/isolation_test.go
+  s_abafec7852baf8::t_b77ce889387c67 11-55,65
+internal/store/store_suite_test.go
+  s_abafec7852baf8::t_4ee9ee9bd4c094 26-48,51-54,60-62
+  s_abafec7852baf8::t_3f6908f86562fe 5
+  s_abafec7852baf8::t_a3e55c908dc8d9 68-75
+  s_abafec7852baf8::t_5f7419e46d5653 14,20-25,49-50,55-59
+  s_abafec7852baf8::t_68ea51dbdf58c5 63-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ba4b3ead001249887fdb7d8cc1ea0d93cc79ccb4",
+  "prompts": {},
+  "sessions": {
+    "s_abafec7852baf8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a370d193-a134-4b5c-aecd-587161586e23",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
