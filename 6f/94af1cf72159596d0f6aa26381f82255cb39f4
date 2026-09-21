@@ -1,0 +1,25 @@
+internal/store/signingrepo_test.go
+  s_abafec7852baf8::t_e27c601c60aa27 462-488,490-497
+  s_abafec7852baf8::t_59cd0d0199c070 231-301
+internal/store/signingrepo.go
+  s_abafec7852baf8::t_43df86f9e5e64b 101-111,115,118
+  s_abafec7852baf8::t_8ee4bd9a004709 133-145,147,150-151,153-175,177
+internal/store/store.go
+  s_abafec7852baf8::t_51abb57d9be70b 34-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6f94af1cf72159596d0f6aa26381f82255cb39f4",
+  "prompts": {},
+  "sessions": {
+    "s_abafec7852baf8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a370d193-a134-4b5c-aecd-587161586e23",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
