@@ -1,0 +1,95 @@
+internal/tui/tui_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_2248a95ddb7e52 13
+internal/buildinfo/buildinfo_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_621a839817b620 13
+internal/store/store_suite_test.go
+  s_abafec7852baf8::t_117b3d8f5dd96b 17-23,35-40
+  s_abafec7852baf8::t_1d7c0429621d5a 11-12,15
+  s_abafec7852baf8::t_0fcbc474ca0312 16
+internal/hooks/hooks_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_f2ce410a33577c 13
+internal/watermark/watermark_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_b08e10fb384bbc 13
+internal/testenv/testenv_test.go
+  s_abafec7852baf8::t_57e3e209644c89 1-62
+internal/config/config_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_45baab9903e691 13
+internal/render/render_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_ed3102d01b92f1 13
+internal/textdiff/textdiff_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_63313896a183ca 13
+internal/store/isolation_test.go
+  s_abafec7852baf8::t_3d75734c9f2b86 9-10
+  s_abafec7852baf8::t_2d365e15f39299 13-16,18-22
+  s_abafec7852baf8::t_28f50239c4db72 28
+internal/commentguard/commentguard_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_cac1f79e1d452f 13
+cmd/kref/cli_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 14-15,18
+  s_abafec7852baf8::t_8c11d187cd3d6e 19
+internal/bridge/bridge_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 9-10,13
+  s_abafec7852baf8::t_5df13f575d9384 14
+internal/todo/todo_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_bdf2acdc66640a 13
+internal/outline/outline_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_6f10eb6c4fa416 13
+internal/textpatch/textpatch_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_d2151db1b11ed5 13
+internal/entryguard/entryguard_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_f798add388656e 13
+internal/todoguard/todoguard_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_e8f10fa56044b9 13
+internal/content/content_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_537f1e3e5790c0 13
+internal/testenv/testenv.go
+  s_abafec7852baf8::t_edb98d771d7175 1-103
+internal/mcpserver/server_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 9-10,13
+  s_abafec7852baf8::t_0e1e62ab51af05 14
+test/e2e/e2e_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 15-16,19
+  s_abafec7852baf8::t_e163cbe1652786 20
+internal/xdg/xdg_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_7efec02e50ca02 13
+.taskfiles/dev.yml
+  s_abafec7852baf8::t_41186598d4c155 154,162-169,173-178,181
+  s_abafec7852baf8::t_7dc368ec398b99 106-126,130-137,142-143
+internal/entry/entry_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_943bb1de184f89 13
+internal/scan/scan_suite_test.go
+  s_abafec7852baf8::t_1d7c0429621d5a 8-9,12
+  s_abafec7852baf8::t_85c17326f16772 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "81e11e29d9ca769bd06e83e5fb92d5b4d387da5a",
+  "prompts": {},
+  "sessions": {
+    "s_abafec7852baf8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a370d193-a134-4b5c-aecd-587161586e23",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
