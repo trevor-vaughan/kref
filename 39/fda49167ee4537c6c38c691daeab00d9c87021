@@ -1,0 +1,21 @@
+internal/entry/history.go
+  s_ac3ff9debb65d7::t_9c9d3e15c2f9a6 95-102,105-110,115-117
+internal/entry/history_test.go
+  s_ac3ff9debb65d7::t_a8143761dc9f16 99-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "39fda49167ee4537c6c38c691daeab00d9c87021",
+  "prompts": {},
+  "sessions": {
+    "s_ac3ff9debb65d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06725a14-3cf6-4eea-9c28-5c13785d86c4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
