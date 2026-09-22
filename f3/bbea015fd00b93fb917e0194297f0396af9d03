@@ -1,0 +1,24 @@
+internal/store/identity_profile_test.go
+  s_ac3ff9debb65d7::t_56f8e5ec92ea2c 129-137
+  s_ac3ff9debb65d7::t_271b01b86df9e0 102-128,138-156
+internal/store/identity_profile.go
+  s_ac3ff9debb65d7::t_725715093134c9 119
+  s_ac3ff9debb65d7::t_4de55bf4d8c3ff 130-166
+  s_ac3ff9debb65d7::t_7c16ec06c37b25 167-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f3bbea015fd00b93fb917e0194297f0396af9d03",
+  "prompts": {},
+  "sessions": {
+    "s_ac3ff9debb65d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06725a14-3cf6-4eea-9c28-5c13785d86c4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
