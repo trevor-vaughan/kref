@@ -1,0 +1,24 @@
+internal/store/pushed_test.go
+  s_53e30c033b20f8::t_c670ead0a7c6a1 116-140
+internal/store/tiers_test.go
+  s_53e30c033b20f8::t_2fd63d52eb0e15 145
+internal/store/pushed.go
+  s_53e30c033b20f8::t_ef7addb0b3d607 4,10
+  s_53e30c033b20f8::t_ee480b077a0b1b 149-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bb1c5685c27824e401d56dd14788fb62964d02e6",
+  "prompts": {},
+  "sessions": {
+    "s_53e30c033b20f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dc3653d-192f-4456-a70c-1d5ba04d0ce9",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
