@@ -134,13 +134,18 @@ implementing `Apply(*Snapshot)`:
 whose `Namespace()` is `kref-<tier>`.
 
 **A caveat on `AllTiers()`.** `entry.AllTiers()` returns the three *built-in*
-tiers only. It drives the operations that must know the tier set up front — the
-lamport-clock loaders registered at open time, for instance — but it is no longer
-the whole picture: custom tiers (declared via `kref tier add`, stored in git
-config) are witnessed after open by `witnessTierClocks`, and the reserved
+tiers only, and it is no longer the whole picture: custom tiers (declared via
+`kref tier add`, stored in git config) live outside it, and the reserved
 `entry.TierQuarantine` sits outside it entirely. When adding tier-aware code,
 check whether you need the built-ins or every declared tier
 (`Store.Tiers()`).
+
+No lamport-clock loaders are registered at open time any more. *Every* declared
+tier — built-ins included — is witnessed after open by `witnessTierClocks`,
+because git-bug's in-open `clockLoaders` pass walks entity commits with a
+`ReadCommit` that cannot decode a git-native signature and so fails every open
+once signing is on. The rationale lives on that function's doc comment in
+`internal/store/tiers.go`; all three `OpenGoGitRepo` call sites pass `nil`.
 
 ### Adding a new operation
 

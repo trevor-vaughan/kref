@@ -1105,9 +1105,12 @@ Three entries are refused, on purpose:
   that puts things back; see
   [`refs/kref-resign-backup/`](backup-recovery.md).
 - **Contains another author's operations.** Signing someone else's work with
-  your key would misrepresent it. Note that authorship here is the author field
-  the writer claimed, not something the signature proves — the check guards
-  against accidents, not against someone deliberately writing as you.
+  your key would misrepresent it. This counts *every* operation the rewrite
+  would touch, a peer's [attestation](#attesting-to-published-history) included,
+  since that would come back out reporting you as the attester. Note that
+  authorship here is the author field the writer claimed, not something the
+  signature proves — the check guards against accidents, not against someone
+  deliberately writing as you.
 - **Held in a system tier.** A write parked in the
   [quarantine queue](#quarantine-review-queue) is yours to approve or reject,
   not to rewrite. `--all` skips these; naming one by id reports the refusal.
@@ -1149,13 +1152,21 @@ something the mechanism can do on your behalf. Attesting an entry that already
 reads `good` throughout, or one held in the quarantine queue, is refused rather
 than attempted.
 
-The claim an attestation makes is **derived, not typed**: if every operation in
-the covered history is the attester's own, it is recorded as `authored` — the
-same assertion `resign` makes, by a mechanism that works on published history.
-If the history contains another author's operations, it is recorded as
-`received`, a weaker claim, and labelled as such everywhere it is shown
-(`kref show --header`'s `Signature` row, and the `attested_claim` field under
-`--json`).
+The claim an attestation makes is **derived, not typed**: if every *content*
+operation in the covered history is the attester's own, it is recorded as
+`authored`. If the history contains another author's content operations, it is
+recorded as `received`, a weaker claim, and labelled as such everywhere it is
+shown (`kref show --header`'s `Signature` row, and the `attested_claim` field
+under `--json`).
+
+Attestations by other people are deliberately not counted here — attesting is
+not authoring, and under `received` it is explicitly a claim about someone
+else's work. So an entry can be attested `authored` by you while also carrying a
+peer's attestation, and a peer attesting your entry never downgrades your own
+later attestation of it. This is the one place the claim differs from `resign`'s
+refusal, which does count a peer's attestation: `resign` rewrites and re-signs
+those commits, so it has to care about every operation it would touch, not just
+who authored the entry.
 
 There is no flag that sets the claim; kref decides it by comparing the operation
 authors it recorded against your own identity. Note what that does and does not
@@ -1235,7 +1246,17 @@ $ git config --local --get-regexp '^(user|gpg)\.'
 
 `KREF_IDENTITY` overrides the configured profile for a single shell. A profile
 name that does not exist is an error, not a silent fallback — writing as the
-wrong identity is the failure this is here to prevent.
+wrong identity is the failure this is here to prevent. Because it sits above git
+config, no config write can clear it: `kref identity use --none` **refuses**
+while it is set, rather than reporting a success it cannot deliver. Unset the
+variable in your shell instead.
+
+`--none` clears the pin from whatever layer set it. When the profile was pinned
+outside the repository — globally, or through an `includeIf` — clearing it
+records an empty `kref.identity` in the repository's own config to override that
+outer layer; `git config --unset kref.identity` removes it if you later want the
+outer setting back. A pin held in the repository's own config is simply removed,
+leaving no key behind.
 
 ______________________________________________________________________
 

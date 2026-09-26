@@ -130,9 +130,11 @@ For agents this means:
   `good` reached by ordinary signing.** It means a human vouched for this
   history LATER — not that every commit in it was signed when written. Report
   `attested_by`, `attested_at`, and `attested_claim` (`authored` if every
-  covered operation is the attester's own, `received` if the history contains a
-  peer's) alongside `sig_state` rather than collapsing them into a plain
-  "verified".
+  covered *content* operation is the attester's own, `received` if the history
+  contains a peer's) alongside `sig_state` rather than collapsing them into a
+  plain "verified". Attestations by other people do not count toward that —
+  attesting is not authoring — so an entry can read `authored` while also
+  carrying a peer's attestation.
 - **There is no attest tool.** `kref attest` repairs published history that
   `resign` cannot rewrite, but it has no `--force`, no `--dry-run`, and no MCP
   surface — an agent able to attest unsupervised could launder untrusted

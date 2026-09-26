@@ -1508,7 +1508,9 @@ func newIdentityCmd(dir *string) *cobra.Command {
 				map[string]any{"identity": name})
 		},
 	}
-	use.Flags().BoolVar(&none, "none", false, "clear the identity profile and use the plain git identity")
+	use.Flags().BoolVar(&none, "none", false,
+		"clear the identity profile and use the plain git identity "+
+			"(refuses while KREF_IDENTITY is set: unset it in your shell instead)")
 
 	c.AddCommand(list, use)
 	return c
