@@ -2,8 +2,11 @@ package store
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 
 	"github.com/git-bug/git-bug/repository"
+	"github.com/git-bug/git-bug/util/lamport"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -19,6 +22,101 @@ func mustAnyCommit(s *Store) repository.Hash {
 	Expect(err).NotTo(HaveOccurred())
 	return c
 }
+
+// Witnessing moved OUT of the OpenGoGitRepo call and into witnessTierClocks:
+// git-bug's clockLoaders pass walks entity commits with a ReadCommit that cannot
+// decode a git-native signature, so with signing on it failed every open. The
+// invariant the move has to carry across is stated in witnessTierClocks' own doc
+// comment — "the next write cannot mint a lamport time that precedes existing
+// history" — and it is the built-in tiers that changed hands, because the guard
+// no longer skips them. The failure is silent: a clone's refs arrive by fetch
+// while its clock files, which are local-only and never pushed, do not.
+var _ = Describe("tier clock witnessing", func() {
+	// dropClocks closes the store, deletes its clock directory, and returns the
+	// create-clock time that directory held. The path is asked of the repo rather
+	// than spelled out: the clocks live under kref's own git-bug namespace, not
+	// under ".git/git-bug", and a hard-coded path that stops resolving would leave
+	// these specs deleting nothing and passing against clocks that never went
+	// away — which is exactly how the first draft of them passed.
+	dropClocks := func(s *Store, ns string) lamport.Time {
+		GinkgoHelper()
+		clocks, err := s.repo.AllClocks()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(clocks).To(HaveKey(ns + "-create"))
+		before := clocks[ns+"-create"].Time()
+
+		clockDir := filepath.Join(s.repo.LocalStorage().Root(), "clocks")
+		Expect(s.Close()).To(Succeed())
+		Expect(os.ReadDir(clockDir)).NotTo(BeEmpty(), "clock directory moved: %s", clockDir)
+		Expect(os.RemoveAll(clockDir)).To(Succeed())
+		return before
+	}
+
+	// The built-ins are what changed hands: the guard here used to skip them
+	// (`d.Builtin() ||`) because git-bug's own clockLoaders pass covered them
+	// inside OpenGoGitRepo. That pass is gone — it walks entity commits with a
+	// ReadCommit that cannot decode a git-native signature, so with signing on it
+	// failed every open — and skipping them now would witness nothing at all.
+	//
+	// Exercised against witnessTierClocks directly, and against a handle that has
+	// never seen the clocks. Going through Open instead proves nothing: reading
+	// any entity witnesses its namespace as a side effect (git-bug's dag.read),
+	// and Open reads entries, so the clocks come back whether this function works
+	// or not.
+	It("witnesses the built-in tiers, which git-bug's open no longer does", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		for range 3 {
+			_, err = s.Add(entry.TierShared, "spec", "T", "b")
+			Expect(err).NotTo(HaveOccurred())
+		}
+		ns := entry.TierShared.Namespace()
+		before := dropClocks(s, ns)
+		Expect(before).To(BeNumerically(">=", lamport.Time(3)))
+
+		raw, err := repository.OpenGoGitRepo(dir, localStorageNamespace, nil)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = raw.Close() })
+		gone, err := raw.AllClocks()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gone).To(BeEmpty())
+
+		Expect(witnessTierClocks(raw, entry.BuiltinTierDefs())).To(Succeed())
+
+		recovered, err := raw.AllClocks()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recovered).To(HaveKey(ns + "-create"))
+		Expect(recovered).To(HaveKey(ns + "-edit"))
+		Expect(recovered[ns+"-create"].Time()).To(BeNumerically(">=", before))
+	})
+
+	// The user-visible invariant the move exists to preserve, stated without
+	// naming a mechanism: a store whose clock files are gone — the state a clone
+	// is in, since clocks are local-only and never travel with a fetch — must not
+	// mint a lamport time that collides with history already on disk.
+	It("writes above existing history after the clock files are lost", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		for range 3 {
+			_, err = s.Add(entry.TierShared, "spec", "T", "b")
+			Expect(err).NotTo(HaveOccurred())
+		}
+		ns := entry.TierShared.Namespace()
+		before := dropClocks(s, ns)
+
+		reopened, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = reopened.Close() })
+		_, err = reopened.Add(entry.TierShared, "spec", "After", "b")
+		Expect(err).NotTo(HaveOccurred())
+
+		clocks, err := reopened.repo.AllClocks()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(clocks[ns+"-create"].Time()).To(BeNumerically(">", before))
+	})
+})
 
 var _ = Describe("tier resolution", func() {
 	It("resolves the built-ins in a fresh store", func() {
