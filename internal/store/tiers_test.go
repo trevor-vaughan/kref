@@ -142,7 +142,7 @@ var _ = Describe("tier resolution", func() {
 		s, err := Init(dir, "T", "t@e.com")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
-		Expect(s.repo.UpdateRef("refs/kref-pushed/kref-personal/deadbeef", mustAnyCommit(s))).To(Succeed())
+		Expect(s.repo.UpdateRef("refs/kref-pushed/kref-personal/deadbeef", "", mustAnyCommit(s))).To(Succeed())
 		Expect(s.reloadTiers()).To(Succeed())
 		_, err = s.TierDef("pushed")
 		Expect(err).To(HaveOccurred())

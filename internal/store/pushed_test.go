@@ -113,6 +113,31 @@ var _ = Describe("pushed-state", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(exist).To(BeTrue())
 	})
+
+	It("recordPushed advances a mirror it has already written", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "T", "t@e.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		id, err := s.Add(entry.TierShared, "spec", "T", "v1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.recordPushed(entry.TierShared, []entity.Id{id})).To(Succeed())
+
+		Expect(s.Update(id, "v2", "")).To(Succeed())
+		tip, err := s.repo.ResolveRef(entryRef(entry.TierShared, id))
+		Expect(err).NotTo(HaveOccurred())
+
+		// repository.UpdateRef is a compare-and-swap: the second push of an
+		// entry must swap against the value the mirror already holds. Passing
+		// an empty old (the "must not exist yet" form) fails here, and the
+		// entry would then be re-scanned and re-pushed forever.
+		Expect(s.recordPushed(entry.TierShared, []entity.Id{id})).To(Succeed())
+		Expect(s.repo.ResolveRef(pushedRef(entry.TierShared, id))).To(Equal(tip))
+
+		d, err := s.pushDelta(entry.TierShared)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(d).NotTo(ContainElement(id))
+	})
 })
 
 var _ = Describe("Push trust boundary", func() {
