@@ -92,17 +92,29 @@ type Author struct {
 // typically have an EMPTY commit ident. Anything deciding "who wrote this?" must
 // ask here, not ask git.
 //
+// Attest operations are excluded: attesting is not authoring, and under
+// ClaimReceived it is explicitly a claim about someone ELSE's work. Counting an
+// attester here would feed back into the claim itself — `kref attest` derives
+// ClaimReceived from whether this list holds anyone but you, so a peer's bare
+// attestation would make your own later re-attestation of your own entry report
+// "received". Re-attestation is the prescribed repair after a key expires, so
+// that is a normal path, not a corner.
+//
 // It is not, however, PROOF. The author on an operation is asserted by whoever
 // wrote it; a signature attests to the key that made the commit, not to these
-// fields, and nothing cross-checks the two. The foreign-author guard in
-// `kref resign` reads this, so treat that guard as a courtesy check against
-// signing someone else's work by accident, not as a control against someone who
-// means to write as you. Deriving attribution from the signature instead is a
-// deferred design change, not a local fix here.
+// fields, and nothing cross-checks the two. Two callers read this: the
+// foreign-author guard in `kref resign`, a courtesy check against signing
+// someone else's work by accident rather than a control against someone who
+// means to write as you, and the claim derivation in `kref attest`, which turns
+// it into a user-visible trust label. Deriving attribution from the signature
+// instead is a deferred design change, not a local fix here.
 func (e *Entry) Authors() []Author {
 	out := make([]Author, 0)
 	seen := map[Author]bool{}
 	for _, op := range e.Operations() {
+		if _, ok := op.(*Attest); ok {
+			continue
+		}
 		a := Author{Name: op.Author().Name(), Email: op.Author().Email()}
 		if !seen[a] {
 			seen[a] = true

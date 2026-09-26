@@ -96,6 +96,26 @@ var _ = Describe("Entry.Authors", func() {
 	It("returns an empty slice rather than nil for an entry with no operations", func() {
 		Expect(entry.New(entry.TierShared).Authors()).To(BeEmpty())
 	})
+
+	// Attesting is not authoring. `kref attest` derives its claim from whether
+	// Authors() holds anyone but you, so a peer's bare attestation counted here
+	// would make your own later re-attestation of your own work say "received".
+	It("does not count an attestation as authorship", func() {
+		repo := newTestRepo()
+		mine := newAuthor(repo)
+		peer, err := identity.NewIdentity(repo, "Peer", "peer@example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(peer.Commit(repo)).To(Succeed())
+
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(mine, "spec", "T"))
+		e.Append(entry.NewSetBody(mine, "b"))
+		e.Append(entry.NewAttest(peer, entry.ClaimAuthored))
+
+		Expect(e.Authors()).To(Equal([]entry.Author{
+			{Name: "Tester", Email: "tester@example.com"},
+		}))
+	})
 })
 
 var _ = Describe("Entry.Log body versions and change stats", func() {
