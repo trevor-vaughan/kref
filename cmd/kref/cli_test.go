@@ -457,6 +457,7 @@ var _ = Describe("command aliases", func() {
 		"remote":    {"remotes"},
 		"version":   {"ver"},
 		"retier":    {"mv"},
+		"resign":    {"sign"},
 		"agents_md": {"agents-md"},
 		"fav":       {"alt"},
 	}
@@ -2564,10 +2565,17 @@ var _ = Describe("author override workflow", func() {
 	// into a container.
 	globalGitconfig := func(name, email string) {
 		home := GinkgoT().TempDir()
+		path := filepath.Join(home, ".gitconfig")
 		body := "[kref \"author\"]\n\tname = " + name + "\n\temail = " + email + "\n"
-		Expect(os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(body), 0o600)).To(Succeed())
+		Expect(os.WriteFile(path, []byte(body), 0o600)).To(Succeed())
 		setEnv("HOME", home)
 		setEnv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		// The test driver exports GIT_CONFIG_GLOBAL=/dev/null, which tells git to
+		// ignore $HOME/.gitconfig — so writing the file is not enough to put it in
+		// front of kref, which now resolves config exactly as git does. Naming it
+		// here is how git's own documentation says to select a global config, and
+		// is what the e2e suite already does.
+		setEnv("GIT_CONFIG_GLOBAL", path)
 	}
 	addID := func(dir, title string) string {
 		out := run("--dir", dir, "new", "--title", title, "--body", "b", "--json")
@@ -2663,6 +2671,208 @@ var _ = Describe("init on an already-initialized store", func() {
 		show := run("--dir", dir, "show", a.ID, "--json")
 		Expect(show).To(ContainSubstring(`"created_by": "First"`))
 		Expect(show).NotTo(ContainSubstring("Second"))
+	})
+})
+
+var _ = Describe("init signing notice", func() {
+	It("tells an unsigned store how to turn signing on", func() {
+		out := run("--dir", gitRepo(), "init", "--name", "T", "--email", "t@x", "--json")
+		Expect(out).To(ContainSubstring(`"signed": false`))
+		Expect(out).To(ContainSubstring("commit.gpgsign"))
+		// The old notice blamed a git-bug limitation that no longer applies.
+		Expect(out).NotTo(ContainSubstring("git-bug"))
+	})
+
+	It("reports a signing store as signed and says nothing about enabling it", func() {
+		dir := gitRepo()
+		enableTestSigning(dir)
+		out := run("--dir", dir, "init", "--name", "T", "--email", "t@x", "--json")
+		Expect(out).To(ContainSubstring(`"signed": true`))
+		Expect(out).NotTo(ContainSubstring("commit.gpgsign"))
+	})
+})
+
+// The verdict is resolved only for filters that ask for it, and `kref list` and
+// `kref search` are the commands that ask. Nothing below the CLI proves that
+// wiring: a store-level spec can pass WithSigState itself and stay green while
+// the flag is missing from the commands that need it.
+var _ = Describe("signature state on the list surfaces", func() {
+	It("carries the verdict into list --json and marks an unverifiable entry in the table", func() {
+		dir := gitRepo()
+		Expect(run("--dir", dir, "init", "--name", "T", "--email", "t@x")).To(ContainSubstring("initialized"))
+		enableTestSigning(dir)
+		Expect(run("--dir", dir, "new", "--title", "Signed", "--body", "b", "--json")).To(ContainSubstring("id"))
+
+		var listed []struct {
+			SigState string `json:"sig_state"`
+		}
+		Expect(json.Unmarshal([]byte(run("--dir", dir, "list", "--json")), &listed)).To(Succeed())
+		Expect(listed).To(HaveLen(1))
+		Expect(listed[0].SigState).To(Equal("good"))
+
+		// A good signature is deliberately silent, so a bad one has nothing to
+		// compete with.
+		Expect(run("--dir", dir, "list")).NotTo(ContainSubstring("⚠"))
+		Expect(run("--dir", dir, "search", "Signed")).NotTo(ContainSubstring("⚠"))
+
+		// Break verification without moving a ref: the signature is untouched,
+		// only the allowed-signers file it is checked against changes. A verdict
+		// cached against the ref tip would go on claiming "good".
+		empty := filepath.Join(GinkgoT().TempDir(), "allowed_signers")
+		Expect(os.WriteFile(empty, nil, 0o600)).To(Succeed())
+		out, err := exec.Command("git", "-C", dir, "config", "--local",
+			"gpg.ssh.allowedSignersFile", empty).CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+
+		Expect(run("--dir", dir, "list")).To(ContainSubstring("⚠"))
+		Expect(run("--dir", dir, "search", "Signed")).To(ContainSubstring("⚠"))
+		Expect(json.Unmarshal([]byte(run("--dir", dir, "list", "--json")), &listed)).To(Succeed())
+		Expect(listed[0].SigState).To(Equal("untrusted"))
+	})
+})
+
+var _ = Describe("resign command", func() {
+	// The JSON is a contract: a caller drives an undo from old_tip, so the shape
+	// and the tips have to be asserted, not merely observed to be present.
+	It("signs existing history and reports every result field", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+
+		var res struct {
+			DryRun  bool `json:"dry_run"`
+			Results []struct {
+				ID     string `json:"id"`
+				Tier   string `json:"tier"`
+				Signed int    `json:"signed"`
+				Reason string `json:"reason"`
+				OldTip string `json:"old_tip"`
+				NewTip string `json:"new_tip"`
+			} `json:"results"`
+		}
+		Expect(json.Unmarshal([]byte(run("--dir", dir, "resign", id, "--json")), &res)).To(Succeed())
+		Expect(res.DryRun).To(BeFalse())
+		Expect(res.Results).To(HaveLen(1))
+		r := res.Results[0]
+		Expect(r.ID).To(Equal(id))
+		Expect(r.Tier).To(Equal("personal"))
+		// `kref new` lands its create/set-body/origin operations in two
+		// operation-pack commits, and resign signs every commit it walks.
+		Expect(r.Signed).To(Equal(2))
+		Expect(r.Reason).To(BeEmpty())
+		Expect(r.OldTip).To(MatchRegexp(`^[0-9a-f]{40}$`))
+		Expect(r.NewTip).To(MatchRegexp(`^[0-9a-f]{40}$`))
+		Expect(r.NewTip).NotTo(Equal(r.OldTip))
+
+		show := run("--dir", dir, "show", id, "--json")
+		Expect(show).To(ContainSubstring(`"sig_state": "good"`))
+	})
+
+	It("reports the plan without touching anything on --dry-run", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+
+		Expect(run("--dir", dir, "resign", id, "--dry-run")).To(ContainSubstring("would sign"))
+
+		show := run("--dir", dir, "show", id, "--json")
+		Expect(show).To(ContainSubstring(`"sig_state": "unsigned"`))
+	})
+
+	// You named one entry and it was not signed. Reporting that only in the
+	// output leaves `kref resign <id> && ...` running on, and an agent or hook
+	// reading the status told the history is now signed when it is not. A
+	// refusal to act is an error here, the way a blocked push already is.
+	It("exits non-zero when the one entry you named is refused", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+		markPushed(dir, id)
+
+		out, err := runErr("--dir", dir, "resign", id)
+		Expect(err).To(MatchError(ContainSubstring("already pushed")))
+		Expect(out).NotTo(ContainSubstring("signed 1 commit"))
+		Expect(run("--dir", dir, "show", id, "--json")).To(ContainSubstring(`"sig_state": "unsigned"`))
+	})
+
+	// --dry-run exists to predict the real run. A preview that exits 0 where the
+	// real thing exits 1 is a preview you cannot act on.
+	It("exits non-zero for a refused entry on --dry-run too", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+		markPushed(dir, id)
+
+		_, err := runErr("--dir", dir, "resign", id, "--dry-run")
+		Expect(err).To(MatchError(ContainSubstring("already pushed")))
+	})
+
+	// --force succeeds and then strands you: the remote refuses the rewritten
+	// history and pulling breaks your own copy. Saying that at the moment of the
+	// decision is the only place it helps.
+	It("warns that a forced rewrite of a published entry is local only", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+		markPushed(dir, id)
+
+		out := run("--dir", dir, "resign", id, "--force")
+		Expect(out).To(ContainSubstring("LOCAL ONLY"))
+		Expect(out).To(ContainSubstring("will refuse it"))
+		Expect(out).To(ContainSubstring("undo: git update-ref"))
+		Expect(run("--dir", dir, "show", id, "--json")).To(ContainSubstring(`"sig_state": "good"`))
+	})
+
+	It("says nothing about forcing when nothing was overridden", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+
+		out := run("--dir", dir, "resign", id, "--force")
+		Expect(out).NotTo(ContainSubstring("LOCAL ONLY"))
+	})
+
+	// A sweep is different: skipping published and foreign entries is what --all
+	// is FOR. Failing it would make `resign --all` non-zero in every shared repo
+	// and train people to ignore the status.
+	It("stays successful when a sweep skips entries it must not touch", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+		markPushed(dir, id)
+		run("--dir", dir, "new", "--title", "Local", "--body", "b")
+
+		out, err := runErr("--dir", dir, "resign", "--all")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring("already pushed"))
+	})
+
+	It("sweeps every eligible entry with --all", func() {
+		dir := gitRepo()
+		unsignedThenSigning(dir)
+		run("--dir", dir, "new", "--title", "Second", "--body", "b")
+
+		// Assert the whole tally line. A bare ContainSubstring("2") also matches
+		// the commit count, the entry count, or a digit inside an id, so it
+		// would stay green if the sweep reached only one entry.
+		Expect(run("--dir", dir, "resign", "--all")).
+			To(ContainSubstring("signed 4 commit(s) across 2 entries"))
+	})
+
+	// A sweep spends its time in per-commit `git commit-tree -S` subprocesses, so
+	// it can run long with nothing on screen. The counter is the only signal.
+	It("reports sweep progress on one rewritten line, and only for a real batch", func() {
+		var buf bytes.Buffer
+		Expect(resignProgress(&buf, 1)).To(BeNil(),
+			"one entry finishes before a progress line could be read")
+
+		p := resignProgress(&buf, 3)
+		Expect(p).NotTo(BeNil())
+		p(1, 3, entity.Id("a"))
+		p(2, 3, entity.Id("b"))
+		// Carriage return plus erase-to-end-of-line: the count overwrites itself
+		// instead of scrolling away the refusals the tally is about to print.
+		Expect(buf.String()).To(Equal("\r\x1b[Kresigning 1/3\r\x1b[Kresigning 2/3"))
+	})
+
+	It("rejects an id together with --all", func() {
+		dir := gitRepo()
+		id := unsignedThenSigning(dir)
+		_, err := runErr("--dir", dir, "resign", id, "--all")
+		Expect(err).To(MatchError(ContainSubstring("not both")))
 	})
 })
 
@@ -3789,5 +3999,131 @@ var _ = Describe("kref search interactive gating", func() {
 
 		out := run("--dir", dir, "search", "--no-pager", "nothinghere")
 		Expect(out).To(ContainSubstring("no matches"))
+	})
+})
+
+var _ = Describe("identity command", func() {
+	// A profile is a plain gitconfig file, which is what lets one file carry
+	// name, email and signing key as a unit.
+	writeProfile := func(name, body string) {
+		GinkgoHelper()
+		dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "kref", "identities")
+		Expect(os.MkdirAll(dir, 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600)).To(Succeed())
+	}
+
+	It("lists profiles, marks the active one, and flags a missing signing key", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+		writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+
+		out := run("--dir", dir, "identity", "list")
+		Expect(out).To(ContainSubstring("work"))
+		Expect(out).To(ContainSubstring("Work Me <work@example.com>"))
+		Expect(out).To(ContainSubstring("(no signing key)"))
+		Expect(out).NotTo(ContainSubstring("* work"))
+
+		Expect(run("--dir", dir, "identity", "use", "work")).To(ContainSubstring("using identity work"))
+		Expect(run("--dir", dir, "identity", "list")).To(ContainSubstring("* work"))
+	})
+
+	It("attributes new entries to the active profile", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+		writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+		run("--dir", dir, "identity", "use", "work")
+
+		out := run("--dir", dir, "new", "--title", "Mine", "--body", "b", "--json")
+		var a struct {
+			ID string `json:"id"`
+		}
+		Expect(json.Unmarshal([]byte(out), &a)).To(Succeed())
+		Expect(run("--dir", dir, "show", a.ID, "--json")).To(ContainSubstring(`"created_by_email": "work@example.com"`))
+
+		Expect(run("--dir", dir, "identity", "use", "--none")).To(ContainSubstring("plain git identity"))
+	})
+
+	It("refuses a name that is not an existing profile", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+		_, err := runErr("--dir", dir, "identity", "use", "nope")
+		Expect(err).To(MatchError(ContainSubstring("not found")))
+	})
+
+	It("rejects a name and --none together", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+		_, err := runErr("--dir", dir, "identity", "use", "work", "--none")
+		Expect(err).To(MatchError(ContainSubstring("not both")))
+	})
+
+	// "there are none" is not a useful answer on its own, and this is the one
+	// place a reader learns that a profile is just a gitconfig file in a
+	// particular directory.
+	It("says how to create one when there are no profiles at all", func() {
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+
+		out := run("--dir", dir, "identity", "list")
+		Expect(out).To(ContainSubstring("no identity profiles"))
+		Expect(out).To(ContainSubstring("~/.config/kref/identities/<name>"))
+	})
+
+	// `identity use` is the one command whose argument is a filename the user has
+	// to have created by hand, so completion is what makes it usable at all.
+	Describe("completing `identity use`", func() {
+		It("offers each profile described by the identity it supplies", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+			writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+			writeProfile("personal", "[user]\n\tname = Home Me\n\temail = me@example.com\n")
+
+			out := run("--dir", dir, "__complete", "identity", "use", "")
+			Expect(out).To(ContainSubstring("work\tWork Me <work@example.com>"))
+			Expect(out).To(ContainSubstring("personal\tHome Me <me@example.com>"))
+		})
+
+		It("filters by the prefix already typed", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+			writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+			writeProfile("personal", "[user]\n\tname = Home Me\n\temail = me@example.com\n")
+
+			out := run("--dir", dir, "__complete", "identity", "use", "wo")
+			Expect(out).To(ContainSubstring("work"))
+			Expect(out).NotTo(ContainSubstring("personal"))
+		})
+
+		// An unreadable profile is still a profile: DescribeIdentities reports it
+		// with empty fields rather than dropping it, so one broken file cannot
+		// hide the rest from completion either.
+		It("offers a bare name for a profile whose identity cannot be read", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+			writeProfile("broken", "this is not a gitconfig file\n")
+
+			out := run("--dir", dir, "__complete", "identity", "use", "")
+			Expect(out).To(ContainSubstring("broken"))
+			Expect(out).NotTo(ContainSubstring("broken\t"))
+		})
+
+		It("guides rather than completing nothing when no profiles exist", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+
+			out := run("--dir", dir, "__complete", "identity", "use", "")
+			Expect(out).To(ContainSubstring("no identity profiles"))
+			Expect(out).To(ContainSubstring("~/.config/kref/identities/<name>"))
+		})
+
+		// The command takes one name, so a second word is a filename at best.
+		It("offers nothing once a name has been given", func() {
+			dir := gitRepo()
+			run("--dir", dir, "init", "--name", "T", "--email", "t@x")
+			writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+
+			out := run("--dir", dir, "__complete", "identity", "use", "work", "")
+			Expect(out).NotTo(ContainSubstring("Work Me"))
+		})
 	})
 })

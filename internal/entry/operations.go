@@ -48,6 +48,7 @@ const (
 	EditCommentOp      // #22
 	DeleteCommentOp    // #23
 	UnresolveCommentOp // #24
+	AttestOp           // #25
 )
 
 // Create initializes an entry with a kind and title.
@@ -186,6 +187,64 @@ func (op *SetContentType) Validate() error {
 	return op.OpBase.Validate(op, SetContentTypeOp)
 }
 func (op *SetContentType) Apply(s *Snapshot) { s.ContentType = op.ContentType; s.UpdatedAt = op.Time() }
+
+// Claim is what an attestation asserts about the history beneath it. It is
+// DERIVED from the entry's own authorship, never chosen by the caller, so a
+// recorded claim cannot contradict the DAG.
+type Claim string
+
+const (
+	// ClaimAuthored means every operation the attestation covers is the
+	// attester's own — the same assertion `kref resign` makes, by a mechanism
+	// that works on published history.
+	ClaimAuthored Claim = "authored"
+	// ClaimReceived means the covered history contains another author's
+	// operations. The attester vouches for what they received, which is a
+	// weaker claim than authorship and is labelled as such everywhere.
+	ClaimReceived Claim = "received"
+)
+
+// Attest vouches for every operation preceding it. It stores no digest: the
+// commit it lands in is signed, and a git commit hash already commits to its
+// whole ancestry, so a second Merkle structure over the same data would only be
+// something that can disagree with the first.
+type Attest struct {
+	dag.OpBase
+	Claim Claim `json:"claim"`
+}
+
+func NewAttest(author identity.Interface, claim Claim) *Attest {
+	return &Attest{OpBase: dag.NewOpBase(AttestOp, author, time.Now().Unix()), Claim: claim}
+}
+func (op *Attest) Id() entity.Id { return dag.IdOperation(op, &op.OpBase) }
+func (op *Attest) Validate() error {
+	if op.Claim != ClaimAuthored && op.Claim != ClaimReceived {
+		return fmt.Errorf("unknown attestation claim %q", op.Claim)
+	}
+	return op.OpBase.Validate(op, AttestOp)
+}
+
+// Apply moves the update time and nothing else. That is not an oversight.
+//
+// An attestation's meaning is "a trusted key vouched for the history beneath
+// this commit", and neither half of that can be compiled from the DAG: the
+// signature lives on the commit rather than in the operation, and whether the
+// key is trusted depends on allowed-signers, expiry and revocation — inputs
+// outside the entry entirely. The store resolves it on demand and reports it as
+// Snapshot.AttestedBy/AttestedAt/AttestedClaim (see store.chainState).
+//
+// Compiling the payload's own author into the snapshot would be worse than
+// useless: on a fetched chain that name is whatever the writer typed, so it
+// would sit beside the signature-derived AttestedBy as a forgeable twin. The
+// operation is still visible in `kref log`, which reads operations directly.
+//
+// It deliberately touches neither CreatedBy nor EditedAt: attesting is not
+// authoring, and under ClaimReceived it is explicitly a claim about someone
+// else's work. UpdatedAt it does move, like every other Apply here — the entry
+// changed, even though its body did not.
+func (op *Attest) Apply(s *Snapshot) {
+	s.UpdatedAt = op.Time()
+}
 
 // Track marks the entry as kept in sync with a local file at a repo-relative path.
 type Track struct {
@@ -795,6 +854,8 @@ func operationUnmarshaler(raw json.RawMessage, _ entity.Resolvers) (dag.Operatio
 		op = &DeleteComment{}
 	case UnresolveCommentOp:
 		op = &UnresolveComment{}
+	case AttestOp:
+		op = &Attest{}
 	default:
 		return nil, fmt.Errorf("unknown operation type %v", t.OperationType)
 	}

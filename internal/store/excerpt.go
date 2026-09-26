@@ -34,6 +34,16 @@ type Excerpt struct {
 	EditedAt       time.Time
 	CreatedBy      string
 	CreatedByEmail string
+	// SigState is TRANSIENT: it is filled by resolveExcerptSigStates for the
+	// callers that ask (ListFilter.WithSigState or UnsignedOnly) and is always
+	// empty in the persisted cache. It cannot be cached with the rest, because
+	// it is the one field that is not a function of the ref tip — the same
+	// commit verifies differently once allowed-signers, key trust or the active
+	// identity profile changes, none of which move a ref.
+	SigState entry.SigState
+	// SigReason is transient for the same reason SigState is: it is part of the
+	// same live verdict, not a function of the ref tip.
+	SigReason entry.SigReason
 }
 
 // deriveSource mirrors the ColSource renderer: the last non-empty provenance
@@ -57,6 +67,7 @@ func toExcerpt(s *entry.Snapshot) Excerpt {
 		Source:    deriveSource(s.Provenance),
 		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, EditedAt: s.EditedAt,
 		CreatedBy: s.CreatedBy, CreatedByEmail: s.CreatedByEmail,
+		SigState: s.SigState, SigReason: s.SigReason,
 	}
 }
 
@@ -81,5 +92,6 @@ func (e Excerpt) toSnapshot() *entry.Snapshot {
 		Provenance: sourceProvenance(e.Source),
 		CreatedAt:  e.CreatedAt, UpdatedAt: e.UpdatedAt, EditedAt: e.EditedAt,
 		CreatedBy: e.CreatedBy, CreatedByEmail: e.CreatedByEmail,
+		SigState: e.SigState, SigReason: e.SigReason,
 	}
 }

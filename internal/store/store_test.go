@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -135,6 +136,43 @@ var _ = Describe("Store purge", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
 		Expect(s.Purge("kref-nonexistent", false, false)).To(HaveOccurred())
+	})
+
+	// Purge is the remediation someone reaches for when a secret lands in an
+	// entry, and --gc's own warning says it prunes ALL unreachable objects. But
+	// kref mirrors an entry's tip into its own bookkeeping namespaces -- one on
+	// every push, one on every resign -- and those keep the op packs REACHABLE.
+	// Without removing them the entry disappears from kref while its body stays
+	// readable with `git cat-file`, and no amount of gc helps.
+	It("removes its own bookkeeping mirrors, so purged content is really unreachable", func() {
+		dir := gitRepo()
+		s, err := Init(dir, "Tester", "tester@example.com")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+
+		const secret = "ghp_012345678901234567890123456789abcdef"
+		id, err := s.Add(entry.TierShared, "memory", "Mistake", secret)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Exactly what a push and a resign leave behind.
+		tip := gitOut(dir, "rev-parse", tierRef(entry.TierShared, id.String()))
+		gitOut(dir, "update-ref", pushedRef(entry.TierShared, id), tip)
+		gitOut(dir, "update-ref", resignBackupRef(entry.TierShared, id), tip)
+
+		Expect(s.Purge(id, true, false)).To(Succeed())
+
+		for _, ref := range []string{
+			pushedRef(entry.TierShared, id),
+			resignBackupRef(entry.TierShared, id),
+		} {
+			_, err := s.repo.ResolveRef(ref)
+			Expect(err).To(HaveOccurred(), "%s still holds the purged entry", ref)
+		}
+
+		// The point of the exercise: the commit carrying the body is gone from
+		// the object store, not merely unlisted.
+		out, err := exec.Command("git", "-C", dir, "cat-file", "-e", tip).CombinedOutput()
+		Expect(err).To(HaveOccurred(), "purged tip %s is still readable: %s", tip, string(out))
 	})
 })
 

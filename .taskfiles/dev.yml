@@ -86,10 +86,61 @@ tasks:
       GINKGOLEAF: "{{.BIN_DIR}}/ginkgoleaf"
       FORMAT: '{{.FORMAT | default "tree"}}'
       OUT_DIR: "{{.TEST_DIR}}"
+      # Suites shell out to git (signing, verification, remotes). Without this
+      # they read the developer's real config, so a global commit.gpgsign or
+      # gpg.format silently changes what they assert — and commits made by
+      # fixtures get attributed to a human.
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_AUTHOR_NAME: kref-test
+      GIT_AUTHOR_EMAIL: kref-test@invalid
+      GIT_COMMITTER_NAME: kref-test
+      GIT_COMMITTER_EMAIL: kref-test@invalid
+      # Neutralizing the git config is not enough: under gpg.format=openpgp git
+      # hands signing to gpg, which reads GNUPGHOME and falls back to
+      # $HOME/.gnupg. A signing spec would then read the developer's real keyring
+      # and spawn an agent against it. The Go suites isolate this per process too
+      # (internal/store isolateGPGHome), so a bare `go test` is covered; this
+      # fences the runner script and whatever gets added beside it.
+      GNUPGHOME: "{{.TEST_DIR}}/gnupg"
+      # kref reads and writes real things under $HOME — its config and identity
+      # profiles under XDG_CONFIG_HOME, its scratch tree (entry bodies, secret-scan
+      # reports) under XDG_CACHE_HOME, the private-tier vault under XDG_DATA_HOME.
+      # Unfenced, the developer's own config decides what the suites assert and the
+      # suites write into a tree that is not theirs; both had happened.
+      #
+      # internal/testenv fences this per test binary, so a bare `go test` is
+      # covered. This is the outer fence: it catches the runner script and any
+      # suite added without the TestMain hook. XDG_* are named explicitly because a
+      # developer's shell often exports XDG_CONFIG_HOME already, and an inherited
+      # one points straight back at the real config.
+      HOME: "{{.TEST_DIR}}/home"
+      XDG_CONFIG_HOME: "{{.TEST_DIR}}/home/.config"
+      XDG_CACHE_HOME: "{{.TEST_DIR}}/home/.cache"
+      XDG_DATA_HOME: "{{.TEST_DIR}}/home/.local/share"
+      XDG_STATE_HOME: "{{.TEST_DIR}}/home/.local/state"
+      # Go derives all three from $HOME, so redirecting it without these rebuilds
+      # the world and re-downloads the module graph on every run.
+      GOCACHE: "{{.GOCACHE}}"
+      GOMODCACHE: "{{.GOMODCACHE}}"
+      GOPATH: "{{.GOPATH}}"
     vars:
       FLAGS: '{{if eq .MODE "llm"}}-count=1{{else}}-v -count=1{{end}}'
       EXTRA: '{{.EXTRA | default ""}}'
+      # Resolved before the HOME above applies, so these name the developer's real
+      # caches rather than the throwaway home's empty ones.
+      GOCACHE:
+        sh: go env GOCACHE
+      GOMODCACHE:
+        sh: go env GOMODCACHE
+      GOPATH:
+        sh: go env GOPATH
     cmds:
+      # gpg would create this itself, but not before complaining about the
+      # permissions if something else made it world-readable first.
+      - install -d -m 700 "{{.TEST_DIR}}/gnupg"
+      # Private-tier content and scan reports land under here.
+      - install -d -m 700 "{{.TEST_DIR}}/home"
       - bash "{{.ROOT_DIR}}/.taskfiles/scripts/run-ginkgo.sh" {{.FLAGS}} {{.EXTRA}} ./...
 
   test:e2e:
@@ -100,10 +151,34 @@ tasks:
       GINKGOLEAF: "{{.BIN_DIR}}/ginkgoleaf"
       FORMAT: '{{.FORMAT | default "tree"}}'
       OUT_DIR: "{{.TEST_DIR}}"
+      # Same git-config, GPG and home isolation as dev:test — see the notes there.
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_AUTHOR_NAME: kref-test
+      GIT_AUTHOR_EMAIL: kref-test@invalid
+      GIT_COMMITTER_NAME: kref-test
+      GIT_COMMITTER_EMAIL: kref-test@invalid
+      GNUPGHOME: "{{.TEST_DIR}}/gnupg"
+      HOME: "{{.TEST_DIR}}/home"
+      XDG_CONFIG_HOME: "{{.TEST_DIR}}/home/.config"
+      XDG_CACHE_HOME: "{{.TEST_DIR}}/home/.cache"
+      XDG_DATA_HOME: "{{.TEST_DIR}}/home/.local/share"
+      XDG_STATE_HOME: "{{.TEST_DIR}}/home/.local/state"
+      GOCACHE: "{{.GOCACHE}}"
+      GOMODCACHE: "{{.GOMODCACHE}}"
+      GOPATH: "{{.GOPATH}}"
     vars:
       FLAGS: '{{if eq .MODE "llm"}}-count=1{{else}}-v -count=1{{end}}'
       EXTRA: '{{.EXTRA | default ""}}'
+      GOCACHE:
+        sh: go env GOCACHE
+      GOMODCACHE:
+        sh: go env GOMODCACHE
+      GOPATH:
+        sh: go env GOPATH
     cmds:
+      - install -d -m 700 "{{.TEST_DIR}}/gnupg"
+      - install -d -m 700 "{{.TEST_DIR}}/home"
       - bash "{{.ROOT_DIR}}/.taskfiles/scripts/run-ginkgo.sh" -tags e2e {{.FLAGS}} {{.EXTRA}} ./...
 
   # Renders the VHS demo tapes in .taskfiles/demo/ into docs/demo/*.gif. Each tape

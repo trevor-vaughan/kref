@@ -15,7 +15,12 @@ import (
 	"github.com/trevor-vaughan/kref/internal/entry"
 )
 
-const excerptCacheVersion uint = 2
+// Bump whenever Excerpt's shape changes: freshness is judged by ref tips, so a
+// cache written before a new field existed would otherwise look current and
+// serve that field empty forever. v3 added SigState; v4 stopped persisting it,
+// so a v3 file — which holds a verdict that was already stale the moment the
+// signing config changed — must be discarded rather than read.
+const excerptCacheVersion uint = 4
 
 // diskCache is one tier's persisted state: the lean excerpts plus the ref map
 // they were built from. Both live in one file so a single atomic rename swaps

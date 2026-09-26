@@ -61,6 +61,20 @@ jobs:
           go mod tidy
           git diff --exit-code
 
+      # The native-GPG signing specs Skip() when gpg is absent, which is right on a
+      # dev box and wrong here: openpgp is the one read path that goes through
+      # git-bug's own dearmoring, and a silent skip would retire that coverage
+      # without failing anything. Runners ship gpg, so this asserts rather than
+      # installs — if that ever stops being true, this line says so instead of the
+      # suite quietly shrinking.
+      - name: Require gpg, so the openpgp signing specs cannot skip unnoticed
+        run: |
+          if ! command -v gpg >/dev/null; then
+            echo "::error::gpg is missing, so the native-GPG signing specs would skip silently"
+            exit 1
+          fi
+          gpg --version | head -1
+
       # FORMAT=github makes ginkgoleaf emit GitHub Actions annotations
       # (::group::/::error::) for the suite results; EXTRA carries the CI-only
       # race/shuffle/coverage flags through to `go test`.

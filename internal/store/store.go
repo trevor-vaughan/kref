@@ -31,6 +31,17 @@ type Store struct {
 
 	cfg         *config.Config // effective (merged) config; populated at Open/Init
 	cfgWarnings []string       // non-fatal warnings from the last config load
+	// git's own merged config, read once at Open/Init. Every kref key that lives
+	// in git config is answered from here; see gitconfig.go for why it is a
+	// snapshot rather than a read per key.
+	gitcfg *gitConfigSnapshot
+	// Why kref cannot sign here, or "" when it can — distinct from "signing is
+	// switched off", which Signing() reports and which is not a fault. Two causes
+	// reach it: the repo could not be reopened for signature work at all, and the
+	// signing decision itself could not be read. Held separately from cfgWarnings
+	// because the surfaces that must not misdescribe it (attest, resign) are not
+	// config surfaces, even though the second cause starts in config.
+	sigUnavailable string
 	// Per-layer favorites, retained from the last load so FavoriteOrigin can
 	// report where a name came from. Either may be nil (layer absent).
 	userFavs    map[string]string
@@ -39,17 +50,6 @@ type Store struct {
 	excerpts *excerptCache // per-tier lean-read cache; initialized in Init/Open
 
 	lockNotify io.Writer // where write-lock wait notices go; nil => os.Stderr (tests override)
-}
-
-// clockLoaders registers the lamport clocks for the built-in tiers at open
-// time. Built-ins only: custom namespaces are witnessed post-open
-// (witnessTierClocks).
-func clockLoaders() []repository.ClockLoader {
-	defs := make([]dag.Definition, 0, len(entry.AllTiers()))
-	for _, t := range entry.AllTiers() {
-		defs = append(defs, entry.Definition(t))
-	}
-	return []repository.ClockLoader{dag.ClockLoader(defs...)}
 }
 
 // Init bootstraps kref inside an EXISTING git repository at dir: it opens the
@@ -68,14 +68,22 @@ func Init(dir, name, email string) (*Store, error) {
 		}
 		return nil, err
 	}
-	repo, err := repository.OpenGoGitRepo(clean, localStorageNamespace, clockLoaders())
+	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
 	if err != nil {
 		return nil, err
 	}
-	author, err := newAuthor(repo, name, email)
+	gitcfg, err := loadGitConfigSnapshot(clean, nil)
 	if err != nil {
 		return nil, err
 	}
+	// Wrap immediately: the identity is committed (and therefore signed) below,
+	// and everything that reads it back needs the signature-aware handle.
+	repo, sigWarn := newSigningRepo(raw, clean, gitcfg)
+	author, err := newAuthor(repo, gitcfg, name, email)
+	if err != nil {
+		return nil, err
+	}
+	setSigningAuthor(repo, author.Name(), author.Email())
 	if err := author.Commit(repo); err != nil {
 		return nil, err
 	}
@@ -84,24 +92,41 @@ func Init(dir, name, email string) (*Store, error) {
 	if err := identity.SetUserIdentity(repo, author); err != nil {
 		return nil, err
 	}
-	st := &Store{repo: repo, author: author, dir: clean}
+	st := &Store{repo: repo, author: author, dir: clean, sigUnavailable: sigWarn, gitcfg: gitcfg}
 	if err := st.reloadTiers(); err != nil {
 		return nil, err
 	}
 	if err := st.loadConfig(); err != nil {
 		return nil, err
 	}
+	// After loadConfig, which resets the warning list.
+	if st.sigUnavailable != "" {
+		st.warnConfig(st.sigUnavailable)
+	}
 	st.excerpts = newExcerptCache(st)
 	return st, nil
 }
 
-// newAuthor builds the author identity: explicit name/email when provided,
-// otherwise the repository's configured git user.
-func newAuthor(repo repository.ClockedRepo, name, email string) (*identity.Identity, error) {
-	if name == "" && email == "" {
-		return identity.NewFromGitUser(repo)
+// newAuthor builds the author identity Init bakes into the repo: explicit
+// name/email when provided, otherwise whatever Open would resolve.
+//
+// Deferring to authorOverride is what keeps the two in step. Init used to fall
+// straight through to the plain git user, so initialising with an identity
+// profile (or KREF_AUTHOR_*) in force baked one identity and then made the very
+// next Open resolve a different one — and mint it, leaving the repo with two
+// identities for one person before a single entry was written.
+func newAuthor(repo repository.ClockedRepo, cfg *gitConfigSnapshot, name, email string) (*identity.Identity, error) {
+	if name != "" || email != "" {
+		return identity.NewIdentity(repo, name, email)
 	}
-	return identity.NewIdentity(repo, name, email)
+	n, e, source, err := authorOverride(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if source != "" {
+		return identity.NewIdentity(repo, n, e)
+	}
+	return identity.NewFromGitUser(repo)
 }
 
 // Author returns the display name and email of the store's author identity.
@@ -115,12 +140,22 @@ func (s *Store) Author() (string, string) {
 // primary only. A repo-open error yields ok=false so the caller can fall through
 // to Init for the canonical "not a git repository" message.
 func Initialized(dir string) (name, email string, ok bool, err error) {
-	repo, err := repository.OpenGoGitRepo(filepath.Clean(dir), localStorageNamespace, clockLoaders())
+	clean := filepath.Clean(dir)
+	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
 	if err != nil {
 		return "", "", false, nil
 	}
-	defer func() { _ = repo.Close() }()
-	a, err := identity.GetUserIdentity(repo)
+	defer func() { _ = raw.Close() }()
+	gitcfg, err := loadGitConfigSnapshot(clean, nil)
+	if err != nil {
+		return "", "", false, err
+	}
+	// The stored identity may live in signed commits, which git-bug's own
+	// handle cannot read at all.
+	// No warning to keep: this builds no Store, and the caller falls through to
+	// Init, which records it against a store that survives the call.
+	wrapped, _ := newSigningRepo(raw, clean, gitcfg)
+	a, err := identity.GetUserIdentity(wrapped)
 	if errors.Is(err, identity.ErrNoIdentitySet) {
 		return "", "", false, nil
 	}
@@ -132,30 +167,49 @@ func Initialized(dir string) (name, email string, ok bool, err error) {
 
 // Open opens an existing store and loads the default author identity.
 func Open(dir string) (*Store, error) {
-	repo, err := repository.OpenGoGitRepo(filepath.Clean(dir), localStorageNamespace, clockLoaders())
+	clean := filepath.Clean(dir)
+	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
 	if err != nil {
 		return nil, err
 	}
-	author, err := resolveAuthor(repo)
+	gitcfg, err := loadGitConfigSnapshot(clean, nil)
 	if err != nil {
 		return nil, err
 	}
-	st := &Store{repo: repo, author: author, dir: filepath.Clean(dir)}
+	// Wrap before resolving the author: the identity itself may be stored in
+	// signed commits, so reading it needs the signature-aware handle.
+	repo, sigWarn := newSigningRepo(raw, clean, gitcfg)
+	author, err := resolveAuthor(repo, gitcfg)
+	if err != nil {
+		return nil, err
+	}
+	setSigningAuthor(repo, author.Name(), author.Email())
+	st := &Store{repo: repo, author: author, dir: clean, sigUnavailable: sigWarn, gitcfg: gitcfg}
 	if err := st.reloadTiers(); err != nil {
 		return nil, err
 	}
 	if err := st.loadConfig(); err != nil {
 		return nil, err
 	}
+	// After loadConfig, which resets the warning list.
+	if st.sigUnavailable != "" {
+		st.warnConfig(st.sigUnavailable)
+	}
 	st.excerpts = newExcerptCache(st)
 	return st, nil
 }
 
 // resolveAuthor picks the identity that authors operations, by precedence:
-// env (KREF_AUTHOR_NAME + KREF_AUTHOR_EMAIL) > git config (kref.author.name +
-// kref.author.email, merged global+local) > the init-time stored repo identity.
-func resolveAuthor(repo repository.ClockedRepo) (identity.Interface, error) {
-	name, email, source, err := authorOverride(repo)
+// env (KREF_AUTHOR_NAME + KREF_AUTHOR_EMAIL) > the active identity profile's
+// user.name + user.email > git config (kref.author.name + kref.author.email,
+// resolved the way git resolves config) > the init-time stored repo identity.
+//
+// The profile sits above kref.author.* because selecting an identity is the more
+// deliberate act and the profile carries the matching signing key; see
+// authorOverride. Keep this list, authorOverride's branches and the numbered
+// precedence list in docs/usage.md#attribution saying the same thing.
+func resolveAuthor(repo repository.ClockedRepo, cfg *gitConfigSnapshot) (identity.Interface, error) {
+	name, email, source, err := authorOverride(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +227,7 @@ func resolveAuthor(repo repository.ClockedRepo) (identity.Interface, error) {
 // empty source when none is configured. A source supplying exactly one of
 // name/email is an error, so a mixed (e.g. human-name + container-email)
 // identity is never silently assembled.
-func authorOverride(repo repository.ClockedRepo) (name, email, source string, err error) {
+func authorOverride(cfg *gitConfigSnapshot) (name, email, source string, err error) {
 	en := strings.TrimSpace(os.Getenv("KREF_AUTHOR_NAME"))
 	ee := strings.TrimSpace(os.Getenv("KREF_AUTHOR_EMAIL"))
 	if en != "" || ee != "" {
@@ -182,8 +236,22 @@ func authorOverride(repo repository.ClockedRepo) (name, email, source string, er
 		}
 		return en, ee, "env", nil
 	}
-	cn := configString(repo, "kref.author.name")
-	ce := configString(repo, "kref.author.email")
+	// An active identity profile outranks kref.author.*: selecting an identity
+	// is the more specific, more deliberate act, and the profile carries the
+	// matching signing key so the two cannot drift apart.
+	_, profile, err := activeIdentityProfile(cfg)
+	if err != nil {
+		return "", "", "", err
+	}
+	if profile != "" {
+		pn, pe, err := identityProfileAuthor(profile)
+		if err != nil {
+			return "", "", "", err
+		}
+		return pn, pe, "identity", nil
+	}
+	cn := strings.TrimSpace(cfg.get("kref.author.name"))
+	ce := strings.TrimSpace(cfg.get("kref.author.email"))
 	if cn != "" || ce != "" {
 		if cn == "" || ce == "" {
 			return "", "", "", errors.New("set both kref.author.name and kref.author.email in git config, or neither")
@@ -191,16 +259,6 @@ func authorOverride(repo repository.ClockedRepo) (name, email, source string, er
 		return cn, ce, "gitconfig", nil
 	}
 	return "", "", "", nil
-}
-
-// configString reads one merged (global+local) git config value, treating a
-// missing key as empty.
-func configString(repo repository.ClockedRepo, key string) string {
-	v, err := repo.AnyConfig().ReadString(key)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(v)
 }
 
 // findOrCreateIdentity returns the existing local identity matching name+email,
@@ -257,6 +315,13 @@ func (s *Store) AddWithContentType(t entry.Tier, kind, title, body, contentType 
 // List and Get both need (Tier + resolved TierType). Every path that turns an
 // entry into a Snapshot MUST go through here so the excerpt cache stays
 // byte-identical to the DAG read.
+//
+// The signature verdict is deliberately NOT resolved here. It is the one field
+// that is not a function of the entry's commits — it depends on the
+// allowed-signers file, key trust, expiry and revocation — so deriving it at
+// compile time would both bill every caller a subprocess for a field most never
+// read and let a cache keyed on the ref OID serve it long after it went stale.
+// Callers that want it ask, via resolveSigState or ListFilter.WithSigState.
 func (s *Store) compileSnapshot(t entry.Tier, e *entry.Entry) *entry.Snapshot {
 	snap := e.Compile()
 	snap.Tier = string(t)
@@ -266,7 +331,31 @@ func (s *Store) compileSnapshot(t entry.Tier, e *entry.Entry) *entry.Snapshot {
 
 // Get loads and compiles an entry, searching all tiers (including hidden system
 // tiers, so a quarantine item is resolvable by id).
+//
+// It resolves the signature verdict: Get serves `kref show`, whose header states
+// the entry's signature state, and one entry costs at most one subprocess.
 func (s *Store) Get(id entity.Id) (*entry.Snapshot, error) {
+	t, e, err := s.locate(id)
+	if err != nil {
+		return nil, err
+	}
+	snap := s.compileSnapshot(t, e)
+	if err := s.resolveSigState(t, snap); err != nil {
+		return nil, err
+	}
+	return snap, nil
+}
+
+// getUnverified is Get without the signature verdict, for callers that need
+// only the entry's content.
+//
+// It exists because Get is the wrong tool inside a loop the list path already
+// paid for: `kref list` resolves every row's verdict and then calls Merged on
+// each one, and the quarantine queue resolves each held op's target title. Both
+// would spend a second `git show --format=%G?` per entry on a field neither
+// reads, reinstating the cost that keeping the verdict out of compileSnapshot
+// removes.
+func (s *Store) getUnverified(id entity.Id) (*entry.Snapshot, error) {
 	t, e, err := s.locate(id)
 	if err != nil {
 		return nil, err
@@ -285,6 +374,17 @@ type ListFilter struct {
 	IncludeArchived   bool // include archived entries alongside the rest
 	ArchivedOnly      bool // restrict to archived entries (a dedicated archive view)
 	OpenQuestionsOnly bool // keep only entries with >=1 unresolved question comment
+	// UnsignedOnly keeps only entries carrying no signature — the set `kref
+	// resign` acts on. Bad and untrusted signatures are deliberately NOT
+	// included: they already announce themselves on every listing via the ⚠
+	// marker, so they need no filter to be found.
+	UnsignedOnly bool
+	// WithSigState asks for each result's signature verdict to be resolved.
+	// It is opt-in because resolving costs a `git show --format=%G?` subprocess
+	// per SIGNED entry, and most callers (Tidy, the quarantine queue, the
+	// kref.conf lookup, the post-command no-remote warning) never read the
+	// field. UnsignedOnly implies it.
+	WithSigState bool
 }
 
 // List returns compiled snapshots across tiers, applying the filter. It returns
@@ -343,6 +443,18 @@ func (s *Store) List(f ListFilter) ([]*entry.Snapshot, error) {
 			if f.OpenQuestionsOnly && !hasOpenQuestion(snap) {
 				continue
 			}
+			// Resolved below every in-memory predicate, so a narrow filter does
+			// not spend a subprocess on entries it was going to drop anyway.
+			// UnsignedOnly is the one predicate that has to come after, because
+			// it is the one that reads the verdict.
+			if f.WithSigState || f.UnsignedOnly {
+				if err := s.resolveSigState(t, snap); err != nil {
+					return nil, err
+				}
+			}
+			if f.UnsignedOnly && !snap.SigState.Unsigned() {
+				continue
+			}
 			out = append(out, snap)
 		}
 	}
@@ -385,7 +497,11 @@ func (s *Store) ListExcerpts(f ListFilter) ([]Excerpt, error) {
 // refresh so the next completion is fast. It never errors out of a slow path —
 // completion latency is never worse than before this cache existed.
 func (s *Store) listForCompletion(f ListFilter) ([]Excerpt, error) {
-	if f.Search != "" {
+	// Search needs body text and a signature verdict needs a live check;
+	// the cache carries neither, and `matches` answers neither, so a filter
+	// asking for one must take the path that resolves it rather than coming
+	// back silently unfiltered.
+	if f.Search != "" || f.UnsignedOnly || f.WithSigState {
 		return s.ListExcerpts(f)
 	}
 	var out []Excerpt
@@ -664,6 +780,20 @@ func (s *Store) Purge(id entity.Id, gc, push bool) error {
 		if err := dag.Remove(entry.Definition(found), s.repo, id); err != nil {
 			return fmt.Errorf("remove %s in tier %s: %w", id, found, err)
 		}
+		// dag.Remove clears the tier ref and the remote-tracking ones; it knows
+		// nothing about kref's own mirrors. Both of these point AT the entry's
+		// tip, so leaving them keeps every op pack reachable — the entry vanishes
+		// from kref while `git cat-file` still serves its body, and gc cannot
+		// help because the objects are not unreachable. Purge is what someone
+		// runs after a secret lands in an entry, so this is the whole job.
+		//
+		// RemoveRef is idempotent, so an entry that was never pushed or resigned
+		// costs nothing here.
+		for _, ref := range []string{pushedRef(found, id), resignBackupRef(found, id)} {
+			if err := s.repo.RemoveRef(ref); err != nil {
+				return fmt.Errorf("remove bookkeeping ref %s: %w", ref, err)
+			}
+		}
 		if gc {
 			cmd := exec.Command("git", "-C", s.dir, "gc", "--prune=now", "--quiet")
 			cmd.Stdout = io.Discard
@@ -854,7 +984,9 @@ func (s *Store) UnacknowledgedMerge(snap *entry.Snapshot) (bool, error) {
 // and not yet cleared with kref resolve. Convenience wrapper that compiles the
 // snapshot first.
 func (s *Store) Merged(id entity.Id) (bool, error) {
-	snap, err := s.Get(id)
+	// getUnverified, not Get: the list command calls this for every row it has
+	// already resolved a verdict for, and UnacknowledgedMerge reads none of it.
+	snap, err := s.getUnverified(id)
 	if err != nil {
 		return false, err
 	}

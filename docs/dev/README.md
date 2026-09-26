@@ -217,10 +217,18 @@ a leaked secret that was ever pushed must be rotated.
 
 ## Known limitations / deferred
 
-- **No cryptographic signing.** git-bug v0.10.1 exposes no public API to equip
-  an identity with a signing key and cannot use system GPG/gpg-agent.
-  [Spec §10, §11](#reading-the-spec-citations). Attribution is
-  git-identity-based and unsigned.
+- **Signing is opt-in.** Entries are signed only when `commit.gpgsign` (or
+  `kref.sign`) is on; without it attribution is a claim, not a proof.
+  git-bug v0.10.1 still exposes no signing API, so `signingRepo`
+  (`internal/store/signingrepo.go`) works around it: an embedded-interface
+  decorator over git-bug's `RepoData` that routes commit writes through
+  `git commit-tree -S` and answers reads with the verdict from
+  `git verify-commit`. Read that file before re-deriving the git-bug
+  constraint. [Spec §10, §11](#reading-the-spec-citations).
+- **No signing policy.** A bad or unverifiable signature is reported, never
+  enforced — kref will not refuse to read or pull unsigned or badly signed
+  material. Attribution is also self-asserted even when signed: the signature
+  proves the key, the author fields are the signer's own claim.
 - **No encryption at rest** for the private/personal tiers
   ([spec §11](#reading-the-spec-citations)).
 - **No vector index / semantic search** yet

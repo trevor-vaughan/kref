@@ -9,7 +9,7 @@ import (
 
 // LogEntry is a render-friendly view of one operation in an entry's history.
 type LogEntry struct {
-	Op      string    `json:"op"` // create | set-body | set-title | set-kind | set-content-type | set-status | add-label | remove-label | add-link | remove-link | tombstone | restore | origin | ack-merge
+	Op      string    `json:"op"` // create | set-body | set-title | set-kind | set-content-type | set-status | add-label | remove-label | add-link | remove-link | tombstone | restore | origin | ack-merge | attest
 	Author  string    `json:"author"`
 	Time    time.Time `json:"time"`
 	Detail  string    `json:"detail"`            // op-specific one-line summary
@@ -67,10 +67,47 @@ func (e *Entry) Log() []LogEntry {
 			le.Op = "archive"
 		case *Unarchive:
 			le.Op = "unarchive"
+		case *Attest:
+			le.Op, le.Detail = "attest", string(o.Claim)
 		default:
 			le.Op = "op"
 		}
 		out = append(out, le)
+	}
+	return out
+}
+
+// Author identifies whoever authored an operation.
+type Author struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// Authors returns the distinct authors of the entry's operations, in first-seen
+// order.
+//
+// This is the best attribution kref has: the operation pack carries the author
+// identity, whereas the enclosing git commit does not — git-bug builds commits
+// from git's `author.*` config, which is normally unset, so kref's commits
+// typically have an EMPTY commit ident. Anything deciding "who wrote this?" must
+// ask here, not ask git.
+//
+// It is not, however, PROOF. The author on an operation is asserted by whoever
+// wrote it; a signature attests to the key that made the commit, not to these
+// fields, and nothing cross-checks the two. The foreign-author guard in
+// `kref resign` reads this, so treat that guard as a courtesy check against
+// signing someone else's work by accident, not as a control against someone who
+// means to write as you. Deriving attribution from the signature instead is a
+// deferred design change, not a local fix here.
+func (e *Entry) Authors() []Author {
+	out := make([]Author, 0)
+	seen := map[Author]bool{}
+	for _, op := range e.Operations() {
+		a := Author{Name: op.Author().Name(), Email: op.Author().Email()}
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
 	}
 	return out
 }
