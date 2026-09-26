@@ -1,0 +1,26 @@
+# URLs lychee must not check. Each line is a regex (or glob) matched against
+# the extracted link. Keep every entry narrow enough that it can only match the
+# one link it was written for -- a broad pattern here silently hides real rot.
+
+# Not a link: lychee's plain-text extractor reads the cosign
+# --certificate-identity-regexp documented in .goreleaser.yml's comment block
+# and stops at the regex's backslash, turning '^https://github\.com/...' into
+# the hostname 'github'. The identical string in README.md and SECURITY.md is
+# not reported, because there it sits in a fenced block the markdown extractor
+# skips. Nothing to fix in the comment: the regex is correct as written and has
+# to stay copy-pasteable.
+^https://github/$
+
+# Correct as written, and 404 by design. This is the GitHub Actions OIDC issuer
+# *identifier* passed to `cosign verify-blob --certificate-oidc-issuer`, not a
+# page. The issuer serves its metadata at /.well-known/openid-configuration and
+# returns 404 on the root path, so a reachability check can never pass. Matched
+# exactly so a genuinely broken githubusercontent link still reports.
+^https://token\.actions\.githubusercontent\.com/?$
+
+# A Task template, not a URL. .taskfiles/dev.yml interpolates
+# {{.GOLANGCI_LINT_VERSION}} into the golangci-lint install-script path at run
+# time; lychee sees the literal braces, percent-encodes them, and 404s on the
+# unresolved path. Anchored on the template marker so the same URL with a real
+# version tag substituted in is still checked.
+^https://raw\.githubusercontent\.com/golangci/golangci-lint/(%7B%7B|\{\{)\.

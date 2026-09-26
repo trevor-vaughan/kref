@@ -28,3 +28,9 @@ docs/dev/specs/
 .cockpit-demo/
 
 .codegraph/
+
+# Third-party agent-skill modules installed by lola (caveman, skillsaw,
+# review-council, ...). Vendored tooling, not project source: it is nobody
+# here's code to maintain, it is reinstallable, and its own test fixtures carry
+# deliberately fake credentials that trip the repo's secret scanners.
+.lola/

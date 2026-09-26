@@ -150,7 +150,7 @@ var _ = Describe("Store purge", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = s.Close() })
 
-		const secret = "ghp_012345678901234567890123456789abcdef"
+		const secret = "ghp_012345678901234567890123456789abcdef" // DevSkim: ignore DS117838
 		id, err := s.Add(entry.TierShared, "memory", "Mistake", secret)
 		Expect(err).NotTo(HaveOccurred())
 

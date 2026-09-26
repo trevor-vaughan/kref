@@ -12,7 +12,7 @@ import (
 
 // absentID is a well-formed entry id that no store holds, so locate fails on it
 // the way a real mid-sweep git error would.
-const absentID = entity.Id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+const absentID = entity.Id("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") // DevSkim: ignore DS173237
 
 // unsignedHistory builds an entry with two operation-pack commits while signing
 // is OFF, then turns signing on and reopens — the exact situation `kref resign`
