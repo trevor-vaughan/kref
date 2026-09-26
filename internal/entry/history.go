@@ -9,7 +9,7 @@ import (
 
 // LogEntry is a render-friendly view of one operation in an entry's history.
 type LogEntry struct {
-	Op      string    `json:"op"` // create | set-body | set-title | set-kind | set-content-type | set-status | add-label | remove-label | add-link | remove-link | tombstone | restore | origin | ack-merge
+	Op      string    `json:"op"` // create | set-body | set-title | set-kind | set-content-type | set-status | add-label | remove-label | add-link | remove-link | tombstone | restore | origin | ack-merge | attest
 	Author  string    `json:"author"`
 	Time    time.Time `json:"time"`
 	Detail  string    `json:"detail"`            // op-specific one-line summary
@@ -67,10 +67,86 @@ func (e *Entry) Log() []LogEntry {
 			le.Op = "archive"
 		case *Unarchive:
 			le.Op = "unarchive"
+		case *Attest:
+			le.Op, le.Detail = "attest", string(o.Claim)
 		default:
 			le.Op = "op"
 		}
 		out = append(out, le)
+	}
+	return out
+}
+
+// Author identifies whoever authored an operation.
+type Author struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// Authors returns the distinct authors of the entry's operations, in first-seen
+// order.
+//
+// This is the best attribution kref has: the operation pack carries the author
+// identity, whereas the enclosing git commit does not — git-bug builds commits
+// from git's `author.*` config, which is normally unset, so kref's commits
+// typically have an EMPTY commit ident. Anything deciding "who wrote this?" must
+// ask here, not ask git.
+//
+// Attest operations are excluded: attesting is not authoring, and under
+// ClaimReceived it is explicitly a claim about someone ELSE's work. Counting an
+// attester here would feed back into the claim itself — `kref attest` derives
+// ClaimReceived from whether this list holds anyone but you, so a peer's bare
+// attestation would make your own later re-attestation of your own entry report
+// "received". Re-attestation is the prescribed repair after a key expires, so
+// that is a normal path, not a corner.
+//
+// It is not, however, PROOF. The author on an operation is asserted by whoever
+// wrote it; a signature attests to the key that made the commit, not to these
+// fields, and nothing cross-checks the two. Two callers read this: the
+// foreign-author guard in `kref resign`, a courtesy check against signing
+// someone else's work by accident rather than a control against someone who
+// means to write as you, and the claim derivation in `kref attest`, which turns
+// it into a user-visible trust label. Deriving attribution from the signature
+// instead is a deferred design change, not a local fix here.
+func (e *Entry) Authors() []Author {
+	out := make([]Author, 0)
+	seen := map[Author]bool{}
+	for _, op := range e.Operations() {
+		if _, ok := op.(*Attest); ok {
+			continue
+		}
+		a := Author{Name: op.Author().Name(), Email: op.Author().Email()}
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// OperationAuthors returns the distinct authors of every operation, attestations
+// included, in first-seen order.
+//
+// Authors() answers "who wrote this entry?", which is the question the claim
+// derivation asks and the reason it skips attestations. This answers the wider
+// one — "whose work is in these commits at all?" — for callers that act on the
+// COMMITS rather than on the authorship: `kref resign` rebuilds every commit
+// reachable from the ref and signs each with our key, and an attester is read
+// back from the signature, so re-signing a peer's attestation would report us as
+// the attester. That is the same misrepresentation re-signing their edit would
+// be, so the guard has to see them.
+//
+// Keep the two in step: an operation type that records someone vouching for
+// history rather than changing it belongs out of Authors() and in here.
+func (e *Entry) OperationAuthors() []Author {
+	out := make([]Author, 0)
+	seen := map[Author]bool{}
+	for _, op := range e.Operations() {
+		a := Author{Name: op.Author().Name(), Email: op.Author().Email()}
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
 	}
 	return out
 }

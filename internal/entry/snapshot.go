@@ -48,6 +48,21 @@ type OriginEvent struct {
 // this one list so the vocabulary cannot drift between surfaces.
 var Statuses = []string{"open", "active", "accepted", "superseded", "obsolete"}
 
+// Attestation is a vouch for the history beneath a commit, as the store
+// RESOLVED it — never as an operation payload asserted it.
+//
+// By is filled from the signing key git reports for the attesting commit
+// (`%GS`), not from the operation's author field. That distinction is the whole
+// value of an attestation: the payload is attacker-controllable on a fetched
+// chain, the signature is not. There is deliberately no Email here — there is no
+// verified email to report, and an unverified one sitting beside a verified name
+// is exactly the confusion this type exists to avoid.
+type Attestation struct {
+	By    string    `json:"by"`
+	At    time.Time `json:"at"`
+	Claim Claim     `json:"claim"`
+}
+
 // Snapshot is the compiled, read-only view of an entry.
 type Snapshot struct {
 	ID             entity.Id     `json:"id"`
@@ -63,8 +78,13 @@ type Snapshot struct {
 	Labels         []string      `json:"labels"`
 	Provenance     []OriginEvent `json:"provenance"`
 	Comments       []Comment     `json:"comments"`
-	Merged         bool          `json:"merged"` // set by the store from the commit graph; not from Compile
-	AckedMerges    []string      `json:"-"`      // merge-commit hashes acknowledged via kref resolve; drives merge detection
+	Merged         bool          `json:"merged"`                   // set by the store from the commit graph; not from Compile
+	SigState       SigState      `json:"sig_state"`                // set by the store from the whole commit chain on request (Get, or a WithSigState/UnsignedOnly filter), never by Compile
+	SigReason      SigReason     `json:"sig_reason"`               // why an untrusted verdict cannot be vouched for; empty otherwise. Always present, like SigState.
+	AttestedBy     string        `json:"attested_by,omitempty"`    // the attestation that VERIFIES, if any; filled by the store on request, never by Compile
+	AttestedAt     time.Time     `json:"attested_at"`              // when that attestation was made; NO omitempty — encoding/json ignores it on a struct, so claiming it would be a lie (see CreatedAt)
+	AttestedClaim  Claim         `json:"attested_claim,omitempty"` // authored | received
+	AckedMerges    []string      `json:"-"`                        // merge-commit hashes acknowledged via kref resolve; drives merge detection
 	Deleted        bool          `json:"deleted"`
 	Archived       bool          `json:"archived"`     // hidden from normal list; independent of status
 	Tracked        bool          `json:"tracked"`      // kept in sync with a local file

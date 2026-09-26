@@ -29,6 +29,8 @@ tree and adds the prose that does not fit in `--help` output.
 - [Comments](#comments)
 - [Todos](#todos)
 - [Sync](#sync)
+- [Signing](#signing)
+- [Identities](#identities)
 - [Hooks](#hooks)
 - [Configuration & favorites](#configuration--favorites)
 - [Quarantine review queue](#quarantine-review-queue)
@@ -478,22 +480,35 @@ ______________________________________________________________________
 
 `kref init` adopts your git identity (`user.name` / `user.email`); override with
 `--name`/`--email`. The creating author is recorded on every entry (`CreatedBy`)
-and shown by `kref show`. Operations are attributed but not cryptographically
-signed; attribution is forgeable (see the README's Limitations).
+and shown by `kref show`. Attribution on its own is a claim, not a proof — sign
+your entries (see [Signing](#signing)) if you need it to be evidence.
 
 You can override the author per shell or per repo without re-running `init`. The
-kref author is the *logical* author stamped on entry history; it is independent
-of who authors the underlying git objects (those always stay your default git
-identity). This matters when kref runs in a container or CI whose git identity
+kref author is the *logical* author stamped on entry history; it is separate
+from who authors the underlying git objects (with signing off those keep your
+default git identity; with signing on kref stamps them with the kref author, so
+SSH allowed-signers verification has an email to match). This matters when kref
+runs in a container or CI whose git identity
 isn't yours but you still want your name on the knowledge. Precedence (highest
 first):
 
 1. `KREF_AUTHOR_NAME` + `KREF_AUTHOR_EMAIL` (environment), per shell/container.
-1. `kref.author.name` + `kref.author.email` (git config, read merged from
-   global + local):
+1. The `user.name` + `user.email` of the active [identity
+   profile](#identities), if one is selected. Selecting an identity is the more
+   deliberate act, and the profile carries the matching signing key, so the two
+   cannot drift apart.
+1. `kref.author.name` + `kref.author.email`, read from git config exactly as
+   `git config --get` would resolve them — system, global and repo-local, plus
+   anything an `include` or `includeIf` pulls in:
    ```bash
    git config --global kref.author.name  "Your Name"
    git config --global kref.author.email "you@example.com"
+   ```
+   So a per-directory identity works the usual way, with no kref-specific setup:
+   ```ini
+   # ~/.gitconfig
+   [includeIf "gitdir:~/work/"]
+       path = ~/.gitconfig-work
    ```
 1. The identity baked at `kref init` (the fallback).
 
@@ -501,6 +516,11 @@ Each source must supply both name and email or kref errors; it never mixes a
 name from one layer with an email from another. An override is resolved to a
 real, sync-resolvable identity (reused if it already exists), so attribution
 still propagates on push.
+
+`kref init` bakes the identity these same layers resolve to, unless you give it
+`--name`/`--email`. So initialising with a profile selected bakes that profile's
+identity rather than your plain git user — otherwise the first command after
+`init` would resolve a different author and mint a second identity for you.
 
 The "who am I" pointer is local and does not travel: the identity baked at
 `init` is stored in the repo's *local* git config. Re-running `kref init` does
@@ -928,6 +948,315 @@ After syncing, `kref list --new` shows two groups: *incoming* (entries your last
 `sync pull` brought from teammates) and *unpushed* (entries you changed since
 your last push). `kref log <id> --since-pull` shows just the ops you added to an
 entry after the last pull.
+
+______________________________________________________________________
+
+## Signing
+
+kref signs its commits with **your existing git signing setup**. There is no
+kref-specific key, keyring or format: signing is handed to `git commit-tree -S`,
+so `gpg.format` (`ssh`, `openpgp`, `x509`), `user.signingkey`, `gpg.program` and
+`gpg.ssh.program` all behave exactly as they do for your code.
+
+### Turning it on
+
+kref signs when git says to sign:
+
+```console
+$ git config --local commit.gpgsign true
+```
+
+If you already sign your commits, your kref entries are signed too — nothing
+further to do. To sign kref entries *without* signing your code, set
+`kref.sign` instead; it overrides `commit.gpgsign` in both directions:
+
+```console
+$ git config --local kref.sign true    # sign entries only
+$ git config --local kref.sign false   # never sign entries, even if code is signed
+```
+
+Signing is off by default. `kref init` says so, and says which switch turns it
+on.
+
+### Checking it
+
+Entry state shows up in three places:
+
+```console
+$ kref show <id> --header
+Signature  ✓ verified
+
+$ kref list                # only problems are marked
+◐ personal  a1b2c3d4  document  open  Design notes  ⚠ BAD SIGNATURE
+
+$ kref list --unsigned     # entries with any unsigned commit in their history
+```
+
+`--unsigned` finds entries with **any** unsigned commit, so history written
+before you had a key stays findable however many signed edits land on top of it.
+It is a view, not `kref resign`'s input set:
+resign also refuses pushed, foreign-authored and quarantined entries, and it does
+act on `bad`/`untrusted` ones — which need no filter, since `kref list` marks
+them with ⚠ whether you ask or not.
+
+In the interactive cockpit (bare `kref`), **`S`** toggles the same
+unsigned-only view.
+
+Because kref's entries are ordinary git commits under `refs/kref-*`, git can
+check them directly:
+
+```console
+$ git verify-commit refs/kref-shared/<id>
+```
+
+The verdict covers the entry's **whole operation history**, not just its latest
+commit, and the worst state wins: `bad` over `untrusted` over `unsigned` over
+`good`. An `untrusted` verdict also carries a `sig_reason` saying *which* of the
+five untrusted situations it is, because they need five different fixes:
+
+| `sig_reason`      | What happened                            | What to do                                             |
+| ----------------- | ---------------------------------------- | ------------------------------------------------------ |
+| `key-untrusted`   | the key is known, nobody vouched for it  | ssh: add it to allowed-signers; openpgp: trust the key |
+| `key-unavailable` | you do not have the signer's key at all  | import it, *then* trust it (openpgp only)              |
+| `unverifiable`    | verification could not run               | check `gpg.ssh.allowedSignersFile`, `gpg.format`       |
+| `key-expired`     | the key was past validity when it signed | re-sign under a current key                            |
+| `key-revoked`     | the key was revoked                      | **treat as a warning, not a setup step**               |
+
+`kref show --header` prints the matching next step, and a revoked key is marked
+`⚠ REVOKED KEY` in listings rather than sharing the generic marker. An entry reads
+`good` only when every operation in it does — otherwise one ordinary edit after
+turning signing on would make history written before the key look verified, and
+hide it from `--unsigned`, which is the only thing that would have found it
+again.
+
+There are four states:
+
+| State       | Meaning                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `good`      | Every commit in the entry verifies against a trusted key.        |
+| `unsigned`  | At least one commit carries no signature.                        |
+| `bad`       | A signature somewhere no longer covers the content.              |
+| `untrusted` | A signature is present that cannot be vouched for — see below.   |
+
+`untrusted` collapses five causes: you have not vouched for the signer's key, or
+you do not have it at all, or it is expired, or it was revoked, or the trust
+store is not configured. In a shared repository the first is much the most
+common — it is what a teammate's entry looks like before you add their key — and
+it is setup, not an attack. `sig_reason` (table above) says which one you have.
+
+Where you vouch depends on the format you sign with. With `gpg.format=ssh`, git
+reads an allowed-signers file:
+
+```console
+$ git config --local gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+```
+
+With `gpg.format=openpgp` there is no such file: trust comes from your gpg
+trustdb, and it takes **two** steps rather than one. Importing a collaborator's
+public key gets you as far as *unknown validity* — which still reads as
+`untrusted` here, exactly like a key you do not have at all — so you also have
+to vouch for it, by signing it or setting its ownertrust:
+
+```console
+$ gpg --import their-key.asc            # still `untrusted` after this alone
+$ gpg --edit-key <fingerprint> trust    # this is the step that flips it
+```
+
+gpg-agent does not cover this: it handles private-key operations (signing,
+passphrase caching), while validity comes from the trustdb. Either way kref
+reads git's verdict and keeps no trust store of its own.
+
+If an entry stays `untrusted` after that, the cause is one of the others — and an
+unknown or revoked key *does* carry signal. The `git verify-commit` above names
+the signer and says which case it hit.
+
+Nothing is ever *enforced*: a bad signature is reported loudly and the entry
+still renders. kref will not hide your own notes from you.
+
+### Signing history written earlier
+
+`kref resign` signs the commits of entries created before you had a key.
+
+```console
+$ kref resign --all --dry-run   # what would be signed
+$ kref resign --all             # sign it
+$ kref resign <id>              # one entry
+```
+
+A sweep re-signs every commit of every entry, so it can take a while. On a
+terminal it counts entries on a single stderr line as it goes; if it fails
+part-way it reports the entries it had already rewritten, because those refs have
+moved and `refs/kref-resign-backup/` is how you put them back.
+
+This rewrites commits, but **entry ids never move**: ids come from the operation
+payload, not from the commit, and each tree is reused untouched. Links,
+favorites and history all survive. The previous tip of every rewritten entry is
+kept under `refs/kref-resign-backup/`, so the rewrite is reversible — see
+[Backup & recovery](backup-recovery.md).
+
+Three entries are refused, on purpose:
+
+- **Already pushed.** A rewritten history is not a fast-forward, so `kref sync
+  push` refuses it and the new chain never reaches the remote. The entry that
+  then breaks is **yours**: pulling brings the old chain back alongside the
+  rewritten one, and the entry stops reading at all ("multiple leafs in the
+  entity DAG"). `--force` overrides the refusal, but the result is **local
+  only** — it can never be pushed — so kref warns and prints the `git update-ref`
+  that puts things back; see
+  [`refs/kref-resign-backup/`](backup-recovery.md).
+- **Contains another author's operations.** Signing someone else's work with
+  your key would misrepresent it. This counts *every* operation the rewrite
+  would touch, a peer's [attestation](#attesting-to-published-history) included,
+  since that would come back out reporting you as the attester. Note that
+  authorship here is the author field the writer claimed, not something the
+  signature proves — the check guards against accidents, not against someone
+  deliberately writing as you.
+- **Held in a system tier.** A write parked in the
+  [quarantine queue](#quarantine-review-queue) is yours to approve or reject,
+  not to rewrite. `--all` skips these; naming one by id reports the refusal.
+
+Only the pushed refusal is overridable; `--force` does not apply to the other
+two.
+
+**Exit status.** Naming an entry that is refused **fails** (exit 1, reason on
+stderr, `{"error": ...}` under `--json`) — you asked for one entry and it was not
+signed, so a script that checks only the status must not be told otherwise.
+`--dry-run` reports the same status it is previewing. A `--all` sweep is the
+opposite case: skipping published and foreign entries is what it is for, so it
+**succeeds** and lists what it skipped.
+
+A re-signature attests *now* to *then's* content — it is not evidence the entry
+was signed when written. `kref log` records each resign so the difference stays
+visible.
+
+### Vouching for history that has already been pushed
+
+`kref resign` cannot repair an entry once it has been pushed: it rewrites the
+entry's commits, git-bug requires exactly one root per entity, and a rewritten
+chain can never be reconciled with the published one — pushing it would produce
+two roots for the same entity, not a fast-forward. `kref attest` is the answer
+for exactly that case. It appends one new, signed commit that vouches for
+everything beneath it, without touching an existing commit, so it publishes
+through an ordinary `kref sync push` like any other edit:
+
+```console
+$ kref attest a1b2c3d4    # vouch for one entry's published history
+$ kref attest --all       # vouch for every eligible entry
+```
+
+An attestation absorbs `unsigned` and `untrusted` history beneath it — the two
+states a later vouch can honestly repair — but **never `bad`**: a commit whose
+signature no longer covers its content stays `bad` no matter how many
+attestations sit on top of it, because vouching for altered content is not
+something the mechanism can do on your behalf. Attesting an entry that already
+reads `good` throughout, or one held in the quarantine queue, is refused rather
+than attempted.
+
+The claim an attestation makes is **derived, not typed**: if every *content*
+operation in the covered history is the attester's own, it is recorded as
+`authored`. If the history contains another author's content operations, it is
+recorded as `received`, a weaker claim, and labelled as such everywhere it is
+shown (`kref show --header`'s `Signature` row, and the `attested_claim` field
+under `--json`).
+
+Attestations by other people are deliberately not counted here — attesting is
+not authoring, and under `received` it is explicitly a claim about someone
+else's work. So an entry can be attested `authored` by you while also carrying a
+peer's attestation, and a peer attesting your entry never downgrades your own
+later attestation of it. This is the one place the claim differs from `resign`'s
+refusal, which does count a peer's attestation: `resign` rewrites and re-signs
+those commits, so it has to care about every operation it would touch, not just
+who authored the entry.
+
+There is no flag that sets the claim; kref decides it by comparing the operation
+authors it recorded against your own identity. Note what that does and does not
+guarantee. `attested_by` names the key that signed — git's own verdict, which
+you cannot forge — but the claim is derived from the *authorship kref recorded*,
+which a `KREF_AUTHOR_EMAIL` override can steer. Someone signing with their own
+key while writing under another author's email can therefore produce
+`attested … by <their key> (authored)`. The signature still names them, so this
+misrepresents only the signer, by their own hand.
+
+Like resign, naming a refused entry fails (`kref attest <id>` exits non-zero,
+reason on stderr); a `--all` sweep skips it and succeeds. Unlike resign, there
+is no `--force` and no `--dry-run` — attest has no destructive branch for
+`--force` to override or `--dry-run` to preview — and there is no MCP tool: an
+agent able to attest unsupervised could launder untrusted history under your
+identity, the same reasoning that keeps `--force` off other MCP write surfaces.
+Attesting is a human/CLI action.
+
+Because the attesting key can itself later expire or be revoked, re-attesting
+is the repair: the new attestation's commit is signed with the current key, and
+it covers the old attestation's commit as an ordinary ancestor. The mechanism
+composes with itself the same way a second `resign` would re-sign under a newer
+key.
+
+That composition is *stacked*, not parallel. Attestations made independently on
+two sides of a concurrent edit — the diamond a sync merge produces — do not
+combine: one of them is honoured and the other covers nothing extra. Re-attest
+after merging if you want a single vouch over the whole history.
+
+______________________________________________________________________
+
+## Identities
+
+If you write as more than one person — work and personal, or a maintainer
+identity for one project — put each in a gitconfig file under
+`~/.config/kref/identities/`:
+
+```ini
+; ~/.config/kref/identities/work
+[user]
+	name = Work Me
+	email = work@example.com
+	signingkey = ~/.ssh/id_work
+[gpg]
+	format = ssh
+[gpg "ssh"]
+	allowedSignersFile = ~/.config/git/allowed_signers_work
+```
+
+Then pick one per repository:
+
+```console
+$ kref identity list
+  personal  Personal Me <me@example.com>  (no signing key)
+* work  Work Me <work@example.com>
+
+$ kref identity use work
+$ kref identity use --none    # back to the plain git identity
+```
+
+The active profile is marked `*`, and one that brings no `user.signingkey` says
+so — it will sign with whatever the repository is already configured to use,
+which is rarely what was meant.
+
+A profile is a plain gitconfig file rather than a kref format on purpose: it
+carries the name, the email **and** the signing key as one unit, so the three
+travel together instead of drifting apart. It is applied as git's *global*
+config layer for kref's own git calls, which means repository-local settings
+still win on top of it — so a repo that sets `user.signingkey`,
+`user.email` or `gpg.ssh.allowedSignersFile` locally overrides that part of the
+profile, and you can end up writing as one person while signing as another after
+all. Check for local overrides before trusting the pairing:
+
+```console
+$ git config --local --get-regexp '^(user|gpg)\.'
+```
+
+`KREF_IDENTITY` overrides the configured profile for a single shell. A profile
+name that does not exist is an error, not a silent fallback — writing as the
+wrong identity is the failure this is here to prevent. Because it sits above git
+config, no config write can clear it: `kref identity use --none` **refuses**
+while it is set, rather than reporting a success it cannot deliver. Unset the
+variable in your shell instead.
+
+`--none` clears the pin from whatever layer set it. When the profile was pinned
+outside the repository — globally, or through an `includeIf` — clearing it
+records an empty `kref.identity` in the repository's own config to override that
+outer layer; `git config --unset kref.identity` removes it if you later want the
+outer setting back. A pin held in the repository's own config is simply removed,
+leaving no key behind.
 
 ______________________________________________________________________
 

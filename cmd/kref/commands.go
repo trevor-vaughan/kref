@@ -188,7 +188,16 @@ func newInitCmd(dir *string) *cobra.Command {
 				return err
 			}
 			name, email := s.Author()
-			cmd.PrintErrln("note: operations are attributed to your git identity but are NOT cryptographically signed (git-bug v0.10.1 limitation).")
+			signed := s.Signing()
+			hint := ""
+			if !signed {
+				// Actionable, not apologetic: signing is one config away, and it
+				// is git's own switch rather than anything kref-specific.
+				hint = "note: operations are attributed to your git identity but are not signed. " +
+					"To sign them, set a signing key and turn on commit.gpgsign " +
+					"(or kref.sign for kref alone)."
+				cmd.PrintErrln(hint)
+			}
 			sharedRemote, err := adoptOriginRemote(cmd, s)
 			if err != nil {
 				return err
@@ -199,7 +208,8 @@ func newInitCmd(dir *string) *cobra.Command {
 				},
 				map[string]any{
 					"status": "initialized", "dir": *dir,
-					"author": name, "email": email, "signed": false,
+					"author": name, "email": email, "signed": signed,
+					"signing_hint":  hint,
 					"shared_remote": sharedRemote,
 				})
 		},
@@ -1236,6 +1246,9 @@ func newSearchCmd(dir *string) *cobra.Command {
 			// different result set than the static table.
 			lf := store.ListFilter{
 				Kind: kind, Status: status, Tier: t, Search: args[0], Labels: labels,
+				// Search results render through the same table as `kref list`,
+				// which decorates a bad or untrusted entry with ⚠.
+				WithSigState: true,
 			}
 			results, err := s.Search(lf)
 			if err != nil {
@@ -1417,6 +1430,362 @@ func newRestoreCmd(dir *string) *cobra.Command {
 		"kref restore ./docs/note.md  # address it by the file it came from",
 	}})
 	return c
+}
+
+// newIdentityCmd manages the identity profiles under
+// ~/.config/kref/identities. A profile is a plain gitconfig file, so one file
+// carries the name, email and signing key as a unit — which is the point:
+// switching identity must not leave you signing with the previous key.
+func newIdentityCmd(dir *string) *cobra.Command {
+	c := &cobra.Command{
+		Use:   "identity",
+		Short: "Choose which git identity (and signing key) kref writes with",
+		Example: exampleBlock([]string{
+			"kref identity list         # profiles in ~/.config/kref/identities",
+			"kref identity use work     # write and sign as that profile",
+			"kref identity use --none   # go back to the plain git identity",
+		}),
+	}
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List the available identity profiles",
+		Args:  cobra.NoArgs,
+		Example: exampleBlock([]string{
+			"kref identity list          # every profile, with the active one marked",
+			"kref identity list --json   # machine-readable",
+		}),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s, err := store.Open(*dir)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			profiles, err := s.DescribeIdentities()
+			if err != nil {
+				return err
+			}
+			return emit(cmd,
+				func(w io.Writer, _ bool) { renderIdentities(w, profiles) },
+				map[string]any{"identities": profiles})
+		},
+	}
+
+	var none bool
+	use := &cobra.Command{
+		Use:   "use [<name>]",
+		Short: "Use an identity profile in this repository (--none to clear)",
+		Args:  cobra.MaximumNArgs(1),
+		Example: exampleBlock([]string{
+			"kref identity use work     # write and sign as that profile",
+			"kref identity use --none   # back to the plain git identity",
+		}),
+		ValidArgsFunction: identityNameArgs(dir),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if none == (len(args) == 1) {
+				return errors.New("give an identity name or --none, not both or neither")
+			}
+			s, err := store.Open(*dir)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			name := ""
+			if !none {
+				name = args[0]
+			}
+			if err := s.UseIdentity(name); err != nil {
+				return err
+			}
+			return emit(cmd,
+				func(w io.Writer, _ bool) {
+					if name == "" {
+						fmt.Fprintln(w, "using the plain git identity")
+						return
+					}
+					fmt.Fprintf(w, "using identity %s\n", name)
+				},
+				map[string]any{"identity": name})
+		},
+	}
+	use.Flags().BoolVar(&none, "none", false,
+		"clear the identity profile and use the plain git identity "+
+			"(refuses while KREF_IDENTITY is set: unset it in your shell instead)")
+
+	c.AddCommand(list, use)
+	return c
+}
+
+// noIdentityProfiles is what an empty identities directory is told, by both
+// `kref identity list` and the completion for `kref identity use`. It says how
+// to create one, because the answer to "there are none" is never just "no".
+const noIdentityProfiles = "no identity profiles — create one as a gitconfig file in ~/.config/kref/identities/<name>"
+
+// renderIdentities prints the profiles, marking the active one and saying when
+// a profile brings no signing key — a profile without one signs with whatever
+// the repository is already configured to use, which is rarely what was meant.
+func renderIdentities(w io.Writer, profiles []store.IdentityProfileSummary) {
+	if len(profiles) == 0 {
+		fmt.Fprintln(w, noIdentityProfiles)
+		return
+	}
+	for _, p := range profiles {
+		marker := "  "
+		if p.Active {
+			marker = "* "
+		}
+		line := fmt.Sprintf("%s%s", marker, p.Name)
+		if p.Author != "" {
+			line += fmt.Sprintf("  %s <%s>", p.Author, p.Email)
+		}
+		if !p.Signs {
+			line += "  (no signing key)"
+		}
+		fmt.Fprintln(w, line)
+	}
+}
+
+func newResignCmd(dir *string) *cobra.Command {
+	var all, dryRun, force bool
+	c := &cobra.Command{
+		Use:               "resign [<id|path>]",
+		Aliases:           []string{"sign"},
+		ValidArgsFunction: entryArgs(dir, 1, sourceAll),
+		Short:             "Sign the existing history of entries written before signing was on",
+		Args:              cobra.MaximumNArgs(1),
+		Example: exampleBlock([]string{
+			"kref resign a1b2c3d4           # sign one entry's history",
+			"kref resign --all --dry-run    # show what a full sweep would sign",
+			"kref resign --all              # sign every eligible entry",
+			"kref resign a1b2c3d4 --force   # rewrite even though it was pushed",
+		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if all && len(args) > 0 {
+				return errors.New("give an entry id or --all, not both")
+			}
+			if !all && len(args) == 0 {
+				return errors.New("give an entry id to resign, or --all to sweep every eligible entry")
+			}
+			s, err := store.Open(*dir)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			var ids []entity.Id
+			if all {
+				if ids, err = s.ResignableIDs(); err != nil {
+					return err
+				}
+			} else {
+				id, err := resolveArg(s, args[0])
+				if err != nil {
+					return err
+				}
+				ids = []entity.Id{id}
+			}
+
+			// Progress goes to stderr and only to a terminal: it is status, not
+			// output, and must not land in a redirected --json capture.
+			var prog store.ResignProgress
+			if term.IsTerminal(int(os.Stderr.Fd())) {
+				prog = resignProgress(cmd.ErrOrStderr(), len(ids))
+			}
+			results, err := s.Resign(ids, dryRun, force, prog)
+			if prog != nil {
+				fmt.Fprint(cmd.ErrOrStderr(), "\r\033[K")
+			}
+			if err != nil {
+				// A mid-sweep failure leaves the entries before it rewritten on
+				// disk. Say which landed, or the operator has to re-derive the
+				// repo's state to find out.
+				if len(results) > 0 {
+					renderResign(cmd.ErrOrStderr(), results, dryRun)
+				}
+				return err
+			}
+			// A named entry that was refused did not get signed, and an exit
+			// status of 0 says it did — so `kref resign <id> && ...` runs on, and
+			// a hook or agent reading only the status believes the history is
+			// signed. A refusal to act is an error here, the way a push blocked
+			// by the secret scanner already is.
+			//
+			// A SWEEP is the opposite case: skipping published and foreign
+			// entries is what --all is for, so it stays successful and reports
+			// the skips. Refusing a whole sweep over them would make
+			// `resign --all` non-zero in every shared repo and train people to
+			// ignore the status.
+			//
+			// --dry-run gets the same treatment as the real run: a preview whose
+			// exit status disagrees with what it is previewing is not a preview.
+			if !all {
+				for _, r := range results {
+					if r.Reason != "" {
+						return errors.New(r.Reason)
+					}
+				}
+			}
+			// Say it where the decision was made. A forced rewrite of a published
+			// entry succeeds locally and then cannot go anywhere: the remote
+			// refuses the non-fast-forward, and the next pull joins the old chain
+			// back on and leaves the entry unreadable.
+			for _, r := range results {
+				if r.Forced && !dryRun {
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"WARNING: %s was already pushed, so this rewrite is LOCAL ONLY — "+
+							"`kref sync push` will refuse it, and pulling will break your copy "+
+							"of the entry.\n  undo: git update-ref refs/%s/%s %s\n",
+						r.ID.Human(), r.Tier.Namespace(), r.ID, r.OldTip)
+				}
+			}
+			return emit(cmd,
+				func(w io.Writer, _ bool) { renderResign(w, results, dryRun) },
+				map[string]any{"dry_run": dryRun, "results": results})
+		},
+	}
+	c.Flags().BoolVar(&all, "all", false, "resign every eligible entry")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be signed, changing nothing")
+	c.Flags().BoolVar(&force, "force", false,
+		"rewrite an already-pushed entry: the result cannot be pushed, and pulling afterwards breaks your local copy")
+	return c
+}
+
+// resignProgress returns a counter that rewrites one stderr line as a sweep
+// advances, or nil when there is nothing worth reporting. A single entry
+// finishes before the line could be read, and naming each id would scroll the
+// refusals renderResign is about to print off the screen — a sweep's slow part
+// is the per-commit `git commit-tree -S`, so the count is the signal.
+func resignProgress(w io.Writer, total int) store.ResignProgress {
+	if total < 2 {
+		return nil
+	}
+	return func(done, total int, _ entity.Id) {
+		fmt.Fprintf(w, "\r\033[Kresigning %d/%d", done, total)
+	}
+}
+
+// renderResign prints one line per entry that changed or was refused, then a
+// tally. Entries that were resigned cleanly are summarised rather than listed:
+// a sweep over a large store should not bury its refusals in a wall of noise.
+func renderResign(w io.Writer, results []store.ResignResult, dryRun bool) {
+	signed, entries := 0, 0
+	for _, r := range results {
+		if r.Reason != "" {
+			fmt.Fprintf(w, "skipped %s: %s\n", r.ID.Human(), r.Reason)
+			continue
+		}
+		signed += r.Signed
+		entries++
+	}
+	verb := "signed"
+	if dryRun {
+		verb = "would sign"
+	}
+	fmt.Fprintf(w, "%s %d commit(s) across %d entr%s\n",
+		verb, signed, entries, map[bool]string{true: "y", false: "ies"}[entries == 1])
+	if !dryRun && entries > 0 {
+		fmt.Fprintln(w, "previous tips kept under refs/kref-resign-backup/ (see docs/backup-recovery.md)")
+	}
+}
+
+func newAttestCmd(dir *string) *cobra.Command {
+	var all bool
+	c := &cobra.Command{
+		Use:               "attest [<id|path>]",
+		ValidArgsFunction: entryArgs(dir, 1, sourceAll),
+		Short:             "Vouch for the history of entries that can no longer be rewritten",
+		Args:              cobra.MaximumNArgs(1),
+		Example: exampleBlock([]string{
+			"kref attest a1b2c3d4    # vouch for one entry's published history",
+			"kref attest --all       # vouch for every eligible entry",
+		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if all && len(args) > 0 {
+				return errors.New("give an entry id or --all, not both")
+			}
+			if !all && len(args) == 0 {
+				return errors.New("give an entry id to attest, or --all to sweep every eligible entry")
+			}
+			s, err := store.Open(*dir)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			var ids []entity.Id
+			if all {
+				// The eligible set is identical to resign's — every non-system
+				// tier — so this reuses that list rather than aliasing it.
+				if ids, err = s.ResignableIDs(); err != nil {
+					return err
+				}
+			} else {
+				id, err := resolveArg(s, args[0])
+				if err != nil {
+					return err
+				}
+				ids = []entity.Id{id}
+			}
+
+			results, err := s.Attest(ids)
+			if err != nil {
+				// A mid-sweep failure leaves the entries before it attested on
+				// disk. Say which landed, or the operator has to re-derive the
+				// repo's state to find out.
+				if len(results) > 0 {
+					renderAttest(cmd.ErrOrStderr(), results)
+				}
+				return err
+			}
+			// A named entry that was refused did not get attested, and an exit
+			// status of 0 says it did — so `kref attest <id> && ...` runs on, and
+			// a hook or agent reading only the status believes the history is
+			// vouched for. A refusal to act is an error here, the way a push
+			// blocked by the secret scanner already is.
+			//
+			// A SWEEP is the opposite case: skipping entries that need nothing is
+			// what --all is for, so it stays successful and reports the skips.
+			if !all {
+				for _, r := range results {
+					if r.Reason != "" {
+						return errors.New(r.Reason)
+					}
+				}
+			}
+			return emit(cmd,
+				func(w io.Writer, _ bool) { renderAttest(w, results) },
+				map[string]any{"results": results})
+		},
+	}
+	c.Flags().BoolVar(&all, "all", false, "attest every eligible entry")
+	return c
+}
+
+// renderAttest prints one line per entry that was refused, then a tally of the
+// attestations by claim. Entries that were attested cleanly are summarised
+// rather than listed, so a sweep over a large store does not bury its refusals;
+// the claim split stays on the tally because "I wrote this" and "I received this
+// from someone else" are different assertions and the operator made both.
+func renderAttest(w io.Writer, results []store.AttestResult) {
+	authored, received := 0, 0
+	for _, r := range results {
+		if r.Reason != "" {
+			fmt.Fprintf(w, "skipped %s: %s\n", r.ID.Human(), r.Reason)
+			continue
+		}
+		switch r.Claim {
+		case entry.ClaimAuthored:
+			authored++
+		case entry.ClaimReceived:
+			received++
+		}
+	}
+	n := authored + received
+	line := fmt.Sprintf("attested %d entr%s", n, map[bool]string{true: "y", false: "ies"}[n == 1])
+	if n > 0 {
+		line += fmt.Sprintf(" (%d authored, %d received)", authored, received)
+	}
+	fmt.Fprintln(w, line)
 }
 
 func newArchiveCmd(dir *string) *cobra.Command {

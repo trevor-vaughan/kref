@@ -67,6 +67,19 @@ var _ = Describe("author identity override", func() {
 		Expect(authorOf(s, addEntry(s, "T"))).To(Equal([2]string{"Config Dev", "config@example.com"}))
 	})
 
+	// Per-directory identity is what includeIf exists for, so it is where
+	// kref.author.* is most likely to be set and was least likely to be seen:
+	// resolved through go-git, an included file may as well not exist.
+	It("finds kref.author.* in a file reached through an includeIf", func() {
+		dir := initStore()
+		includeGitConfig(dir, "[kref \"author\"]\n\tname = Work Dev\n\temail = work@example.com\n")
+
+		s, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		Expect(authorOf(s, addEntry(s, "T"))).To(Equal([2]string{"Work Dev", "work@example.com"}))
+	})
+
 	It("env beats git config", func() {
 		dir := initStore()
 		s0, err := Open(dir)

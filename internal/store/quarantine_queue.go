@@ -168,7 +168,7 @@ func (s *Store) classifyQueueItem(snap *entry.Snapshot) QuarantineItem {
 			it.OpKind = in.OpKind
 			it.Target = entity.Id(in.TargetID)
 			it.Findings = in.Findings
-			if tsnap, terr := s.Get(it.Target); terr == nil {
+			if tsnap, terr := s.getUnverified(it.Target); terr == nil {
 				it.TargetTitle = tsnap.Title
 			}
 		}

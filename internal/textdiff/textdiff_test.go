@@ -1,6 +1,9 @@
 package textdiff
 
 import (
+	"fmt"
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -39,6 +42,45 @@ var _ = Describe("Diff", func() {
 	It("does not invent a trailing empty line for newline-terminated input", func() {
 		Expect(Diff("a\n", "a\n")).To(HaveLen(1))
 		Expect(Diff("a", "a")).To(HaveLen(1)) // unterminated final line still counts once
+	})
+
+	It("keeps a one-line edit small in a body far past the LCS guard", func() {
+		// kref's own plan entries run 1000-1600 lines, so two versions of one
+		// are well past lcsGuard's cell budget. Before the head/tail trim that
+		// degraded to delete-all/add-all and `kref diff` reported a two-line
+		// edit as a whole-body rewrite.
+		body := func(mid string) string {
+			var b strings.Builder
+			for i := range 1500 {
+				if i == 700 {
+					b.WriteString(mid + "\n")
+					continue
+				}
+				fmt.Fprintf(&b, "line %d\n", i)
+			}
+			return b.String()
+		}
+
+		lines := Diff(body("before"), body("after"))
+		Expect(lines).To(HaveLen(1501)) // 1499 same + one del + one add
+		Expect(lines[700]).To(Equal(Line{Del, "before"}))
+		Expect(lines[701]).To(Equal(Line{Add, "after"}))
+		Expect(Stats(body("before"), body("after"))).To(Equal(DiffStats{
+			LinesAdded: 1, LinesRemoved: 1, CharsAdded: 5, CharsRemoved: 6,
+		}))
+	})
+
+	It("still degrades to delete-all/add-all when nothing lines up", func() {
+		// The guard is the backstop for genuinely unrelated bodies: no common
+		// head, no common tail, nothing to trim.
+		var a, b strings.Builder
+		for i := range 1500 {
+			fmt.Fprintf(&a, "a %d\n", i)
+			fmt.Fprintf(&b, "b %d\n", i)
+		}
+		s := Stats(a.String(), b.String())
+		Expect(s.LinesRemoved).To(Equal(1500))
+		Expect(s.LinesAdded).To(Equal(1500))
 	})
 })
 
