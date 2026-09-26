@@ -31,6 +31,7 @@ Current map (keep it in sync with the `command aliases` spec in
 | `remote`    | `remotes`                 |
 | `version`   | `ver`                     |
 | `retier`    | `mv`                      |
+| `resign`    | `sign`                    |
 | `fav`       | `alt`                     |
 | `agents_md` | `agents-md`               |
 
@@ -95,6 +96,51 @@ New user-facing commands must be added to a `--help` group in `newRootCmd`
 (`core`/`lifecycle`/`sync`/`setup`/`additional`) with an explicit `GroupID`, and
 in the intended top-to-bottom order (`cobra.EnableCommandSorting` is off). A
 command with no group lands under "Additional Commands:".
+
+## Signing (what an agent can and cannot do)
+
+kref signs its commits with git's own configuration — `commit.gpgsign` (or
+`kref.sign`), `user.signingkey`, `gpg.format`. Signing is handed to
+`git commit-tree -S`, so there is no kref key material to manage.
+
+For agents this means:
+
+- **Writes you make are signed as whoever the process runs as.** Over MCP that
+  is the server's git identity, not the human's. Do not describe an
+  agent-authored entry as signed *by the user*.
+- **You cannot select an identity profile.** `kref identity use` is a
+  human/CLI action; `KREF_IDENTITY` is read from the environment you were
+  started in.
+- **`kref resign` is not yours to run unprompted.** It rewrites commit history
+  and refuses entries containing another author's operations. Ask first. If you
+  are ever told to run it: naming a refused entry exits NON-ZERO with the reason
+  on stderr, while a `--all` sweep succeeds and lists what it skipped. Do not
+  report an entry as signed on the strength of the command returning.
+- **Report signature state, never enforce it.** `sig_state` on `show`/`list`
+  `--json` is `good`, `unsigned`, `bad` or `untrusted`, and it covers the entry's
+  WHOLE history, worst state first — `good` means every operation in it verifies,
+  not just the newest. `untrusted` means a signature is present but cannot be
+  vouched for. `sig_reason` says which of the five cases it is —
+  `key-untrusted`, `key-unavailable`, `unverifiable`, `key-expired`,
+  `key-revoked` — and they need different fixes, so quote the reason rather than
+  guessing at one. `key-revoked` is the one that is a WARNING, not a setup step.
+  Report both fields verbatim and let the human judge; `git verify-commit <sha>`
+  names the signer if they need more.
+- **`sig_state: good` with a non-empty `attested_by` is a different claim from
+  `good` reached by ordinary signing.** It means a human vouched for this
+  history LATER — not that every commit in it was signed when written. Report
+  `attested_by`, `attested_at`, and `attested_claim` (`authored` if every
+  covered *content* operation is the attester's own, `received` if the history
+  contains a peer's) alongside `sig_state` rather than collapsing them into a
+  plain "verified". Attestations by other people do not count toward that —
+  attesting is not authoring — so an entry can read `authored` while also
+  carrying a peer's attestation.
+- **There is no attest tool.** `kref attest` repairs published history that
+  `resign` cannot rewrite, but it has no `--force`, no `--dry-run`, and no MCP
+  surface — an agent able to attest unsupervised could launder untrusted
+  history under the operator's identity. Attesting is a human/CLI action; do
+  not offer to run it or imply an entry is attested on the strength of your own
+  say-so.
 
 ## Driving the TUIs (agents: this is how you actually run kref)
 

@@ -39,3 +39,41 @@ encryption at rest is a deferred decision; candidates are
 *Encryption at rest for the private tier* ADR inside kref's **own** knowledge
 base — if you have cloned the kref source repo, read it there with `kref list
 --kind adr`; it is not present in your project's store.
+
+______________________________________________________________________
+
+## Undoing a `kref resign`
+
+`kref resign` rewrites commits to add signatures. Before moving an entry's ref
+it saves the previous tip under `refs/kref-resign-backup/<namespace>/<id>`, so
+the rewrite is reversible without a bundle:
+
+```bash
+# what a resigned entry pointed at before
+git rev-parse refs/kref-resign-backup/kref-shared/<id>
+
+# put it back
+git update-ref refs/kref-shared/<id> \
+  "$(git rev-parse refs/kref-resign-backup/kref-shared/<id>)"
+```
+
+Entry ids are unaffected either way: they come from the operation payload, not
+from the commit, so a resign and its undo both leave ids, links and favorites
+untouched.
+
+These refs are local bookkeeping and never leave your machine — `kref sync push`
+transfers only a tier's own namespace.
+
+They do hold the entry's pre-rewrite content, though, which is why `kref purge`
+removes an entry's backup ref (and its `refs/kref-pushed/*` mirror) along with
+the entry itself. Purging is deliberately not undoable: leaving either mirror
+behind would keep a purged body readable with `git cat-file` no matter how hard
+you garbage-collect. If you want a resign to be reversible, do not purge the
+entry in between.
+
+Once you are satisfied with a resign, the backups are safe to delete:
+
+```bash
+git for-each-ref --format='%(refname)' refs/kref-resign-backup/ |
+  xargs -r -n1 git update-ref -d
+```

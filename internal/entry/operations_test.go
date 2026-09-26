@@ -1,6 +1,7 @@
 package entry_test
 
 import (
+	"encoding/json"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -524,5 +525,59 @@ var _ = Describe("UnresolveComment", func() {
 	It("requires a non-empty target", func() {
 		author := newAuthor(newTestRepo())
 		Expect(entry.NewUnresolveComment(author, "").Validate()).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("Attest", func() {
+	It("never compiles the payload's own author onto the snapshot", func() {
+		// The operation's author is self-asserted, and on a chain fetched from a
+		// peer it is whatever the writer typed. Only the store may report an
+		// attester, and only from the commit signature (%GS). A compiled copy
+		// would ride to every read surface as a forgeable twin of AttestedBy,
+		// one JSON field away from the verified name.
+		//
+		// Asserted against the serialized snapshot rather than a named field so
+		// that reintroducing the author under ANY new field fails this spec.
+		author := newAuthor(newTestRepo())
+		snap := &entry.Snapshot{}
+		entry.NewAttest(author, entry.ClaimAuthored).Apply(snap)
+
+		encoded, err := json.Marshal(snap)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(encoded)).NotTo(ContainSubstring(author.Name()))
+		Expect(string(encoded)).NotTo(ContainSubstring(author.Email()))
+	})
+
+	It("refuses a claim outside the vocabulary", func() {
+		author := newAuthor(newTestRepo())
+		Expect(entry.NewAttest(author, "vouched").Validate()).To(HaveOccurred())
+	})
+
+	It("accepts both defined claims", func() {
+		author := newAuthor(newTestRepo())
+		Expect(entry.NewAttest(author, entry.ClaimAuthored).Validate()).To(Succeed())
+		Expect(entry.NewAttest(author, entry.ClaimReceived).Validate()).To(Succeed())
+	})
+
+	It("does not touch authorship or the edit time", func() {
+		author := newAuthor(newTestRepo())
+		snap := &entry.Snapshot{CreatedBy: "someone else"}
+		before := snap.EditedAt
+		entry.NewAttest(author, entry.ClaimReceived).Apply(snap)
+		Expect(snap.CreatedBy).To(Equal("someone else"))
+		Expect(snap.EditedAt).To(Equal(before))
+	})
+
+	It("does bump the update time, like every other operation here", func() {
+		// EditedAt is the last BODY edit and must not move. UpdatedAt is the
+		// last change of any kind, and an attestation is one — every other
+		// Apply in this file sets it, including the bookkeeping ops
+		// (AckMerge, RecordOrigin). Leaving it stale would make updated_at
+		// disagree with the DAG.
+		author := newAuthor(newTestRepo())
+		op := entry.NewAttest(author, entry.ClaimAuthored)
+		snap := &entry.Snapshot{}
+		op.Apply(snap)
+		Expect(snap.UpdatedAt).To(Equal(op.Time()))
 	})
 })

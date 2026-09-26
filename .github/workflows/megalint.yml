@@ -42,14 +42,16 @@ jobs:
           restore-keys: |
             vuln-db-${{ runner.os }}-
 
-      # Shared MegaLinter profile. Image pinned to an immutable composite tag
-      # (repo release 0.2.0 wrapping upstream MegaLinter 9.6.0) for reproducible
-      # scans — bump it together with the action ref. Full tree on main and the
-      # weekly schedule; PR diff otherwise.
+      # Shared MegaLinter profile. The image floats on `latest` so the job picks
+      # up new linters and scanner rules as they ship, matching the floating-tag
+      # decision above; a scan that only ever reproduces last year's findings is
+      # not worth running. Findings therefore move without this file changing —
+      # pin back to a composite tag (e.g. 0.6.0-ml10.0.0) to bisect a run.
+      # Full tree on main and the weekly schedule; PR diff otherwise.
       - id: megalint
-        uses: trevor-vaughan/megalint-config@v0.2.0 # zizmor: ignore[unpinned-uses]
+        uses: trevor-vaughan/megalint-config@v0.6.0 # zizmor: ignore[unpinned-uses]
         with:
-          megalinter-image: ghcr.io/trevor-vaughan/megalinter-custom-flavor:0.2.0-ml9.6.0
+          megalinter-image: ghcr.io/trevor-vaughan/megalinter-custom-flavor:latest
           validate-all-codebase: ${{ github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
           vuln-cache-dir: ~/.cache/megalint/vuln-db
 

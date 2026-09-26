@@ -275,9 +275,15 @@ Every entry records who created it (`kref init` adopts your git identity; overri
 
 Every `new`/`ingest` also appends an append-only origin event (actor, human-vs-agent, source path) that `kref show` surfaces.
 
-Operations are attributed but not cryptographically signed. Attribution is currently forgeable — follow [git-bug issue #130](https://github.com/git-bug/git-bug/issues/130) for more information.
+Operations can also be **cryptographically signed** with your existing git
+signing setup — ssh, gpg or x509, whichever `gpg.format` says. kref signs when
+`commit.gpgsign` is on, so if you already sign your code you sign your notes too.
+`git verify-commit` works on kref's refs like any other commit, and `kref resign`
+signs history written before you had a key.
 
-See [Attribution](docs/usage.md#attribution) · [Provenance](docs/usage.md#provenance) for details.
+Without signing, attribution is forgeable: it is a name in a commit, not a proof.
+
+See [Attribution](docs/usage.md#attribution) · [Signing](docs/usage.md#signing) · [Provenance](docs/usage.md#provenance) for details.
 
 ### History & divergence
 
@@ -430,7 +436,8 @@ ______________________________________________________________________
 
 This is early software at 0.1.0; some things are deliberately deferred (see [`docs/dev/`](docs/dev/README.md), and the design spec that lives in kref's own store — `kref list --kind spec` after building):
 
-- **No cryptographic signing.** Operations are attributed by git identity but unsigned: git-bug v0.10.1 exposes no API to equip an identity with a signing key. Attribution is therefore forgeable.
+- **Signing is opt-in.** Entries are signed only when `commit.gpgsign` (or `kref.sign`) is on. Without it, attribution is a claim rather than a proof.
+- **No signing policy.** A bad or unverifiable signature is reported, never enforced: kref will not refuse to read or pull unsigned or badly signed material.
 - **No encryption at rest.** The `private` tier stays local but is not encrypted on disk.
 - **No semantic search.** A derived vector index is planned, not built.
 

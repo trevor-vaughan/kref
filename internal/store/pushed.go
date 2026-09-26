@@ -1,11 +1,13 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/git-bug/git-bug/entity"
 	"github.com/git-bug/git-bug/entity/dag"
+	"github.com/git-bug/git-bug/repository"
 
 	"github.com/trevor-vaughan/kref/internal/entry"
 	"github.com/trevor-vaughan/kref/internal/scan"
@@ -144,7 +146,18 @@ func (s *Store) recordPushed(t entry.Tier, ids []entity.Id) error {
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", id, err)
 		}
-		if err := s.repo.UpdateRef(pushedRef(t, id), cur); err != nil {
+		// UpdateRef is a compare-and-swap: old is the mirror's current value,
+		// or empty for the first push of this entry, which asserts the mirror
+		// does not exist yet.
+		mirror := pushedRef(t, id)
+		old, err := s.repo.ResolveRef(mirror)
+		if err != nil {
+			if !errors.Is(err, repository.ErrNotFound) {
+				return fmt.Errorf("resolve pushed-state for %s: %w", id, err)
+			}
+			old = ""
+		}
+		if err := s.repo.UpdateRef(mirror, old, cur); err != nil {
 			return fmt.Errorf("record pushed-state for %s: %w", id, err)
 		}
 	}

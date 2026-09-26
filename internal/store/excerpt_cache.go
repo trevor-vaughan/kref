@@ -77,7 +77,9 @@ func (c *excerptCache) ensureFresh(t entry.Tier) (*diskCache, error) {
 }
 
 // matches applies the same predicate semantics as store.List, minus Search
-// (body text is not cached; Search callers use the DAG path).
+// (body text is not cached; Search callers use the DAG path) and minus
+// UnsignedOnly, which listExcerpts applies after resolving the verdict live —
+// the cache does not carry one.
 func matches(e Excerpt, f ListFilter) bool {
 	if e.Deleted && !f.IncludeDelete {
 		return false
@@ -130,6 +132,21 @@ func (c *excerptCache) listExcerpts(f ListFilter) ([]Excerpt, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	if !f.WithSigState && !f.UnsignedOnly {
+		return out, nil
+	}
+	if err := c.s.resolveExcerptSigStates(out); err != nil {
+		return nil, err
+	}
+	if f.UnsignedOnly {
+		kept := out[:0]
+		for _, e := range out {
+			if e.SigState.Unsigned() {
+				kept = append(kept, e)
+			}
+		}
+		out = kept
+	}
 	return out, nil
 }
 

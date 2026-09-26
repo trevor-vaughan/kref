@@ -1,7 +1,9 @@
 // Package textdiff computes a dependency-free line diff between two text
 // bodies. It backs `kref log`'s per-version change stats and `kref diff`'s
-// inline diff rendering. Entry bodies are notes-sized, so a plain LCS dynamic
-// program is ample; a size guard keeps pathological inputs linear.
+// inline diff rendering. A plain LCS dynamic program over the changed region
+// is ample — matching off the common head and tail first keeps an ordinary
+// edit cheap however long the entry is — and a size guard keeps two genuinely
+// unrelated bodies linear.
 package textdiff
 
 import "slices"
@@ -62,6 +64,36 @@ func splitLines(s string) []string {
 // lines as Same, lines only in a as Del, lines only in b as Add.
 func Diff(a, b string) []Line {
 	al, bl := splitLines(a), splitLines(b)
+
+	// Equal lines at the head and tail belong to an optimal alignment, so match
+	// them off before the table is sized. Real edits are localized, so this
+	// leaves a table over the changed region alone: without it a one-line edit
+	// to a 1500-line entry exceeds lcsGuard and degrades into a whole-body
+	// rewrite — which is exactly the shape of kref's own plan entries.
+	head := 0
+	for head < len(al) && head < len(bl) && al[head] == bl[head] {
+		head++
+	}
+	tail := 0
+	for tail < len(al)-head && tail < len(bl)-head &&
+		al[len(al)-1-tail] == bl[len(bl)-1-tail] {
+		tail++
+	}
+
+	out := make([]Line, 0, len(al)+len(bl))
+	for _, l := range al[:head] {
+		out = append(out, Line{Same, l})
+	}
+	out = append(out, diffMiddle(al[head:len(al)-tail], bl[head:len(bl)-tail])...)
+	for _, l := range al[len(al)-tail:] {
+		out = append(out, Line{Same, l})
+	}
+	return out
+}
+
+// diffMiddle diffs two line slices that share no leading or trailing line, by
+// the plain LCS dynamic program lcsGuard bounds.
+func diffMiddle(al, bl []string) []Line {
 	if len(al)*len(bl) > lcsGuard*lcsGuard/400 { // ~1e6 cells ≈ 4MB of ints
 		out := make([]Line, 0, len(al)+len(bl))
 		for _, l := range al {

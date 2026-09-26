@@ -81,12 +81,20 @@ func resolveTiers(repo repository.ClockedRepo) ([]entry.TierDef, error) {
 	return defs, nil
 }
 
-// witnessTierClocks mirrors OpenGoGitRepo's clock-loader pass for tiers that
-// were unknowable at open time (custom tiers come from git config, which needs
-// the repo open first). A namespace with missing clocks gets every entity
-// witnessed, so the next write cannot mint a lamport time that precedes
-// existing history. Clock names follow git-bug's dag convention
+// witnessTierClocks witnesses the lamport clocks of every tier it is handed.
+// Its one caller, reloadTiers, passes resolveTiers' output — the three built-ins
+// plus any custom tiers, never the system tiers, whose defs live in
+// entry.SystemTierDefs() and are not merged in. A namespace with missing clocks
+// gets every entity witnessed, so the next write cannot mint a lamport time that
+// precedes existing history. Clock names follow git-bug's dag convention
 // ("<namespace>-create"/"<namespace>-edit", entity/dag/entity.go).
+//
+// This deliberately replaces the clockLoaders argument to OpenGoGitRepo rather
+// than supplementing it. That pass runs INSIDE the open call, against git-bug's
+// raw handle, and walks entity commits with a ReadCommit that cannot decode a
+// git-native signature — so with signing on it fails every open. Witnessing here
+// instead routes the same walk through the signature-aware wrapper, and has the
+// same cost: both skip namespaces whose clocks already exist.
 func witnessTierClocks(repo repository.ClockedRepo, defs []entry.TierDef) error {
 	clocks, err := repo.AllClocks()
 	if err != nil {
@@ -94,7 +102,7 @@ func witnessTierClocks(repo repository.ClockedRepo, defs []entry.TierDef) error 
 	}
 	var missing []dag.Definition
 	for _, d := range defs {
-		if d.Builtin() || !d.Declared {
+		if !d.Declared {
 			continue
 		}
 		ns := d.Name.Namespace()

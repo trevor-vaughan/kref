@@ -22,12 +22,17 @@ var _ = Describe("Excerpt conversions", func() {
 			},
 			CreatedAt: time.Unix(10, 0), UpdatedAt: time.Unix(20, 0), EditedAt: time.Unix(30, 0),
 			CreatedBy: "A", CreatedByEmail: "a@e",
+			SigState: entry.SigUntrusted,
 		}
 		e := toExcerpt(snap)
 		Expect(e.ID.String()).To(Equal("abc"))
 		Expect(e.Source).To(Equal("second.md"))
 		Expect(e.Archived).To(BeTrue())
 		Expect(e.TrackedPath).To(Equal("p.md"))
+		// Carried in memory even though the DISK cache deliberately drops it:
+		// the verdict depends on inputs outside the DAG, so nothing keyed on a
+		// ref tip may persist it (see the excerpt cache staleness spec).
+		Expect(e.SigState).To(Equal(entry.SigUntrusted))
 	})
 
 	It("round-trips through toSnapshot for every list-relevant field including Source", func() {
@@ -38,6 +43,7 @@ var _ = Describe("Excerpt conversions", func() {
 			Source:    "second.md",
 			CreatedAt: time.Unix(10, 0), UpdatedAt: time.Unix(20, 0), EditedAt: time.Unix(30, 0),
 			CreatedBy: "A", CreatedByEmail: "a@e",
+			SigState: entry.SigUntrusted,
 		}
 		s := e.toSnapshot()
 		Expect(s.ID.String()).To(Equal("abc"))
@@ -46,6 +52,7 @@ var _ = Describe("Excerpt conversions", func() {
 		Expect(s.Body).To(BeEmpty())
 		Expect(s.Provenance).To(HaveLen(1))
 		Expect(s.Provenance[0].SourcePath).To(Equal("second.md"))
+		Expect(s.SigState).To(Equal(entry.SigUntrusted))
 	})
 
 	It("carries Links through toExcerpt and toSnapshot", func() {

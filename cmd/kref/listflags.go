@@ -22,6 +22,7 @@ type listSelection struct {
 	all            bool
 	archived       bool
 	openQuestions  bool
+	unsigned       bool
 }
 
 // register defines the selection flags on c and wires their completions.
@@ -34,6 +35,18 @@ func (f *listSelection) register(c *cobra.Command, dir *string) {
 	c.Flags().BoolVar(&f.all, "all", false, "show everything: superseded + tombstoned, uncollapsed")
 	c.Flags().BoolVar(&f.archived, "archived", false, "show only archived entries")
 	c.Flags().BoolVar(&f.openQuestions, "open-questions", false, "only entries with an unresolved question comment")
+	// No backquotes in this description: pflag reads a back-quoted word as the
+	// flag's argument NAME, which renders a bool flag as "--unsigned kref show".
+	//
+	// "any commit" is the point: the verdict covers the entry's whole operation
+	// chain, so an entry whose early history predates the signing key stays
+	// findable however many signed edits land on top of it.
+	//
+	// It deliberately does not claim to be `kref resign`'s input set — resign
+	// additionally refuses pushed, foreign-authored and quarantined entries, and
+	// it does act on bad/untrusted ones, which this filter excludes because the
+	// ⚠ marker already surfaces them unprompted.
+	c.Flags().BoolVar(&f.unsigned, "unsigned", false, "only entries with any unsigned commit in their history")
 	c.Flags().StringVar(&f.sortBy, "sort", "edited", "order by a field, e.g. --sort title or --sort tier — dates put newest first; :asc/:desc overrides")
 	registerEntryFlagCompletions(c, dir)
 	_ = c.RegisterFlagCompletionFunc("status", fixedFlag(statusValues))
@@ -55,7 +68,13 @@ func (f *listSelection) filter(s *store.Store) (store.ListFilter, error) {
 	return store.ListFilter{
 		Kind: f.kind, Status: f.status, Tier: t, Labels: f.labels,
 		IncludeDelete: f.includeDeleted || f.all, ArchivedOnly: f.archived, IncludeArchived: f.all,
-		OpenQuestionsOnly: f.openQuestions,
+		OpenQuestionsOnly: f.openQuestions, UnsignedOnly: f.unsigned,
+		// The surfaces this filter serves read the verdict: the aligned table
+		// renders the ⚠ marker from it, --json emits it as sig_state, and the
+		// cockpit's S toggle filters on it. (--plain has no signature column and
+		// does not.) Commands that never show it — tidy, the quarantine queue,
+		// completion — leave this false and pay no verification subprocess.
+		WithSigState: true,
 	}, nil
 }
 

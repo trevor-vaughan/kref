@@ -47,7 +47,11 @@ var _ = Describe("Excerpt disk cache", func() {
 		Expect(err).To(MatchError(ContainSubstring("version")))
 	})
 
-	It("pins the cache version at 2 so link-bearing excerpts invalidate older caches", func() {
-		Expect(excerptCacheVersion).To(Equal(uint(2)))
+	// Deliberately brittle: freshness is judged by ref tips, so a cache written
+	// before a new Excerpt field existed looks current and would serve that
+	// field empty forever. Changing Excerpt must bump the version, and this
+	// spec is the reminder.
+	It("pins the cache version at 4 so caches holding a persisted verdict are discarded", func() {
+		Expect(excerptCacheVersion).To(Equal(uint(4)))
 	})
 })

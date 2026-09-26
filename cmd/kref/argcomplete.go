@@ -171,6 +171,41 @@ func entryArgs(dir *string, maxArgs int, src entrySource) func(*cobra.Command, [
 	}
 }
 
+// identityNameArgs completes `kref identity use <name>` from the profiles on
+// disk, each described by the identity it supplies so the choice can be made
+// without opening the files.
+func identityNameArgs(dir *string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) >= 1 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		s, err := store.Open(*dir)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		defer s.Close()
+		profiles, err := s.DescribeIdentities()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var out []string
+		for _, p := range profiles {
+			if !strings.HasPrefix(p.Name, toComplete) {
+				continue
+			}
+			if p.Author != "" {
+				out = append(out, p.Name+"\t"+p.Author+" <"+p.Email+">")
+				continue
+			}
+			out = append(out, p.Name)
+		}
+		if len(out) == 0 {
+			return cobra.AppendActiveHelp(nil, noIdentityProfiles), cobra.ShellCompDirectiveNoFileComp
+		}
+		return out, cobra.ShellCompDirectiveNoFileComp
+	}
+}
+
 // favoriteArgs completes the <name> of `kref fav rm`: the favorite names in the
 // layer the command will act on (the shared project entry with --shared, else
 // the user config). Each candidate carries its target's short id as the

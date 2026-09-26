@@ -958,3 +958,109 @@ var _ = Describe("listCockpitActions.ListEntries", func() {
 		Expect(titles(items)).To(Equal([]string{"Zebra auth", "Alpha auth"}))
 	})
 })
+
+var _ = Describe("cockpit unsigned filter", func() {
+	// A model whose two entries differ only in signature state.
+	mixedModel := func() *listModel {
+		GinkgoHelper()
+		f := newFake()
+		f.entries = []*entry.Snapshot{
+			{ID: "aaaa", Tier: "personal", TierType: "personal", Kind: "document",
+				Status: "open", Title: "Alpha", SigState: entry.SigUnsigned},
+			{ID: "bbbb", Tier: "personal", TierType: "personal", Kind: "todo",
+				Status: "open", Title: "Beta", SigState: entry.SigGood},
+		}
+		m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true,
+			store.ListFilter{}, testReviewer, "human", cockpitProfile{title: "kref"})
+		m.reload()
+		m.sv.Resize(80, 24)
+		m.syncContent()
+		return m
+	}
+
+	It("narrows to unsigned entries on S and restores them on a second press", func() {
+		m := mixedModel()
+		Expect(m.rows).To(HaveLen(2))
+
+		m.Update(key('S'))
+		Expect(m.rows).To(HaveLen(1))
+		Expect(m.rows[0].id).To(Equal(entity.Id("aaaa")))
+
+		m.Update(key('S'))
+		Expect(m.rows).To(HaveLen(2))
+	})
+
+	It("says the list is empty by filter, not by store, when nothing is unsigned", func() {
+		f := newFake()
+		f.entries = []*entry.Snapshot{
+			{ID: "bbbb", Tier: "personal", TierType: "personal", Kind: "todo",
+				Status: "open", Title: "Beta", SigState: entry.SigGood},
+		}
+		m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true,
+			store.ListFilter{}, testReviewer, "human", cockpitProfile{title: "kref"})
+		m.reload()
+		m.sv.Resize(80, 24)
+
+		m.Update(key('S'))
+		Expect(m.rows).To(BeEmpty())
+		Expect(m.err).To(ContainSubstring("no unsigned entries"))
+	})
+
+	// A failed read yields zero rows too, so the coverage claim would land at the
+	// exact moment kref could read nothing — telling the reader every entry is
+	// signed instead of that the store is unreadable.
+	It("keeps the store's error instead of claiming coverage when the read failed", func() {
+		f := newFake()
+		f.listErr = errors.New("ref namespace is corrupt")
+		m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true,
+			store.ListFilter{}, testReviewer, "human", cockpitProfile{title: "kref"})
+		m.reload()
+		m.sv.Resize(80, 24)
+
+		m.Update(key('S'))
+		Expect(m.rows).To(BeEmpty())
+		Expect(m.err).To(ContainSubstring("ref namespace is corrupt"))
+		Expect(m.err).NotTo(ContainSubstring("no unsigned entries"))
+	})
+
+	// The model is rebuilt from scratch on every return from open/edit. The
+	// filter has to be re-applied BEFORE the rows are read back, or the carried
+	// cursor -- an index into the filtered rows -- is clamped against the longer
+	// unfiltered list and selects a different entry.
+	It("carries the filter and the selection across a full-screen action", func() {
+		build := func() *listModel {
+			GinkgoHelper()
+			f := newFake()
+			f.entries = []*entry.Snapshot{
+				{ID: "aaaa", Tier: "personal", TierType: "personal", Kind: "document",
+					Status: "open", Title: "Alpha", SigState: entry.SigGood},
+				{ID: "bbbb", Tier: "personal", TierType: "personal", Kind: "document",
+					Status: "open", Title: "Beta", SigState: entry.SigGood},
+				{ID: "cccc", Tier: "personal", TierType: "personal", Kind: "todo",
+					Status: "open", Title: "Gamma", SigState: entry.SigUnsigned},
+			}
+			m := newListModel(f, render.ListOptions{Columns: render.DefaultColumns}, true,
+				store.ListFilter{}, testReviewer, "human", cockpitProfile{title: "kref"})
+			m.reload()
+			m.sv.Resize(80, 24)
+			m.syncContent()
+			return m
+		}
+
+		before := build()
+		before.Update(key('S'))
+		Expect(before.rows).To(HaveLen(1))
+		Expect(before.rows[before.cursor].id).To(Equal(entity.Id("cccc")))
+
+		carried := cockpitView{cursor: before.cursor, search: before.search,
+			unsignedOnly: before.unsignedOnly}
+
+		after := build()
+		carried.restore(after)
+		Expect(after.unsignedOnly).To(BeTrue())
+		Expect(after.rows).To(HaveLen(1))
+		// Gamma is LAST unfiltered, so a restore that reloads before filtering
+		// clamps cursor 0 against three rows and lands on Alpha instead.
+		Expect(after.rows[after.cursor].id).To(Equal(entity.Id("cccc")))
+	})
+})

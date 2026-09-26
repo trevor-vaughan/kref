@@ -113,6 +113,11 @@ type listModel struct {
 	filter store.ListFilter
 	color  bool
 
+	// unsignedOnly narrows the view to entries carrying no signature, toggled
+	// with S. It is a view state rather than part of filter: the surrounding
+	// command owns that, and the toggle must not outlive the session.
+	unsignedOnly bool
+
 	// the resolved reviewer recorded on an approve/reject; a quarantine
 	// decision is an audit record and has to name who made it
 	actor     string
@@ -158,9 +163,28 @@ func newListModel(acts listActions, opts render.ListOptions, color bool, filter 
 	}
 }
 
+// unsignedOnly keeps the entries with any unsigned commit in their history — the
+// same set `kref list --unsigned` shows, and deliberately NOT the set `kref
+// resign` acts on (see the flag's description in listflags.go for how the two
+// differ). Filtering here rather than re-querying keeps the toggle instant and
+// leaves the store filter (which the surrounding command owns) alone.
+func unsignedOnly(entries []*entry.Snapshot) []*entry.Snapshot {
+	out := make([]*entry.Snapshot, 0, len(entries))
+	for _, e := range entries {
+		if e.SigState.Unsigned() {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // reload refetches the queue + entries, rebuilds the rows, and keeps the cursor
-// on the same id when it survives.
-func (m *listModel) reload() {
+// on the same entry where it survives.
+//
+// It reports whether both reads were clean. A failed read also yields zero rows,
+// so a caller that wants to explain an empty view has to know which emptiness it
+// is looking at before it says anything.
+func (m *listModel) reload() bool {
 	// A surface without the review queue does not ask for it: `kref search`
 	// answers a question about entries, and a failed queue read must not become
 	// an error message on a view that would never have shown the queue anyway.
@@ -185,6 +209,9 @@ func (m *listModel) reload() {
 		keep = m.rows[m.cursor].id
 	}
 	m.opts.Matches = matches
+	if m.unsignedOnly {
+		e = unsignedOnly(e)
+	}
 	m.header, m.rows = buildCockpitRows(q, e, m.opts)
 	m.cursor = 0
 	for i, r := range m.rows {
@@ -197,6 +224,7 @@ func (m *listModel) reload() {
 		m.cursor = max(len(m.rows)-1, 0)
 	}
 	m.syncContent()
+	return lErr == nil && qErr == nil
 }
 
 // syncContent renders rows (with the cursor marker) into the ScrollView and sets
@@ -430,6 +458,18 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "u":
 				if r, ok := m.entryRow("unarchive"); ok {
 					m.mutate(m.acts.Unarchive(r.id))
+				}
+				return m, nil
+			case "S":
+				m.unsignedOnly = !m.unsignedOnly
+				// Only claim coverage when the read succeeded. A failed read
+				// yields zero rows too, and this message would replace the real
+				// error with an affirmative claim that every entry is signed —
+				// told to the reader at the moment kref could read none of them.
+				if clean := m.reload(); clean && m.unsignedOnly && len(m.rows) == 0 {
+					// An empty view after a filter reads as an empty store, so
+					// say which it is.
+					m.err = "no unsigned entries"
 				}
 				return m, nil
 			case "s":
@@ -761,7 +801,7 @@ func listHelpRows(queue bool) []string {
 	return append(rows,
 		"x / u     archive/restore  s       status",
 		"f         alias            /       search   n/N next/prev",
-		",         view options",
+		"S         unsigned only    ,       view options",
 		"? q esc   keys / quit",
 	)
 }
@@ -776,22 +816,40 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
+// cockpitView is the view state that survives a full-screen action. The model is
+// rebuilt from scratch on every return from open/edit, so anything NOT listed
+// here is silently discarded — which is how the search was lost once, and the
+// unsigned filter after it. A new piece of view state belongs in this struct.
+type cockpitView struct {
+	cursor       int
+	search       pagerSearch
+	unsignedOnly bool
+}
+
+// restore re-applies the carried state to a freshly built model.
+//
+// The order is the point: the filter has to be set BEFORE reload, because the
+// cursor was captured as an index into the FILTERED rows. Reloading unfiltered
+// and clamping that index against the longer list silently selects a different
+// entry — and `S` exists precisely to work through the unsigned entries one at
+// a time, so the wrong one would be selected on the first return.
+func (c cockpitView) restore(m *listModel) {
+	m.unsignedOnly = c.unsignedOnly
+	m.reload()
+	m.cursor = clamp(c.cursor, 0, max(len(m.rows)-1, 0))
+	m.search = c.search
+	m.search.refresh(m.searchMatcher)
+	m.syncContent()
+}
+
 // runListCockpit runs the interactive list, looping: run the model, and when it
 // exits for a full-screen action (open/edit) dispatch to the real viewer/editor
 // via handle, then re-enter at the saved cursor. Quit ends the loop.
 func runListCockpit(acts listActions, opts render.ListOptions, color bool, filter store.ListFilter, actor, actorKind string, profile cockpitProfile, handle func(res listResult) error) error {
-	cursor := 0
-	// The model is rebuilt on every return from a full-screen action, which used
-	// to discard the search silently — after which n reported "no matches",
-	// reading as "your query found nothing" rather than "your query is gone".
-	var search pagerSearch
+	var view cockpitView
 	for {
 		m := newListModel(acts, opts, color, filter, actor, actorKind, profile)
-		m.reload()
-		m.cursor = clamp(cursor, 0, max(len(m.rows)-1, 0))
-		m.search = search
-		m.search.refresh(m.searchMatcher)
-		m.syncContent()
+		view.restore(m)
 		out, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stdout)).Run()
 		if err != nil {
 			return err
@@ -806,7 +864,7 @@ func runListCockpit(acts listActions, opts render.ListOptions, color bool, filte
 			}
 			return nil // quit
 		}
-		cursor, search = fm.result.cursor, fm.search
+		view = cockpitView{cursor: fm.result.cursor, search: fm.search, unsignedOnly: fm.unsignedOnly}
 		if herr := handle(fm.result); herr != nil {
 			return herr
 		}

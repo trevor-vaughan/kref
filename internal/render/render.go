@@ -407,9 +407,88 @@ func SortSnapshots(items []*entry.Snapshot, spec *SortSpec, favs map[string]bool
 	})
 }
 
-// tableCell returns the display string for a column in aligned-table mode.
-// For the tier column it returns the plain glyph+word badge; for title it
-// appends the decorators ((deleted), [labels], ◆ merged, ×N count).
+// sigMarker returns the trailing decorator for an entry's signature state, or
+// "" when there is nothing worth saying.
+//
+// Only actionable states are marked. `good` is the expected outcome once
+// signing is on, and `unsigned` is the norm for every store that has never
+// signed — marking either would turn the decorator into noise, and noise is
+// exactly what a bad signature needs to cut through. Finding the unsigned
+// entries is the job of `list --unsigned`, not of a badge on every row.
+func sigMarker(state entry.SigState, why entry.SigReason) string {
+	switch state {
+	case entry.SigBad:
+		return "  ⚠ BAD SIGNATURE"
+	case entry.SigUntrusted:
+		// A revoked key is the one untrusted reason that is a warning rather
+		// than a chore, so it must not read the same as a key you have simply
+		// not imported yet.
+		if why == entry.SigReasonKeyRevoked {
+			return "  ⚠ REVOKED KEY"
+		}
+		return "  ⚠ unverified signature"
+	default:
+		return ""
+	}
+}
+
+// sigHeaderNote describes an entry's signature state for the expanded show
+// header. It takes the snapshot because an attested entry's story is not in the
+// state alone: `good` reached by a later vouch is a different claim from `good`
+// because every commit was signed when written, and a reader who opened the
+// header is asking exactly that.
+func sigHeaderNote(snap *entry.Snapshot) string {
+	switch snap.SigState {
+	case entry.SigGood:
+		if snap.AttestedBy != "" {
+			return fmt.Sprintf(
+				"✓ attested %s by %s (%s) — vouched for later, not signed when written",
+				snap.AttestedAt.Format("2006-01-02"), snap.AttestedBy, snap.AttestedClaim)
+		}
+		return "✓ verified"
+	case entry.SigBad:
+		return "⚠ BAD SIGNATURE — the content changed after it was signed"
+	case entry.SigUntrusted:
+		return untrustedNote(snap.SigReason)
+	case entry.SigUnsigned:
+		// Parenthetical, not imperative: plenty of stores never intend to sign,
+		// and this header should inform them rather than nag.
+		return "not signed (`kref resign` signs existing history, `kref attest` " +
+			"vouches for history already pushed)"
+	default:
+		return ""
+	}
+}
+
+// untrustedNote turns the reason a signature could not be vouched for into the
+// one action that resolves it. Getting this wrong is worse than saying nothing:
+// a reader sent to fix the thing that is already fine does the work, sees the
+// same message, and concludes the verdict is noise.
+func untrustedNote(why entry.SigReason) string {
+	switch why {
+	case entry.SigReasonKeyRevoked:
+		return "⚠ signed with a REVOKED key — do not trust this entry's author " +
+			"until you know why the key was revoked"
+	case entry.SigReasonKeyExpired:
+		return "⚠ the signing key had expired — the signature is intact, but its " +
+			"key was past validity, so re-signing under a current key is the fix"
+	case entry.SigReasonKeyUnavailable:
+		return "⚠ you do not have the signer's key — import it, then trust it " +
+			"(openpgp: gpg --import, then gpg --edit-key <fpr> trust)"
+	case entry.SigReasonKeyUntrusted:
+		return "⚠ you have not vouched for the signer's key (ssh: add it to " +
+			"gpg.ssh.allowedSignersFile; openpgp: gpg --edit-key <fpr> trust)"
+	case entry.SigReasonUnverifiable:
+		return "⚠ kref could not verify it — check your signing setup (ssh needs " +
+			"gpg.ssh.allowedSignersFile set; also check gpg.format and gpg.program)"
+	default:
+		return "⚠ present but unverified"
+	}
+}
+
+// tableCell returns the display string for a column in aligned-table mode. For
+// the tier column it returns the plain glyph+word badge; for title it appends
+// the decorators ((deleted), [labels], ◆ merged, ⚠ signature, ×N count).
 func tableCell(col Column, r listRow) string {
 	it := r.snap
 	switch col {
@@ -431,6 +510,7 @@ func tableCell(col Column, r listRow) string {
 		if it.Merged {
 			title += "  ◆ merged"
 		}
+		title += sigMarker(it.SigState, it.SigReason)
 		if r.count > 1 {
 			title += fmt.Sprintf("  (×%d)", r.count)
 		}
@@ -931,6 +1011,12 @@ func baseHeaderRows(snap *entry.Snapshot, color bool, trackedNote string, favori
 	if snap.Merged {
 		v := "◆ merged — concurrent edits auto-merged; review with `kref diff`, clear with `kref resolve`"
 		add("Merged", v, rc(v))
+	}
+	// Unlike the list marker, the expanded header states the good case too: a
+	// reader who opened the header is asking about this entry specifically, and
+	// "verified" is the answer they came for.
+	if v := sigHeaderNote(snap); v != "" {
+		add("Signature", v, rc(v))
 	}
 	for _, o := range snap.Provenance {
 		v := fmt.Sprintf("%s by %s (%s)", o.Trigger, o.Actor, o.ActorKind)

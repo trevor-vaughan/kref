@@ -362,6 +362,117 @@ var _ = Describe("merged marker", func() {
 	})
 })
 
+// Only the states a reader can act on are marked. `good` is the expected
+// outcome once signing is on, and `unsigned` is the norm for every store that
+// has never signed — marking either would make the marker noise, and noise is
+// what a bad signature has to cut through.
+var _ = Describe("signature marker", func() {
+	listOfWhy := func(state entry.SigState, why entry.SigReason) string {
+		var b bytes.Buffer
+		s := &entry.Snapshot{ID: entity.Id("a"), Tier: "shared", Status: "open", Title: "T", SigState: state, SigReason: why}
+		render.List(&b, []*entry.Snapshot{s}, false, true)
+		return b.String()
+	}
+	listOf := func(state entry.SigState) string { return listOfWhy(state, entry.SigReasonNone) }
+
+	It("flags a signature that no longer covers its content", func() {
+		Expect(listOf(entry.SigBad)).To(ContainSubstring("⚠ BAD SIGNATURE"))
+	})
+
+	It("flags a signature it cannot vouch for, in calmer terms", func() {
+		out := listOf(entry.SigUntrusted)
+		Expect(out).To(ContainSubstring("⚠ unverified"))
+		Expect(out).NotTo(ContainSubstring("BAD"))
+	})
+
+	It("stays silent for good and unsigned entries", func() {
+		Expect(listOf(entry.SigGood)).NotTo(ContainSubstring("⚠"))
+		Expect(listOf(entry.SigUnsigned)).NotTo(ContainSubstring("⚠"))
+		Expect(listOf(entry.SigUnresolved)).NotTo(ContainSubstring("⚠"))
+	})
+
+	// The expanded header is opt-in detail for one entry, so unlike the list it
+	// answers even when the answer is reassuring.
+	headerOfWhy := func(state entry.SigState, why entry.SigReason) string {
+		var b bytes.Buffer
+		s := &entry.Snapshot{ID: entity.Id("a"), Tier: "shared", Status: "open", Title: "T", SigState: state, SigReason: why}
+		render.Show(&b, s, render.ShowOptions{HeaderOnly: true})
+		return b.String()
+	}
+	headerOf := func(state entry.SigState) string { return headerOfWhy(state, entry.SigReasonNone) }
+
+	It("states the good case in the expanded header", func() {
+		Expect(headerOf(entry.SigGood)).To(ContainSubstring("✓ verified"))
+	})
+
+	It("flags a broken signature in the expanded header too", func() {
+		Expect(headerOf(entry.SigBad)).To(ContainSubstring("BAD SIGNATURE"))
+	})
+
+	// Five different things go wrong and they need five different next steps.
+	// Sending a reader to fix the thing that is already fine is worse than
+	// silence: they do the work, see the same message, and write the verdict off.
+	DescribeTable("tells an untrusted reader what to actually do",
+		func(why entry.SigReason, wants []string) {
+			out := headerOfWhy(entry.SigUntrusted, why)
+			for _, w := range wants {
+				Expect(out).To(ContainSubstring(w))
+			}
+		},
+		Entry("no key at all: import it first, then trust it",
+			entry.SigReasonKeyUnavailable, []string{"do not have the signer's key", "gpg --import"}),
+		Entry("key present but not vouched for: the remedy per format",
+			entry.SigReasonKeyUntrusted, []string{"not vouched for", "allowedSignersFile", "edit-key"}),
+		Entry("verification could not run: it is a setup problem",
+			entry.SigReasonUnverifiable, []string{"could not verify", "gpg.format"}),
+		Entry("expired: re-signing under a current key is the fix",
+			entry.SigReasonKeyExpired, []string{"expired", "re-signing"}),
+		Entry("revoked: a warning, not a chore",
+			entry.SigReasonKeyRevoked, []string{"REVOKED"}),
+	)
+
+	// A revoked key is the one untrusted reason carrying attack signal, so it
+	// must not read the same in a listing as a key nobody has imported yet.
+	It("distinguishes a revoked key from an unvouched one in the list marker", func() {
+		Expect(listOfWhy(entry.SigUntrusted, entry.SigReasonKeyRevoked)).To(ContainSubstring("REVOKED KEY"))
+		Expect(listOfWhy(entry.SigUntrusted, entry.SigReasonKeyUntrusted)).To(ContainSubstring("unverified signature"))
+	})
+
+	It("points an unsigned entry at resign without demanding it", func() {
+		out := headerOf(entry.SigUnsigned)
+		Expect(out).To(ContainSubstring("not signed"))
+		Expect(out).To(ContainSubstring("kref resign"))
+	})
+
+	It("says nothing when the state is unknown", func() {
+		Expect(headerOf(entry.SigUnresolved)).NotTo(ContainSubstring("Signature"))
+	})
+
+	// An attestation reaches `good` by a later vouch, not by every commit being
+	// signed when written — the header must say which one happened, because a
+	// reader who opened it is asking exactly that.
+	It("names the attester in the signature header", func() {
+		snap := &entry.Snapshot{
+			SigState:      entry.SigGood,
+			AttestedBy:    "Trevor Vaughan",
+			AttestedAt:    time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC),
+			AttestedClaim: entry.ClaimReceived,
+		}
+		var buf bytes.Buffer
+		render.ShowHeader(&buf, snap, render.ShowOptions{})
+		Expect(buf.String()).To(ContainSubstring("attested"))
+		Expect(buf.String()).To(ContainSubstring("Trevor Vaughan"))
+		Expect(buf.String()).To(ContainSubstring("received"))
+	})
+
+	It("says nothing extra for an ordinarily-signed entry", func() {
+		snap := &entry.Snapshot{SigState: entry.SigGood}
+		var buf bytes.Buffer
+		render.ShowHeader(&buf, snap, render.ShowOptions{})
+		Expect(buf.String()).NotTo(ContainSubstring("attested"))
+	})
+})
+
 var _ = Describe("List clean view", func() {
 	It("collapses duplicate normalized titles into one (×N) row when showAll is false", func() {
 		var b bytes.Buffer

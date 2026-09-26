@@ -55,11 +55,18 @@ func BuiltinTierDefsWithSystem() []TierDef {
 var tierNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
 
 // reservedTierNames cannot be used for custom tiers: the built-ins, plus the
-// bookkeeping ref namespaces (refs/kref-pushed/*) and config keys
-// (kref.incoming.*) a custom tier's name must never collide with.
+// bookkeeping ref namespaces (refs/kref-pushed/*, refs/kref-resign-backup/*)
+// and config keys (kref.incoming.*) a custom tier's name must never collide
+// with.
+//
+// The list is load-bearing on the READ side too, not just for validation: tier
+// discovery scans refs/kref-* and treats the first path segment as a tier name,
+// so any bookkeeping namespace missing from here becomes a phantom tier whose
+// entry refs do not resolve — which fails every unfiltered read of the store.
 var reservedTierNames = map[string]bool{
 	"private": true, "personal": true, "shared": true,
 	"pushed": true, "incoming": true, "quarantine": true,
+	"resign-backup": true,
 }
 
 // ValidateTierName checks a custom tier name against the shape rule and the

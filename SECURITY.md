@@ -49,13 +49,29 @@ boundaries are:
 
 ### Known limitations (attacker → goal → mitigation)
 
-- **Forgeable attribution.** Operations record a git identity but are *not*
-  cryptographically signed (git-bug v0.10.1 exposes no signing API). An attacker
-  with write access to a shared remote can author entries as someone else.
-  *Residual risk accepted for now; tracked in the README limitations.*
+- **Forgeable attribution while signing is off.** Operations record a git
+  identity, which is a claim rather than a proof: an attacker with write access
+  to a shared remote can author entries as someone else. *Mitigated by turning
+  signing on — set `commit.gpgsign` (or `kref.sign`) and kref signs every
+  operation it writes, using git's own signing configuration. See
+  [signing](docs/usage.md#signing).*
+- **No signing policy.** kref reports a bad or unverifiable signature; it never
+  enforces one. Unsigned, `bad` and `untrusted` material is still read, listed
+  and pulled — a signature verdict is information for the human, not a gate.
+  *Check `sig_state` (on `show`/`list --json`) or the ⚠ marker before trusting
+  an entry's stated author; `kref list --unsigned` finds the unsigned ones.*
+- **Attribution is self-asserted, even when signed.** A signature proves which
+  key wrote a commit; the author name and email are separate, unverified fields
+  that the signer chooses. kref's `Entry.Authors()` — and the foreign-author
+  guard that makes `kref resign` refuse someone else's entry — read those
+  fields, not the signature. *The guard is a courtesy check against accidents,
+  not a security control. Signature-derived attribution is a deferred design
+  project.*
 - **No encryption at rest.** The `private` tier stays local but is plaintext in
   `.git`. An attacker with filesystem read access can read it. *Use full-disk
   encryption; do not store secrets you would not put in `.git`.*
-- **Purge is not un-leak.** `kref purge --gc --push` deletes refs locally and on
-  the remote, but anything already fetched by a peer persists. *Rotate the
-  secret; treat any pushed secret as compromised.*
+- **Purge is not un-leak.** `kref purge --gc --push` deletes the entry's refs
+  locally (including kref's own `kref-pushed`/`kref-resign-backup` mirrors, which
+  would otherwise keep the body reachable) and on the remote — but anything
+  already fetched by a peer persists, and so does anything in a bundle you
+  exported. *Rotate the secret; treat any pushed secret as compromised.*
