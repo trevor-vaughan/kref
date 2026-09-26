@@ -118,6 +118,35 @@ var _ = Describe("Entry.Authors", func() {
 	})
 })
 
+// OperationAuthors answers the question Authors() deliberately stopped
+// answering: who wrote ANY operation here, attestations included. `kref resign`
+// rewrites and re-signs every commit it touches, so it needs the wider list --
+// re-signing a peer's attestation under our key would misrepresent it exactly
+// the way re-signing their edit would.
+var _ = Describe("Entry.OperationAuthors", func() {
+	It("counts an attester that Authors() leaves out", func() {
+		repo := newTestRepo()
+		mine := newAuthor(repo)
+		peer, err := identity.NewIdentity(repo, "Peer", "peer@example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(peer.Commit(repo)).To(Succeed())
+
+		e := entry.New(entry.TierShared)
+		e.Append(entry.NewCreate(mine, "spec", "T"))
+		e.Append(entry.NewAttest(peer, entry.ClaimAuthored))
+
+		Expect(e.Authors()).To(HaveLen(1))
+		Expect(e.OperationAuthors()).To(Equal([]entry.Author{
+			{Name: "Tester", Email: "tester@example.com"},
+			{Name: "Peer", Email: "peer@example.com"},
+		}))
+	})
+
+	It("returns an empty slice rather than nil for an entry with no operations", func() {
+		Expect(entry.New(entry.TierShared).OperationAuthors()).To(BeEmpty())
+	})
+})
+
 var _ = Describe("Entry.Log body versions and change stats", func() {
 	It("numbers set-body ops and reports compact added/removed stats", func() {
 		author := newAuthor(newTestRepo())

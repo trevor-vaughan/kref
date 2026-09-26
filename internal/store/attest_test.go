@@ -135,6 +135,42 @@ var _ = Describe("Attest", func() {
 		Expect(res[0].Claim).To(Equal(entry.ClaimReceived))
 	})
 
+	// The user-visible symptom the Authors() attestation exclusion exists for.
+	// A peer attesting my entry adds an operation authored by them, so counting
+	// attesters would make my OWN next attestation of my OWN work record the
+	// weaker "received" claim. Re-attestation is the prescribed repair after a
+	// key expires or is revoked, so this is an ordinary path, not a corner.
+	It("still claims authorship after a peer has attested the entry", func() {
+		id := addUnsignedThenEnableSigning(s)
+
+		GinkgoT().Setenv("KREF_AUTHOR_NAME", "Someone Else")
+		GinkgoT().Setenv("KREF_AUTHOR_EMAIL", "else@example.com")
+		other, err := Open(s.dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = other.Close() })
+		peer, err := other.Attest([]entity.Id{id})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(peer[0].Reason).To(BeEmpty())
+		Expect(other.Close()).To(Succeed())
+
+		// Their attestation covers the history beneath it, so the entry now reads
+		// as good and there is nothing left to attest. Give it something: one more
+		// unsigned operation, written by ME, above their attestation.
+		GinkgoT().Setenv("KREF_AUTHOR_NAME", testSignerName)
+		GinkgoT().Setenv("KREF_AUTHOR_EMAIL", testSignerEmail)
+		gitConfig(s.dir, "kref.sign", "false")
+		mine, err := Open(s.dir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mine.AddLabel(id, "later")).To(Succeed())
+		Expect(mine.Close()).To(Succeed())
+		gitConfig(s.dir, "kref.sign", "true")
+
+		res, err := s.Attest([]entity.Id{id})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res[0].Reason).To(BeEmpty())
+		Expect(res[0].Claim).To(Equal(entry.ClaimAuthored))
+	})
+
 	It("claims authorship when every operation is ours", func() {
 		id := addUnsignedThenEnableSigning(s)
 		res, err := s.Attest([]entity.Id{id})

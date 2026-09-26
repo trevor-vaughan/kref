@@ -156,7 +156,12 @@ func (s *Store) resignOne(id entity.Id, dryRun, force bool) (ResignResult, error
 	// Signing someone else's work with our key would misrepresent provenance,
 	// and a chain where only some commits are signed is worse than none. So an
 	// entry is resignable only when every operation in it is ours.
-	if foreign := foreignAuthors(e.Authors(), s.author.Email()); len(foreign) > 0 {
+	//
+	// OperationAuthors, not Authors: this rewrites and re-signs every commit,
+	// including a peer's attestation, whose attester is read back FROM the
+	// signature (see signerName). Authors() leaves attesters out on purpose, for
+	// the claim derivation in Attest, and that is the narrower question.
+	if foreign := foreignAuthors(e.OperationAuthors(), s.author.Email()); len(foreign) > 0 {
 		res.Reason = "has operations by " + strings.Join(foreign, ", ") +
 			"; signing another author's work would misrepresent it"
 		return res, nil

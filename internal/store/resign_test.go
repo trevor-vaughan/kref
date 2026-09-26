@@ -225,6 +225,36 @@ var _ = Describe("resign", func() {
 		Expect(sigStatus(dir, ref)).To(Equal("N"))
 	})
 
+	// An attestation is an operation like any other as far as the rewrite is
+	// concerned: resign rebuilds every commit reachable from the ref and signs
+	// each with OUR key, and the attester is read back from the signature, so a
+	// rewritten peer attestation would report us as the attester. Authors()
+	// deliberately does not count attesters -- attesting is not authoring, and
+	// the claim derivation depends on that -- which is why this guard asks
+	// OperationAuthors() instead.
+	It("refuses an entry whose only foreign operation is a peer's attestation", func() {
+		dir := gitRepo()
+		enableSSHSigning(dir, testSignerEmail)
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		id := addUnsignedThenEnableSigning(s)
+
+		GinkgoT().Setenv("KREF_AUTHOR_NAME", "Someone Else")
+		GinkgoT().Setenv("KREF_AUTHOR_EMAIL", "else@example.com")
+		other, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = other.Close() })
+		att, err := other.Attest([]entity.Id{id})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(att[0].Reason).To(BeEmpty())
+
+		res, err := s.Resign([]entity.Id{id}, false, false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res[0].Reason).To(ContainSubstring("else@example.com"))
+		Expect(res[0].Signed).To(BeZero())
+	})
+
 	// Signing someone else's operations with our key would misrepresent them,
 	// and the commit ident cannot be used to tell whose they are: git-bug leaves
 	// it empty. The operation pack's author is the only honest source.

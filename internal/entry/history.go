@@ -124,6 +124,33 @@ func (e *Entry) Authors() []Author {
 	return out
 }
 
+// OperationAuthors returns the distinct authors of every operation, attestations
+// included, in first-seen order.
+//
+// Authors() answers "who wrote this entry?", which is the question the claim
+// derivation asks and the reason it skips attestations. This answers the wider
+// one — "whose work is in these commits at all?" — for callers that act on the
+// COMMITS rather than on the authorship: `kref resign` rebuilds every commit
+// reachable from the ref and signs each with our key, and an attester is read
+// back from the signature, so re-signing a peer's attestation would report us as
+// the attester. That is the same misrepresentation re-signing their edit would
+// be, so the guard has to see them.
+//
+// Keep the two in step: an operation type that records someone vouching for
+// history rather than changing it belongs out of Authors() and in here.
+func (e *Entry) OperationAuthors() []Author {
+	out := make([]Author, 0)
+	seen := map[Author]bool{}
+	for _, op := range e.Operations() {
+		a := Author{Name: op.Author().Name(), Email: op.Author().Email()}
+		if !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // BodyVersion is one historical body, captured from a SetBody operation.
 type BodyVersion struct {
 	Author string    `json:"author"`
