@@ -1,0 +1,19 @@
+.github/workflows/megalint.yml
+  s_c9d5518f1b15ab::t_a5ad88c0dc3077 52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2bab4e107f108c7760282167655accecdc7a1634",
+  "prompts": {},
+  "sessions": {
+    "s_c9d5518f1b15ab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd503bff-2dd1-401c-814b-00b37ca085c7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
