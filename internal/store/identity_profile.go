@@ -116,15 +116,52 @@ func (s *Store) ActiveIdentity() (string, error) {
 // the next open.
 func (s *Store) UseIdentity(name string) error {
 	if name == "" {
-		if err := gitConfigUnset(s.dir, identityConfigKey); err != nil {
-			return err
-		}
-		return s.refreshGitConfig()
+		return s.clearIdentity()
 	}
 	if _, err := identityProfilePath(name); err != nil {
 		return err
 	}
 	if err := s.repo.LocalConfig().StoreString(identityConfigKey, name); err != nil {
+		return err
+	}
+	return s.refreshGitConfig()
+}
+
+// clearIdentity removes the pin, whatever layer it came from.
+//
+// Unsetting alone is not enough: `git config --unset` takes no scope flag here
+// and so touches the repository-local file only, while the pin is RESOLVED from
+// every layer git reads — global, system, or a file pulled in by includeIf,
+// which is the per-directory arrangement profiles exist to serve. Against those,
+// unsetting changed nothing and still reported success, leaving later entries
+// attributed to and signed with the profile the user had just disowned.
+//
+// Neutralising an outer layer needs an explicit empty LOCAL value: `--list` is
+// last-wins and local is read last, and activeIdentityProfile trims the result,
+// so an empty local value reads as "no profile". That is only written when one
+// is actually needed, so the ordinary case leaves no stray key behind.
+//
+// KREF_IDENTITY sits above git config entirely and no config write can reach it,
+// so the clear fails there rather than reporting a success it did not achieve.
+func (s *Store) clearIdentity() error {
+	if err := gitConfigUnset(s.dir, identityConfigKey); err != nil {
+		return err
+	}
+	if err := s.refreshGitConfig(); err != nil {
+		return err
+	}
+	name, _, err := activeIdentityProfile(s.gitcfg)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return nil
+	}
+	if env := strings.TrimSpace(os.Getenv("KREF_IDENTITY")); env != "" {
+		return fmt.Errorf("identity %q is pinned by KREF_IDENTITY, which overrides git config: "+
+			"unset that variable to use the plain git identity", env)
+	}
+	if err := s.repo.LocalConfig().StoreString(identityConfigKey, ""); err != nil {
 		return err
 	}
 	return s.refreshGitConfig()

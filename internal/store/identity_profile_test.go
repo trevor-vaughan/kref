@@ -99,6 +99,61 @@ var _ = Describe("identity profiles", func() {
 		Expect(email).To(Equal("work@example.com"))
 	})
 
+	// The read path resolves kref.identity from every layer git reads, so the
+	// clear path has to reach them too. Unsetting touches the repository-local
+	// file alone: against a pin that arrived by includeIf it changed nothing,
+	// reported success, and left every later entry attributed to -- and signed
+	// with -- the profile the user had just disowned.
+	It("clears a pin that arrived from outside the repository", func() {
+		writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+		dir := gitRepo()
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Close()).To(Succeed())
+
+		includeGitConfig(dir, "[kref]\n\tidentity = work\n")
+
+		reopened, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = reopened.Close() })
+		active, err := reopened.ActiveIdentity()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(active).To(Equal("work"))
+
+		Expect(reopened.UseIdentity("")).To(Succeed())
+
+		active, err = reopened.ActiveIdentity()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(active).To(BeEmpty())
+
+		// The consequence the user was promised, not just the config key changing:
+		// the next command must stop writing as the disowned profile. Asserted
+		// across a reopen because that is what the next command does -- the author
+		// is resolved at open and deliberately not re-derived mid-process (see
+		// refreshGitConfig).
+		again, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = again.Close() })
+		name, email := again.Author()
+		Expect(name).To(Equal(testSignerName))
+		Expect(email).To(Equal(testSignerEmail))
+	})
+
+	// KREF_IDENTITY overrides git config entirely, so no config write can clear
+	// it. Reporting success there would be the same lie in a different layer.
+	It("refuses to report success when KREF_IDENTITY pins the profile", func() {
+		writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+		dir := gitRepo()
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+
+		GinkgoT().Setenv("KREF_IDENTITY", "work")
+		err = s.UseIdentity("")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("KREF_IDENTITY"))
+	})
+
 	It("signs with the profile's own key, so identity and key move together", func() {
 		dir := gitRepo()
 		key := writeSigningKey(dir, "work@example.com")
