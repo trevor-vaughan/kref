@@ -136,35 +136,57 @@ func (s *Store) UseIdentity(name string) error {
 // unsetting changed nothing and still reported success, leaving later entries
 // attributed to and signed with the profile the user had just disowned.
 //
-// Neutralising an outer layer needs an explicit empty LOCAL value: `--list` is
-// last-wins and local is read last, and activeIdentityProfile trims the result,
-// so an empty local value reads as "no profile". That is only written when one
-// is actually needed, so the ordinary case leaves no stray key behind.
+// Neutralising an outer layer needs an explicit empty LOCAL value, which
+// activeIdentityProfile trims and reads as "no profile". That is only written
+// when a pin actually survives the unset, so the ordinary case leaves no stray
+// key behind.
 //
-// KREF_IDENTITY sits above git config entirely and no config write can reach it,
-// so the clear fails there rather than reporting a success it did not achieve.
+// Whether it works is then VERIFIED rather than assumed. Local is not
+// unconditionally the last layer git reads — `$GIT_DIR/config.worktree` is read
+// after it wherever extensions.worktreeConfig is set — so a function that wrote
+// the empty value and returned nil would reproduce, one layer up, the exact
+// "reported success, changed nothing" failure it exists to close. The snapshot
+// is a last-wins map over `git config --list`, so re-reading it answers the
+// question directly.
+//
+// Two things are refused rather than papered over. KREF_IDENTITY sits above git
+// config entirely and no config write can reach it, so it is checked FIRST: a
+// refusal has to leave the configuration untouched, or the user is told the
+// clear failed while their local pin is already gone. And a pin that survives
+// even the empty local value is reported with the remedy, not swallowed.
+//
+// The surviving name is read raw from the snapshot rather than through
+// activeIdentityProfile, which resolves it to a file on disk. Clearing does not
+// need the profile to exist, and a pin naming a deleted or renamed profile is
+// precisely the state a user most needs to get out of — the same tolerance
+// DescribeIdentities already extends to a dangling active profile.
 func (s *Store) clearIdentity() error {
+	if env := strings.TrimSpace(os.Getenv("KREF_IDENTITY")); env != "" {
+		return fmt.Errorf("identity %q is pinned by KREF_IDENTITY, which overrides git config: "+
+			"unset that variable to use the plain git identity", env)
+	}
 	if err := gitConfigUnset(s.dir, identityConfigKey); err != nil {
 		return err
 	}
 	if err := s.refreshGitConfig(); err != nil {
 		return err
 	}
-	name, _, err := activeIdentityProfile(s.gitcfg)
-	if err != nil {
-		return err
-	}
-	if name == "" {
+	if strings.TrimSpace(s.gitcfg.get(identityConfigKey)) == "" {
 		return nil
-	}
-	if env := strings.TrimSpace(os.Getenv("KREF_IDENTITY")); env != "" {
-		return fmt.Errorf("identity %q is pinned by KREF_IDENTITY, which overrides git config: "+
-			"unset that variable to use the plain git identity", env)
 	}
 	if err := s.repo.LocalConfig().StoreString(identityConfigKey, ""); err != nil {
 		return err
 	}
-	return s.refreshGitConfig()
+	if err := s.refreshGitConfig(); err != nil {
+		return err
+	}
+	if name := strings.TrimSpace(s.gitcfg.get(identityConfigKey)); name != "" {
+		return fmt.Errorf("identity %q is still active after clearing %s in this repository: "+
+			"it is set in a layer git resolves after the repository config "+
+			"(`git config --show-origin --get %s` names the file)",
+			name, identityConfigKey, identityConfigKey)
+	}
+	return nil
 }
 
 // refreshGitConfig re-reads the config snapshot after kref has written to it, so

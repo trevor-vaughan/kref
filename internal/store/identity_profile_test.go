@@ -154,6 +154,77 @@ var _ = Describe("identity profiles", func() {
 		Expect(err.Error()).To(ContainSubstring("KREF_IDENTITY"))
 	})
 
+	// A refusal must be a no-op. Unsetting first and refusing afterwards tells
+	// the user nothing was cleared while their local pin is already gone -- in
+	// any shell without the variable the identity, and the signing key with it,
+	// has silently changed.
+	It("leaves the local pin untouched when it refuses under KREF_IDENTITY", func() {
+		writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+		dir := gitRepo()
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s.Close() })
+		gitConfig(dir, "kref.identity", "work")
+
+		GinkgoT().Setenv("KREF_IDENTITY", "work")
+		Expect(s.UseIdentity("")).NotTo(Succeed())
+		Expect(gitOut(dir, "config", "--local", "--get", "kref.identity")).To(Equal("work"))
+	})
+
+	// The commonest path, and the one the success banner used to lie about.
+	// Also pins the doc comment's claim that an ordinary clear leaves no stray
+	// key behind -- an empty kref.identity is only for overriding an outer layer.
+	It("clears a pin held in the repository's own config without leaving a key behind", func() {
+		writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+		dir := gitRepo()
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Close()).To(Succeed())
+		gitConfig(dir, "kref.identity", "work")
+
+		reopened, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = reopened.Close() })
+		Expect(reopened.UseIdentity("")).To(Succeed())
+
+		active, err := reopened.ActiveIdentity()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(active).To(BeEmpty())
+		Expect(gitOut(dir, "config", "--local", "--list")).NotTo(ContainSubstring("kref.identity"))
+
+		again, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = again.Close() })
+		name, _ := again.Author()
+		Expect(name).To(Equal(testSignerName))
+	})
+
+	// A pin naming a profile that is no longer on disk is the state a user most
+	// needs to get out of, so the clear must not route the surviving name through
+	// the profile PATH -- that resolution fails with "not found" and would leave
+	// no way out through kref. The same tolerance DescribeIdentities already
+	// extends to a dangling active profile.
+	//
+	// Reached by deleting the profile out from under an open store, because Open
+	// itself rejects a pin it cannot resolve: a store that is already open is the
+	// only way this path is live today.
+	It("clears a pin whose profile has gone missing since the store was opened", func() {
+		path := writeProfile("work", "[user]\n\tname = Work Me\n\temail = work@example.com\n")
+		dir := gitRepo()
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Close()).To(Succeed())
+		gitConfig(dir, "kref.identity", "work")
+
+		reopened, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = reopened.Close() })
+		Expect(os.Remove(path)).To(Succeed())
+
+		Expect(reopened.UseIdentity("")).To(Succeed())
+		Expect(gitOut(dir, "config", "--local", "--list")).NotTo(ContainSubstring("kref.identity"))
+	})
+
 	It("signs with the profile's own key, so identity and key move together", func() {
 		dir := gitRepo()
 		key := writeSigningKey(dir, "work@example.com")

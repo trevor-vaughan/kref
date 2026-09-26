@@ -52,17 +52,14 @@ var _ = Describe("tier clock witnessing", func() {
 		return before
 	}
 
-	// The built-ins are what changed hands: the guard here used to skip them
-	// (`d.Builtin() ||`) because git-bug's own clockLoaders pass covered them
-	// inside OpenGoGitRepo. That pass is gone — it walks entity commits with a
-	// ReadCommit that cannot decode a git-native signature, so with signing on it
-	// failed every open — and skipping them now would witness nothing at all.
+	// Pins the guard change itself: the built-ins used to be skipped by
+	// `d.Builtin() ||`, and with that term restored this spec fails.
 	//
 	// Exercised against witnessTierClocks directly, and against a handle that has
-	// never seen the clocks. Going through Open instead proves nothing: reading
-	// any entity witnesses its namespace as a side effect (git-bug's dag.read),
-	// and Open reads entries, so the clocks come back whether this function works
-	// or not.
+	// never seen the clocks. Going through Open instead proves nothing here:
+	// reading any entity witnesses its namespace as a side effect (git-bug's
+	// dag.read), and Open reads entries, so the clocks come back whether this
+	// function works or not.
 	It("witnesses the built-in tiers, which git-bug's open no longer does", func() {
 		dir := gitRepo()
 		s, err := Init(dir, "T", "t@e.com")
@@ -114,6 +111,43 @@ var _ = Describe("tier clock witnessing", func() {
 
 		clocks, err := reopened.repo.AllClocks()
 		Expect(err).NotTo(HaveOccurred())
+		// HaveKey first: AllClocks' values are an interface, so indexing a missing
+		// key yields nil and .Time() panics -- in exactly the scenario this spec
+		// exists to catch, which would then report as a panic rather than as the
+		// comparison below.
+		Expect(clocks).To(HaveKey(ns + "-create"))
+		Expect(clocks[ns+"-create"].Time()).To(BeNumerically(">", before))
+	})
+
+	// The other half of the rationale in witnessTierClocks' doc comment, which
+	// neither spec above reaches: witnessing had to move so the walk routes
+	// through kref's signature-aware wrapper. Both specs above hand it the RAW
+	// git-bug handle with signing off -- the very handle whose ReadCommit cannot
+	// decode a git-native signature. This one turns signing on and goes through
+	// the real Open, so reintroducing the in-open clockLoaders pass fails here
+	// rather than in a user's repository.
+	It("opens a signed store whose clock files are gone", func() {
+		dir := gitRepo()
+		enableSSHSigning(dir, testSignerEmail)
+		s, err := Init(dir, testSignerName, testSignerEmail)
+		Expect(err).NotTo(HaveOccurred())
+		for range 3 {
+			_, err = s.Add(entry.TierShared, "spec", "T", "b")
+			Expect(err).NotTo(HaveOccurred())
+		}
+		ns := entry.TierShared.Namespace()
+		Expect(s.Signing()).To(BeTrue(), "precondition: the entries must be written signed")
+		before := dropClocks(s, ns)
+
+		reopened, err := Open(dir)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = reopened.Close() })
+
+		_, err = reopened.Add(entry.TierShared, "spec", "After", "b")
+		Expect(err).NotTo(HaveOccurred())
+		clocks, err := reopened.repo.AllClocks()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(clocks).To(HaveKey(ns + "-create"))
 		Expect(clocks[ns+"-create"].Time()).To(BeNumerically(">", before))
 	})
 })
