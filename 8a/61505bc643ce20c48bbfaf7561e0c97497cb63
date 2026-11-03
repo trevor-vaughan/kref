@@ -1,0 +1,21 @@
+AGENTS.md
+  s_0de3610ded6629::t_27c5a49028b33d 117-120,123,157-164
+docs/usage.md
+  s_0de3610ded6629::t_4d5bea81d60f94 679-727
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8a61505bc643ce20c48bbfaf7561e0c97497cb63",
+  "prompts": {},
+  "sessions": {
+    "s_0de3610ded6629": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0003d1ce-f796-4408-8a60-f1c01a9a5815",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
