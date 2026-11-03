@@ -1,0 +1,73 @@
+cmd/kref/cli_test.go
+  s_159b0958794878::t_da608cc8fd2557 2568
+cmd/kref/commands.go
+  s_159b0958794878::t_78091a00101b40 191,202
+cmd/kref/listcockpit.go
+  s_159b0958794878::t_dc57c744c5238b 162-163,764,783-787,790-794,809
+cmd/kref/listflags.go
+  s_159b0958794878::t_048611b38fea62 58
+cmd/kref/todo.go
+  s_159b0958794878::t_b5af1e05cc9cc2 46-48,74-77,104-105,114-121,124-145,148,151,155,232-239,252-255,257,270,306-314,335,357-360,363,370-391,412,457-476
+cmd/kref/todo_e2e_test.go
+  s_159b0958794878::t_4912098ebb32e9 15,490-554
+cmd/kref/todopicker.go
+  s_159b0958794878::t_1a3a4575629cb1 1,7,9,11,13,15-18,21-27,30-36,39-42,44-53,55-66,69-79,81-83,86-92,94-98,100-101,103-108,110-114,116,119-124,126-129,132-133,135-138,140-146,148-149,151,154-158,160-161,164-197,200,203-216,218-221,223,226,228-246,248-253,256-310
+cmd/kref/todopicker_test.go
+  s_159b0958794878::t_90019804e1e47b 1,4-5,10-115
+cmd/kref/viewer.go
+  s_159b0958794878::t_02ccbf20ab5da9 30-31,64-77
+cmd/kref/viewer_actions.go
+  s_159b0958794878::t_b9ec4b58bf91b5 214-235
+cmd/kref/viewer_test.go
+  s_159b0958794878::t_8f9eea8ed9d498 1861-1910
+internal/entry/history.go
+  s_159b0958794878::t_618b63eb23ee0e 12
+internal/entry/snapshot.go
+  s_159b0958794878::t_3e1b6d93b67d6a 66-67
+internal/entry/tier.go
+  s_159b0958794878::t_45849aabdb03fc 58-59
+internal/render/cockpit.go
+  s_159b0958794878::t_9f5884e071767c 6-7,9-11,143-189
+internal/render/cockpit_test.go
+  s_159b0958794878::t_3f4db0592002a1 8,195-240
+internal/render/render.go
+  s_159b0958794878::t_e86e49008b796a 410-412
+internal/store/excerpt_cache.go
+  s_159b0958794878::t_9c6197ec55edd4 80
+internal/store/excerpt_disk.go
+  s_159b0958794878::t_0ceda2f502cb69 18
+internal/store/excerpt_disk_test.go
+  s_159b0958794878::t_07ef74e8b6d87c 50-51
+internal/store/pushed.go
+  s_159b0958794878::t_f649b99f19f291 147
+internal/store/quarantine_queue.go
+  s_159b0958794878::t_993ab9afe3ef3e 171
+internal/store/store.go
+  s_159b0958794878::t_c3b20491f581b1 44-54,71,75,87,98-102,104,118,122-123,135,139,143,155-158,176,185-186,196-205,388,857
+internal/store/tiers.go
+  s_159b0958794878::t_563ecb965f6f05 84-88,97
+internal/store/tiers_test.go
+  s_159b0958794878::t_6239c04ef686d2 145
+internal/textdiff/textdiff.go
+  s_159b0958794878::t_6f731637b70c3d 3-4
+internal/tui/menu.go
+  s_159b0958794878::t_355af3ee0c56b7 13,26-30,34,47,75-79,200,202-210,235-239
+internal/tui/menu_test.go
+  s_159b0958794878::t_1f291f53587f45 120-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c07a9d7a30f030df50289691aa73d127fced4e91",
+  "prompts": {},
+  "sessions": {
+    "s_159b0958794878": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f82bd783-a0a3-4fd3-8000-ae515f06c725",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
