@@ -1,0 +1,39 @@
+cmd/kref/todo.go
+  s_159b0958794878::t_a1ccb5c75d01db 46-48,74-77,104-105,114-121,124-145,148,151,155,232-239,252-255,257,270,306-314,335,357-360,363,370-391,412,457-476
+cmd/kref/todo_e2e_test.go
+  s_159b0958794878::t_20c275f8c54be5 15,490-554
+cmd/kref/todopicker.go
+  s_159b0958794878::t_bb47c3ee2df27b 1-312
+cmd/kref/todopicker_test.go
+  s_159b0958794878::t_b541ede33f1eb6 1-117
+cmd/kref/viewer.go
+  s_159b0958794878::t_d175198a080cbf 30-31,64-77
+cmd/kref/viewer_actions.go
+  s_159b0958794878::t_31f8bdc10e1875 214-235
+cmd/kref/viewer_test.go
+  s_159b0958794878::t_eccd3fa790d53a 1861-1910
+internal/render/cockpit.go
+  s_159b0958794878::t_627d83576fe1c7 6-7,9-11,143-189
+internal/render/cockpit_test.go
+  s_159b0958794878::t_d32311add51035 8,195-240
+internal/tui/menu.go
+  s_159b0958794878::t_224f83700303fe 13,26-30,34,47,75-79,200,202-210,235-239
+internal/tui/menu_test.go
+  s_159b0958794878::t_3d6c3fa7cc35a9 120-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9166918c65d9ae78e2e090c95245b534b032cdc9",
+  "prompts": {},
+  "sessions": {
+    "s_159b0958794878": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f82bd783-a0a3-4fd3-8000-ae515f06c725",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
