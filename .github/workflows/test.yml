@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.26.7", "stable"]
+        go: ["1.26.10", "stable"]
     steps:
       # Floating tags kept intentionally so this internal CI tracks the latest
       # toolchain/test images; unpinned-uses suppressed per that decision.
@@ -34,7 +34,7 @@ jobs:
       # setup-go unconditionally exports GOTOOLCHAIN=local, which forbids Go
       # from provisioning the toolchain go.mod asks for. `stable` resolves out
       # of the actions/go-versions manifest, which lags upstream — it tops out
-      # at 1.26.6 today while go.mod requires 1.26.7 — so every `go` command in
+      # at 1.26.6 today while go.mod requires 1.26.10 — so every `go` command in
       # that leg aborts before it runs. Restoring `auto` makes the leg test the
       # newest Go that satisfies go.mod rather than fail outright, and is a
       # no-op for the pinned leg, where setup-go installs go.mod's version.
@@ -56,7 +56,7 @@ jobs:
       # Tidiness is Go-version-sensitive; run it only in the go.mod-pinned leg so
       # the floating `stable` toolchain can't turn PRs red on tidy-output drift.
       - name: Verify go.mod is tidy
-        if: matrix.go == '1.26.7'
+        if: matrix.go == '1.26.10'
         run: |
           go mod tidy
           git diff --exit-code

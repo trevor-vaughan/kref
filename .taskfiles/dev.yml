@@ -7,7 +7,7 @@ vars:
   BETTERLEAKS_VERSION: '{{.BETTERLEAKS_VERSION | default "v1.6.1"}}'
   GINKGOLEAF_VERSION: '{{.GINKGOLEAF_VERSION | default "v0.1.1"}}'
   GOLANGCI_LINT_VERSION: '{{.GOLANGCI_LINT_VERSION | default "v2.12.2"}}'
-  GOVULNCHECK_VERSION: '{{.GOVULNCHECK_VERSION | default "v1.5.0"}}'
+  GOVULNCHECK_VERSION: '{{.GOVULNCHECK_VERSION | default "v1.9.0"}}'
 
 # Every `go` invocation checks the go.mod toolchain directive; provision it.
 env:
