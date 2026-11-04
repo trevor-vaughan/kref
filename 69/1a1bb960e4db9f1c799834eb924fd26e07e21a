@@ -1,0 +1,33 @@
+README.md
+  s_4dcaf710f1cc52::t_68d4448def7d3e 105
+Taskfile.yml
+  s_4dcaf710f1cc52::t_68d4448def7d3e 23,25
+.github/workflows/test.yml
+  s_4dcaf710f1cc52::t_68d4448def7d3e 22,37,59
+CONTRIBUTING.md
+  s_4dcaf710f1cc52::t_68d4448def7d3e 7
+.github/workflows/security.yml
+  s_4dcaf710f1cc52::t_68d4448def7d3e 38
+go.mod
+  s_4dcaf710f1cc52::t_ab57f80bf8ecca 3,121
+.taskfiles/dev.yml
+  s_4dcaf710f1cc52::t_9e415007141e42 10
+go.sum
+  s_4dcaf710f1cc52::t_d86f1a2d07f2c8 295-296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "691a1bb960e4db9f1c799834eb924fd26e07e21a",
+  "prompts": {},
+  "sessions": {
+    "s_4dcaf710f1cc52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c7ee871-7069-4e47-ac9f-692beee5fe11",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
