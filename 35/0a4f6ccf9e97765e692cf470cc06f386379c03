@@ -1,0 +1,29 @@
+cmd/kref/guardedwriter.go
+  s_4dcaf710f1cc52::t_76401767733022 51
+cmd/kref/todowrite.go
+  s_4dcaf710f1cc52::t_76401767733022 30,52
+internal/mcpserver/server.go
+  s_4dcaf710f1cc52::t_76401767733022 171,719,1022,1040
+cmd/kref/comment.go
+  s_4dcaf710f1cc52::t_76401767733022 55,120,187,257
+cmd/kref/quarantine.go
+  s_4dcaf710f1cc52::t_76401767733022 31
+cmd/kref/commands.go
+  s_4dcaf710f1cc52::t_76401767733022 3209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "350a4f6ccf9e97765e692cf470cc06f386379c03",
+  "prompts": {},
+  "sessions": {
+    "s_4dcaf710f1cc52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c7ee871-7069-4e47-ac9f-692beee5fe11",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
