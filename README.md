@@ -102,7 +102,7 @@ go install github.com/betterleaks/betterleaks@latest
 
 ### Build from source
 
-**Prerequisites:** [Go](https://go.dev/dl/) ≥ 1.26.7 and
+**Prerequisites:** [Go](https://go.dev/dl/) ≥ 1.26.10 and
 [Task](https://taskfile.dev/installation/) (the build runner). Step 2 installs a
 pinned `betterleaks` for you.
 

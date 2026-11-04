@@ -117,6 +117,77 @@ var _ = Describe("Menu", func() {
 		Expect(out).To(ContainSubstring("❯"))
 		Expect(out).NotTo(ContainSubstring("\x1b["))
 	})
+
+	Describe("sections", func() {
+		sectioned := []tui.MenuRow{
+			{ID: "0", Section: "TODOS", Label: "kref (this project)", Enabled: true},
+			{ID: "1", Section: "TODOS", Label: "infra migration", Enabled: true},
+			{ID: "verb:fmt", Section: "ACTIONS", Key: "f", Label: "fmt", Detail: "auto-arrange", Enabled: true},
+		}
+
+		newSectioned := func() *tui.Menu {
+			m := tui.NewMenu("todo")
+			m.SetRows(sectioned)
+			return m
+		}
+
+		It("writes a heading when the section changes", func() {
+			out := newSectioned().Render(60, false)
+			Expect(out).To(ContainSubstring("TODOS"))
+			Expect(out).To(ContainSubstring("ACTIONS"))
+			Expect(strings.Index(out, "TODOS")).To(BeNumerically("<", strings.Index(out, "ACTIONS")))
+			Expect(strings.Count(out, "TODOS")).To(Equal(1))
+		})
+
+		It("writes no heading for rows without a section", func() {
+			m := tui.NewMenu("comment")
+			m.SetRows([]tui.MenuRow{{Key: "a", Label: "new comment", Enabled: true}})
+			for line := range strings.SplitSeq(m.Render(60, false), "\n") {
+				Expect(strings.TrimSpace(line)).NotTo(Equal("TODOS"))
+			}
+		})
+
+		It("drops a heading whose rows the filter removed", func() {
+			m := newSectioned()
+			m.SetFilter("fmt")
+			out := m.Render(60, false)
+			Expect(out).To(ContainSubstring("ACTIONS"))
+			Expect(out).NotTo(ContainSubstring("TODOS"))
+		})
+
+		It("leaves selection and key lookup unaffected by headings", func() {
+			m := newSectioned()
+			sel, ok := m.Selected()
+			Expect(ok).To(BeTrue())
+			Expect(sel.ID).To(Equal("0"))
+
+			m.Move(2)
+			sel, ok = m.Selected()
+			Expect(ok).To(BeTrue())
+			Expect(sel.ID).To(Equal("verb:fmt"))
+
+			row, ok := m.ByKey("f")
+			Expect(ok).To(BeTrue())
+			Expect(row.ID).To(Equal("verb:fmt"))
+		})
+	})
+
+	Describe("hint", func() {
+		It("uses the default footer when none is set", func() {
+			m := tui.NewMenu("comment")
+			m.SetRows([]tui.MenuRow{{Key: "a", Label: "new comment", Enabled: true}})
+			Expect(m.Render(60, false)).To(ContainSubstring("enter do"))
+		})
+
+		It("replaces the footer when one is set", func() {
+			m := tui.NewMenu("todo")
+			m.SetRows([]tui.MenuRow{{ID: "0", Label: "infra migration", Enabled: true}})
+			m.SetHint("↑↓ choose · enter show ‹infra migration› · esc cancel")
+			out := m.Render(72, false)
+			Expect(out).To(ContainSubstring("enter show ‹infra migration›"))
+			Expect(out).NotTo(ContainSubstring("enter do"))
+		})
+	})
 })
 
 var _ = Describe("Menu rendering width", func() {

@@ -28,8 +28,7 @@ const unscannedWarn = "warning: betterleaks not found — body stored UNSCANNED;
 // errors propagate.
 func entryParkFindings(snap *entry.Snapshot, body string) (findings []scan.Finding, held, unscanned bool, err error) {
 	unscanned, err = entryguard.Check(snap, body, false)
-	var refused *entryguard.RefusedError
-	if errors.As(err, &refused) {
+	if refused, ok := errors.AsType[*entryguard.RefusedError](err); ok {
 		return refused.Findings, true, false, nil
 	}
 	if err != nil {

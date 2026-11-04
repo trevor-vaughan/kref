@@ -1858,3 +1858,53 @@ var _ = Describe("sticky strip golden layout", func() {
 		}
 	})
 })
+
+// switchableStub is a provider that can hand its subject over to a picker, the
+// way the todo cockpit's does.
+type switchableStub struct {
+	stubProvider
+	requested *bool
+}
+
+func (p switchableStub) RequestSwitch() { *p.requested = true }
+
+var _ = Describe("the switch palette command", func() {
+	send := func(m viewerModel, msgs ...tea.Msg) viewerModel {
+		var mm tea.Model = m
+		for _, msg := range msgs {
+			mm, _ = mm.Update(msg)
+		}
+		return mm.(viewerModel)
+	}
+	size := tea.WindowSizeMsg{Width: 80, Height: 24}
+
+	It("is offered but disabled when the provider cannot switch", func() {
+		// Disabled rather than absent: the reader learns the capability exists
+		// and why it does not apply here, the way expand header does.
+		m := send(newViewerModel(viewerInput{
+			title: "t", body: "# T\n", width: 80,
+			provider: stubProvider{header: []string{"h"}},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		view := m.View()
+		Expect(view).To(ContainSubstring("switch"))
+		Expect(view).To(ContainSubstring("nothing to switch to here"))
+	})
+
+	It("requests the switch and quits when the provider can", func() {
+		requested := false
+		m := send(newViewerModel(viewerInput{
+			title: "t", body: "# T\n", width: 80,
+			provider: switchableStub{
+				stubProvider: stubProvider{header: []string{"h"}},
+				requested:    &requested,
+			},
+		}), size)
+		m = send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+		Expect(m.View()).NotTo(ContainSubstring("nothing to switch to here"))
+
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		Expect(requested).To(BeTrue())
+		Expect(cmd).NotTo(BeNil()) // tea.Quit
+	})
+})

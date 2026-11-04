@@ -4,7 +4,7 @@ Thanks for helping out. This is a small, test-driven Go project.
 
 ## Setup
 
-- **Go ≥ 1.26.7** (pinned in `go.mod`; or any Go with `GOTOOLCHAIN=auto`, which `task` sets for you).
+- **Go ≥ 1.26.10** (pinned in `go.mod`; or any Go with `GOTOOLCHAIN=auto`, which `task` sets for you).
 - [`task`](https://taskfile.dev) for all build/test/lint.
 
 Common tasks are aliased at the root; the `dev:` namespace holds the build/test

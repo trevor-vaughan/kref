@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/git-bug/git-bug/entity"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -189,5 +190,51 @@ var _ = Describe("TodoStripFields", func() {
 		var b2 bytes.Buffer
 		render.TodoCockpit(&b2, base, "geometric", false)
 		Expect(b2.String()).To(Equal(b.String()))
+	})
+})
+
+var _ = Describe("TodoPickerLines", func() {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	items := []render.TodoPickerItem{
+		{ID: entity.Id("1111111111111111111111111111111111111111"), Title: "kref (this project)", Awaiting: 2, Open: 11, Edited: now.AddDate(0, 0, -7)},
+		{ID: entity.Id("2222222222222222222222222222222222222222"), Title: "infra", Awaiting: 0, Open: 4, Edited: now.AddDate(0, 0, -2)},
+	}
+
+	It("shows the awaiting glyph only when there is something awaiting", func() {
+		lines := render.TodoPickerLines(items, "geometric", now)
+		Expect(lines).To(HaveLen(2))
+		Expect(lines[0]).To(ContainSubstring("◉2"))
+		Expect(lines[1]).NotTo(ContainSubstring("◉"))
+	})
+
+	It("switches the glyph with the theme", func() {
+		Expect(render.TodoPickerLines(items, "emoji", now)[0]).To(ContainSubstring("❓2"))
+	})
+
+	It("leads with the short id and pads the title so the columns line up", func() {
+		// A golden pair: the shorter title is padded out to the longest, so the
+		// signal, count and age columns start at the same offset on every row.
+		Expect(render.TodoPickerLines(items, "geometric", now)).To(Equal([]string{
+			"111111111111  kref (this project)   ◉2   11  1w ago",
+			"222222222222  infra                       4  2d ago",
+		}))
+	})
+
+	It("renders the edited time in RelTime's shared vocabulary", func() {
+		lines := render.TodoPickerLines(items, "geometric", now)
+		Expect(lines[0]).To(HaveSuffix("1w ago"))
+		Expect(lines[1]).To(HaveSuffix("2d ago"))
+	})
+
+	It("falls back to the absolute date once RelTime gives up at eight weeks", func() {
+		old := []render.TodoPickerItem{{
+			ID:    entity.Id("3333333333333333333333333333333333333333"),
+			Title: "ancient", Open: 1, Edited: now.AddDate(-1, 0, 0),
+		}}
+		Expect(render.TodoPickerLines(old, "geometric", now)[0]).To(HaveSuffix("2025-09-02"))
+	})
+
+	It("returns no lines for no items", func() {
+		Expect(render.TodoPickerLines(nil, "geometric", now)).To(BeEmpty())
 	})
 })

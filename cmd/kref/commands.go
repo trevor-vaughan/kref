@@ -3206,8 +3206,7 @@ func editEntry(cmd *cobra.Command, s *store.Store, id entity.Id) error {
 			return errors.New("aborted: edited body is empty")
 		}
 		guarded, gerr := todoguard.Guard(snap.Kind, body, todoguard.Options{})
-		var rej *todoguard.RejectedError
-		if errors.As(gerr, &rej) {
+		if rej, ok := errors.AsType[*todoguard.RejectedError](gerr); ok {
 			if haveRejected && rej.Body == lastRejected {
 				return fmt.Errorf("edit discarded: todo still has %d lint violation(s) and was not changed:\n%s",
 					len(rej.Violations), rej.Error())

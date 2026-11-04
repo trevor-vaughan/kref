@@ -696,6 +696,55 @@ kref todo fmt              # re-arrange: move done items into Done, normalize
 kref todo lint             # report grammar violations (exit 1 if any)
 ```
 
+### Choosing between several todos
+
+With one todo — or several and a `todo.default` configured — `kref todo` opens
+it directly. With several and no default, it opens a **picker** instead of
+asking you to retype an id:
+
+```
+╭──────────────────────────────────────────────────╮
+│ todo · on: infra migration                       │
+│                                                  │
+│ TODOS                                            │
+│   81be409e4ef8  roadmap          ◉2  11  1w ago  │
+│ ❯ a1b2c3d4e5f6  infra migration       4  2d ago  │
+│   9f8e7d6c5b4a  reading list     ◉1    7  3w ago │
+│                                                  │
+│ ACTIONS                                          │
+│   f  fmt   auto-arrange                          │
+│   l  lint  check grammar                         │
+│                                                  │
+│ ↑↓ choose · enter show ‹infra migration› · esc   │
+╰──────────────────────────────────────────────────╯
+```
+
+Each row carries the awaiting-you count, the open-item count and the edited
+age, so you can see which todo needs you without opening any of them.
+
+| Key         | Does                                                     |
+|-------------|----------------------------------------------------------|
+| `↑↓` `k` `j`| move                                                     |
+| `enter`     | open the highlighted todo, or run the highlighted action |
+| `f` / `l`   | `fmt` / `lint` the highlighted todo                      |
+| `/`         | filter                                                   |
+| `esc` `q`   | leave                                                    |
+
+The highlighted todo stays the **subject**: arrow down into `ACTIONS` and the
+verbs still act on the todo you left, which the subtitle and the footer name.
+Opening a todo and quitting it returns you to the picker; `fmt` and `lint`
+print their result and exit.
+
+`kref todo fmt` and `kref todo show` open the same picker when their target is
+ambiguous, with the verb already chosen. `kref todo lint` does not — with no
+argument it lints every todo, which is not an ambiguity.
+
+From inside a cockpit, `:` then `switch` reopens the picker.
+
+The picker needs a terminal. Piped, or under `--json`, `--plain` or
+`--no-pager`, all of these still report `N kind:todo entries found; pass an id`
+and exit non-zero — a picker is not a machine contract.
+
 ### The grammar
 
 The body is markdown with exactly one H1 title and a **closed set** of level-2

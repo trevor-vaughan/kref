@@ -168,8 +168,7 @@ func toolError(format string, a ...any) *mcp.CallToolResult {
 // in that case the returned string is empty and no write should occur.
 func guardTodo(id, kind, body string) (string, *mcp.CallToolResult) {
 	out, err := todoguard.Guard(kind, body, todoguard.Options{})
-	var rej *todoguard.RejectedError
-	if errors.As(err, &rej) {
+	if rej, ok := errors.AsType[*todoguard.RejectedError](err); ok {
 		path, werr := todoguard.WriteRejected(id, rej.Body)
 		if werr != nil {
 			return "", toolError("%v (could not save recovery file: %v)", rej, werr)
@@ -717,8 +716,7 @@ func update(dp dirPolicy) mcp.ToolHandlerFor[updateParams, any] {
 				}
 			}
 			unscanned, cerr := entryguard.Check(snap, p.Body, false)
-			var refused *entryguard.RefusedError
-			if errors.As(cerr, &refused) {
+			if refused, ok := errors.AsType[*entryguard.RefusedError](cerr); ok {
 				parked, perr := st.QuarantineUpdate(id, p.Body, snap.Version, refused.Findings, actor, "agent")
 				if perr != nil {
 					return toolError("quarantine failed: %v", perr), nil, nil
@@ -1021,8 +1019,7 @@ func quarantinedResult(p store.Parked) *mcp.CallToolResult {
 // (unscanned, nil) and the caller proceeds with the real write.
 func parkEntry(snap *entry.Snapshot, body string, parkFn func([]scan.Finding) (store.Parked, error)) (unscanned bool, done *mcp.CallToolResult) {
 	unscanned, err := entryguard.Check(snap, body, false)
-	var refused *entryguard.RefusedError
-	if errors.As(err, &refused) {
+	if refused, ok := errors.AsType[*entryguard.RefusedError](err); ok {
 		parked, perr := parkFn(refused.Findings)
 		if perr != nil {
 			return false, toolError("quarantine failed: %v", perr)
@@ -1040,8 +1037,7 @@ func parkEntry(snap *entry.Snapshot, body string, parkFn func([]scan.Finding) (s
 // never forces — approval stays a human decision at the CLI.
 func parkComment(snap *entry.Snapshot, body string, parkFn func([]scan.Finding) (store.Parked, error)) (unscanned bool, done *mcp.CallToolResult) {
 	unscanned, err := commentguard.Check(snap, body, false)
-	var refused *commentguard.RefusedError
-	if errors.As(err, &refused) {
+	if refused, ok := errors.AsType[*commentguard.RefusedError](err); ok {
 		parked, perr := parkFn(refused.Findings)
 		if perr != nil {
 			return false, toolError("quarantine failed: %v", perr)

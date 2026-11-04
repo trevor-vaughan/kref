@@ -160,12 +160,13 @@ surface.
 
 | Surface                             | Command                    | Implementation                                             |
 |-------------------------------------|----------------------------|------------------------------------------------------------|
-| Entry viewer (read + comment write) | `kref show <id>`           | `RunViewer`, `cmd/kref/viewer.go:1601`                     |
-| Todo cockpit (viewer + todo header) | `kref todo <id>`           | `runTodoCockpit`, `cmd/kref/todo.go:100`                   |
-| List cockpit (row nav + actions)    | `kref` (no arguments)      | `runRootBrowse`, `cmd/kref/listcockpit.go:789`             |
-| Search cockpit (hits, ranked)       | `kref search <query>`      | `runSearchBrowse`, `cmd/kref/listcockpit.go:889`           |
+| Entry viewer (read + comment write) | `kref show <id>`           | `RunViewer`, `cmd/kref/viewer.go:1615`                     |
+| Todo cockpit (viewer + todo header) | `kref todo <id>`           | `runTodoCockpit`, `cmd/kref/todo.go:106`                   |
+| List cockpit (row nav + actions)    | `kref` (no arguments)      | `runRootBrowse`, `cmd/kref/listcockpit.go:820`             |
+| Search cockpit (hits, ranked)       | `kref search <query>`      | `runSearchBrowse`, `cmd/kref/listcockpit.go:920`           |
 | Quarantine review queue             | `kref quarantine`          | `runReviewModel`, `cmd/kref/quarantine_review_view.go:318` |
 | Static pager (no model)             | `kref diff`                | `Page`, `cmd/kref/pager.go:336`                            |
+| Todo picker (menu overlay)          | `kref todo` (2+ todos)     | `runTodoPicker`, `cmd/kref/todopicker.go:267`              |
 
 The list and search cockpits are one `listModel`; a `cockpitProfile` supplies
 the title, whether the quarantine queue is fetched, and whether the results are
@@ -198,6 +199,14 @@ tmux kill-session -t kref; tmux kill-session -t holder
 
 Press `?` in any of the five TUIs rather than trusting a key table in a doc —
 the popup is generated from the model's own bindings, so it cannot drift.
+
+The todo picker is a `tui.Menu` overlay rather than a `ScrollView` surface, so
+the cross-surface conventions below do not apply to it: it has no `? keys`
+footer, no `g`/`G`, and no `n`/`N`. Its whole key set is `↑↓`/`k`/`j`, `enter`,
+the `f`/`l` verb accelerators, `/` to filter, and `esc`/`q`. Poll for it with
+`grep -q "↑↓ choose"` instead of `"? keys"`. It appears only when `kref todo`
+or `kref todo fmt` finds several `kind:todo` entries and no configured default,
+so a driving script must create at least two todos to reach it.
 
 ### Cross-surface conventions
 

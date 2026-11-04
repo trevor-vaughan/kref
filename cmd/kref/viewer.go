@@ -27,8 +27,8 @@ import (
 // HeaderProvider supplies the viewer's dynamic, entry-semantic inputs: the
 // sticky strip's fields, the sections collapsed on first render (by outline
 // heading Path), and the ctrl+r refresh. The comment write path uses the
-// separate commentWriter interface. Optional ExpandableHeader and
-// GlyphThemedHeader capabilities are type-asserted.
+// separate commentWriter interface. Optional ExpandableHeader,
+// GlyphThemedHeader and Switchable capabilities are type-asserted.
 type HeaderProvider interface {
 	// HeaderLines returns the sticky strip's fields, most important first.
 	// The viewer joins them with · and drops from the TAIL when the width
@@ -59,6 +59,20 @@ type ExpandableHeader interface {
 type GlyphThemedHeader interface {
 	GlyphTheme() string
 	SetGlyphTheme(theme string) []string
+}
+
+// Switchable is the optional capability a provider advertises when its subject
+// can be swapped for another of its kind — the todo cockpit, which several
+// kind:todo entries can share. The viewer offers a keyless `switch` palette
+// command when the provider implements it, calls RequestSwitch and quits; the
+// host reads the request after RunViewer returns.
+//
+// The request lives on the provider rather than in RunViewer's return value
+// because RunViewer is shared by kref show and the quarantine reviewer, and
+// neither has anything to switch to. The provider is a pointer the host already
+// holds, so the flag survives the model going out of scope.
+type Switchable interface {
+	RequestSwitch()
 }
 
 type viewerInput struct {
