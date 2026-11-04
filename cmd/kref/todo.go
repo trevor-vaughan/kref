@@ -43,6 +43,9 @@ type todoHeaderProvider struct {
 	counts todo.Cockpit
 	render func(c todo.Cockpit, theme string) []string
 	fetch  func() (todo.Cockpit, []entry.Comment, error)
+	// switchRequested is set by the `:` palette's switch command just before the
+	// viewer quits, and read by showTodoCockpit once RunViewer returns.
+	switchRequested bool
 }
 
 func (p *todoHeaderProvider) HeaderLines() []string        { return p.header }
@@ -67,6 +70,10 @@ func (p *todoHeaderProvider) SetGlyphTheme(theme string) []string {
 	p.header = p.render(p.counts, theme)
 	return p.header
 }
+
+// RequestSwitch satisfies Switchable: several kind:todo entries can share this
+// cockpit, so switching between them is meaningful here and nowhere else.
+func (p *todoHeaderProvider) RequestSwitch() { p.switchRequested = true }
 
 func newTodoCmd(dir *string) *cobra.Command {
 	var full, noPager bool
@@ -94,9 +101,8 @@ func newTodoCmd(dir *string) *cobra.Command {
 	return c
 }
 
-// runTodoCockpit renders the cockpit for the resolved todo (the sole/default
-// entry, or the one named by arg). Shared by `kref todo` and `kref todo show`.
-// noPager forces the static render even on an interactive terminal.
+// runTodoCockpit resolves the todo (the sole/default entry, or the one named by
+// arg) and renders its cockpit. Shared by `kref todo` and `kref todo show`.
 func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPager bool) error {
 	s, err := store.Open(*dir)
 	if err != nil {
@@ -105,17 +111,48 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 	defer s.Close()
 	snap, err := resolveTodoDefault(s, arg)
 	if err != nil {
+		var ambiguous ambiguousTodoError
+		if errors.As(err, &ambiguous) && todoPickerOK(cmd, noPager) {
+			return runTodoPicker(cmd, s, "", full)
+		}
 		return err
 	}
+	switched, err := showTodoCockpit(cmd, s, snap, full, noPager)
+	if err != nil || !switched {
+		return err
+	}
+	// The reader asked for the picker from inside a cockpit they reached
+	// directly, so there is no loop above to return to; start one.
+	return runTodoPicker(cmd, s, "", full)
+}
+
+// todoPickerOK reports whether this invocation can show a picker. --json and
+// --plain are machine contracts a TUI cannot honour, and --no-pager means
+// exactly "not interactive"; each keeps the error it has always printed.
+func todoPickerOK(cmd *cobra.Command, noPager bool) bool {
+	return usePager(cmd) && !noPager && !jsonMode(cmd) && !plainMode(cmd)
+}
+
+// showTodoCockpit renders one todo's cockpit — interactive on a terminal, static
+// otherwise. noPager forces the static render even on an interactive terminal.
+//
+// It takes an open store and a resolved snapshot so the picker can drive the
+// same code path the command does: this function knows how to draw one todo,
+// not how to choose between several.
+//
+// It reports switched when the reader asked, through the `:` palette's switch
+// command, to be handed back to the picker. The caller owns that hand-back.
+func showTodoCockpit(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, full bool, noPager bool) (bool, error) {
 	if plainMode(cmd) {
 		fmt.Fprint(cmd.OutOrStdout(), snap.Body)
-		return nil
+		return false, nil
 	}
 	body := snap.Body
+	var err error
 	if !full {
 		body, err = todo.CollapseDone(body)
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
 	body = todo.AnnotateHeadingCounts(body)
@@ -192,6 +229,14 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 			return cc, fresh.Comments, nil
 		}
 		actor, actorKind := resolveActor(cmd, s)
+		provider := &todoHeaderProvider{
+			header: renderCockpit(hc, theme),
+			fold:   todoInitialFold(snap.Body, full),
+			theme:  theme,
+			counts: hc,
+			render: renderCockpit,
+			fetch:  fetch,
+		}
 		in := viewerInput{
 			title:       title,
 			body:        snap.Body,
@@ -204,16 +249,12 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 			actor:       actor,
 			actorKind:   actorKind,
 			hideGutter:  !s.EffectiveConfig().LineNumbersOn(),
-			provider: &todoHeaderProvider{
-				header: renderCockpit(hc, theme),
-				fold:   todoInitialFold(snap.Body, full),
-				theme:  theme,
-				counts: hc,
-				render: renderCockpit,
-				fetch:  fetch,
-			},
+			provider:    provider,
 		}
-		return RunViewer(in)
+		if verr := RunViewer(in); verr != nil {
+			return false, verr
+		}
+		return provider.switchRequested, nil
 	}
 
 	w := cmd.OutOrStdout()
@@ -226,7 +267,7 @@ func runTodoCockpit(cmd *cobra.Command, dir *string, arg string, full bool, noPa
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not save todo watermark: %v\n", serr)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func newTodoShowCmd(dir *string) *cobra.Command {
@@ -262,6 +303,15 @@ func resolveTodoDefault(s *store.Store, arg string) (*entry.Snapshot, error) {
 	return resolveTodo(s, arg)
 }
 
+// ambiguousTodoError is the "several todos, no default" case, typed so the
+// callers that can offer the picker recognise it. The message is unchanged: it
+// is still exactly what a pipe, --json and --no-pager see.
+type ambiguousTodoError struct{ n int }
+
+func (e ambiguousTodoError) Error() string {
+	return fmt.Sprintf("%d kind:todo entries found; pass an id", e.n)
+}
+
 // resolveTodo finds the target kind:todo entry: an explicit id/favorite when
 // given, otherwise the sole kind:todo entry (error on none or several).
 func resolveTodo(s *store.Store, arg string) (*entry.Snapshot, error) {
@@ -282,7 +332,7 @@ func resolveTodo(s *store.Store, arg string) (*entry.Snapshot, error) {
 	case 1:
 		return snaps[0], nil
 	default:
-		return nil, fmt.Errorf("%d kind:todo entries found; pass an id", len(snaps))
+		return nil, ambiguousTodoError{n: len(snaps)}
 	}
 }
 
@@ -304,29 +354,39 @@ func newTodoFmtCmd(dir *string) *cobra.Command {
 			}
 			snap, err := resolveTodo(s, arg)
 			if err != nil {
+				var ambiguous ambiguousTodoError
+				if errors.As(err, &ambiguous) && todoPickerOK(cmd, false) {
+					return runTodoPicker(cmd, s, "fmt", false)
+				}
 				return err
 			}
-			out, err := todo.Format(snap.Body)
-			if err != nil {
-				return err
-			}
-			verb := "formatted"
-			if out == snap.Body {
-				verb = "unchanged"
-			} else if err := s.Update(snap.ID, out, snap.Title); err != nil {
-				return err
-			}
-			snap, err = s.Get(snap.ID)
-			if err != nil {
-				return err
-			}
-			return emit(cmd,
-				func(w io.Writer, color bool) { render.Action(w, verb, snap, color) },
-				map[string]string{"status": verb, "id": snap.ID.String()})
+			return formatTodo(cmd, s, snap)
 		},
 	}
 	c.ValidArgsFunction = entryArgs(dir, 1, sourceTodo)
 	return c
+}
+
+// formatTodo applies the formatter to one todo and reports what it did. Shared
+// by `kref todo fmt` and the picker's f action.
+func formatTodo(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot) error {
+	out, err := todo.Format(snap.Body)
+	if err != nil {
+		return err
+	}
+	verb := "formatted"
+	if out == snap.Body {
+		verb = "unchanged"
+	} else if err := s.Update(snap.ID, out, snap.Title); err != nil {
+		return err
+	}
+	snap, err = s.Get(snap.ID)
+	if err != nil {
+		return err
+	}
+	return emit(cmd,
+		func(w io.Writer, color bool) { render.Action(w, verb, snap, color) },
+		map[string]string{"status": verb, "id": snap.ID.String()})
 }
 
 func newTodoLintCmd(dir *string) *cobra.Command {
@@ -349,20 +409,7 @@ func newTodoLintCmd(dir *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				body, err := lintFixBody(s, snap, fix)
-				if err != nil {
-					return err
-				}
-				vs := todo.Lint(body)
-				if err := emit(cmd,
-					func(w io.Writer, color bool) { render.TodoLint(w, vs, color) },
-					vs); err != nil {
-					return err
-				}
-				if len(vs) > 0 {
-					return fmt.Errorf("%d lint violation(s)", len(vs))
-				}
-				return nil
+				return lintTodo(cmd, s, snap, fix)
 			}
 
 			// No argument: lint every todo entry; pass cleanly when there are
@@ -405,6 +452,26 @@ func newTodoLintCmd(dir *string) *cobra.Command {
 	c.Flags().BoolVar(&fix, "fix", false, "apply auto-fixes (formatter) before linting")
 	c.ValidArgsFunction = entryArgs(dir, 1, sourceTodo)
 	return c
+}
+
+// lintTodo lints one todo, optionally applying the auto-fixes first, and returns
+// a non-nil error when it found violations — the exit status lefthook consumes.
+// Shared by `kref todo lint <id>` and the picker's l action.
+func lintTodo(cmd *cobra.Command, s *store.Store, snap *entry.Snapshot, fix bool) error {
+	body, err := lintFixBody(s, snap, fix)
+	if err != nil {
+		return err
+	}
+	vs := todo.Lint(body)
+	if err := emit(cmd,
+		func(w io.Writer, color bool) { render.TodoLint(w, vs, color) },
+		vs); err != nil {
+		return err
+	}
+	if len(vs) > 0 {
+		return fmt.Errorf("%d lint violation(s)", len(vs))
+	}
+	return nil
 }
 
 // lintFixBody returns the body to lint for a todo. With fix set it applies the

@@ -3,7 +3,12 @@ package render
 import (
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/git-bug/git-bug/entity"
 
 	"github.com/trevor-vaughan/kref/internal/todo"
 )
@@ -134,4 +139,51 @@ func TodoStripFields(c todo.Cockpit, theme string, color bool) []string {
 		}
 	}
 	return fields
+}
+
+// TodoPickerItem is one candidate row in the todo picker: the numbers a reader
+// needs to answer "which todo needs me" without opening any of them.
+type TodoPickerItem struct {
+	ID       entity.Id
+	Title    string
+	Awaiting int
+	Open     int
+	Edited   time.Time
+}
+
+// TodoPickerLines returns the picker's column-aligned row labels — short id,
+// title, the awaiting-you signal, the open-item count and the relative edited
+// time. The signal is omitted at zero: a "◉0" on every idle todo is noise
+// competing with the one row that has something waiting.
+//
+// It takes and returns slices because alignment needs the whole set, the same
+// contract ListLines has. Building the labels here rather than in the picker
+// keeps every todo presentation decision in one package.
+func TodoPickerLines(items []TodoPickerItem, theme string, now time.Time) []string {
+	titleW := 0
+	for _, it := range items {
+		if n := utf8.RuneCountInString(it.Title); n > titleW {
+			titleW = n
+		}
+	}
+	glyph := signalGlyph(theme, "awaiting")
+	lines := make([]string, 0, len(items))
+	for _, it := range items {
+		signal := ""
+		if it.Awaiting > 0 {
+			signal = fmt.Sprintf("%s%d", glyph, it.Awaiting)
+		}
+		edited := ""
+		if !it.Edited.IsZero() {
+			if rel := RelTime(now, it.Edited); rel != "" {
+				edited = rel
+			} else {
+				edited = it.Edited.Format("2006-01-02")
+			}
+		}
+		lines = append(lines, strings.TrimRight(fmt.Sprintf("%s  %s  %s  %s  %s",
+			ShortID(it.ID), pad(it.Title, titleW), padLeft(signal, 3),
+			padLeft(strconv.Itoa(it.Open), 3), edited), " "))
+	}
+	return lines
 }

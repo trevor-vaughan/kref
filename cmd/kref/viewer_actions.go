@@ -212,6 +212,28 @@ func viewerActionList() []action {
 			Do:     func(m *viewerModel, _ string) tea.Cmd { m.toggleExpandHeader(); return nil },
 		},
 		{
+			// Keyless, so it lives in the palette. The viewer's key space is nearly
+			// full and this action is live in only one of the two viewers; a hotkey
+			// that is inert in `kref show` is a poor use of the last easy key. It is
+			// disabled rather than absent there, so the reader learns the capability
+			// exists and why it does not apply.
+			HelpRow: "switch", Group: "view",
+			Label: "switch subject", MenuLabel: "switch — pick a different todo",
+			Enabled: func(m *viewerModel) bool {
+				_, ok := m.provider.(Switchable)
+				return ok
+			},
+			Detail: func(_ *viewerModel) string { return "nothing to switch to here" },
+			Do: func(m *viewerModel, _ string) tea.Cmd {
+				sw, ok := m.provider.(Switchable)
+				if !ok {
+					return nil
+				}
+				sw.RequestSwitch()
+				return tea.Quit
+			},
+		},
+		{
 			// `/` is already incremental search over the body, so the palette takes
 			// `:` — the other half of the vim pair, and free.
 			Keys: []string{":"}, HelpRow: "palette", Group: "view",

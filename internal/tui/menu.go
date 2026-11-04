@@ -10,6 +10,7 @@ import (
 var (
 	menuBoxStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	menuTitleStyle    = lipgloss.NewStyle().Bold(true)
+	menuSectionStyle  = lipgloss.NewStyle().Bold(true)
 	menuSubtitleStyle = lipgloss.NewStyle().Faint(true)
 	menuDimStyle      = lipgloss.NewStyle().Faint(true)
 )
@@ -22,9 +23,15 @@ var (
 //
 // ID is the host's opaque handle for the row. It exists because Key cannot serve
 // as identity: a keyless row still has to be firable once selected.
+//
+// Section groups rows under a heading at render time. It is not a row: nothing
+// in Move, Selected or ByKey knows about it, so a filter that empties a section
+// removes its heading for free and a caller that sets no sections gets exactly
+// the flat menu it had before.
 type MenuRow struct {
 	ID      string
 	Key     string
+	Section string
 	Label   string
 	Value   string // current setting for a toggle row ("on"/"off"/…); "" for actions
 	Detail  string
@@ -37,6 +44,7 @@ type MenuRow struct {
 type Menu struct {
 	title    string
 	subtitle string
+	hint     string
 	rows     []MenuRow
 	filter   string
 	cur      int // index into the filtered rows
@@ -63,6 +71,11 @@ func (m *Menu) RefreshRows(rows []MenuRow) {
 }
 
 func (m *Menu) SetSubtitle(s string) { m.subtitle = s }
+
+// SetHint replaces the footer line. The default names the keys every menu binds;
+// a host that gives enter a specific verb, and a subject to apply it to, says so
+// there instead of leaving the reader to infer it.
+func (m *Menu) SetHint(s string) { m.hint = s }
 
 // SetFilter narrows the menu to rows whose label or key contains s
 // (case-insensitive), and re-selects the first enabled match.
@@ -184,7 +197,17 @@ func (m *Menu) Render(width int, color bool) string {
 	}
 	b.WriteString("\n")
 
+	prevSection := ""
 	for i, r := range rows {
+		if r.Section != "" && r.Section != prevSection {
+			// A blank line before every heading, including the first: it separates
+			// the first group from the title the same way it separates the groups
+			// from each other.
+			b.WriteString("\n")
+			b.WriteString(styled(menuSectionStyle, truncate(r.Section, inner), color) + "\n")
+		}
+		prevSection = r.Section
+
 		marker := "  "
 		if i == m.cur && r.Enabled {
 			marker = cursorMark + " "
@@ -209,7 +232,11 @@ func (m *Menu) Render(width int, color bool) string {
 	if len(rows) == 0 {
 		b.WriteString(styled(menuDimStyle, "  no matches", color) + "\n")
 	}
-	b.WriteString(styled(menuHintStyle(), "↑↓ choose · enter do · esc cancel", color))
+	hint := m.hint
+	if hint == "" {
+		hint = "↑↓ choose · enter do · esc cancel"
+	}
+	b.WriteString(styled(menuHintStyle(), hint, color))
 
 	return menuBoxStyle.Width(boxW).Render(b.String())
 }

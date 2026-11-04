@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/trevor-vaughan/kref/internal/render"
+	"github.com/trevor-vaughan/kref/internal/store"
 	"github.com/trevor-vaughan/kref/internal/todo"
 )
 
@@ -484,5 +485,70 @@ var _ = Describe("todo cockpit strip fields", func() {
 		newTodo(dir, "## Open\n\n- [ ] a\n")
 		out := run("--dir", dir, "todo", "--no-pager")
 		Expect(out).To(ContainSubstring("awaiting you"))
+	})
+})
+
+var _ = Describe("an ambiguous todo target", func() {
+	// Three todos and no configured todo.default. Nothing here runs on a
+	// terminal, so every case must keep the pre-picker error verbatim: a pipe,
+	// --json and --no-pager are machine contracts a TUI cannot honour.
+	threeTodos := func() string {
+		GinkgoHelper()
+		dir := gitRepo()
+		run("--dir", dir, "init", "--name", "T", "--email", "t@e.com")
+		for range 3 {
+			newTodo(dir, "# T\n\n## Open\n\n- [ ] a\n\n## Done (compact)\n")
+		}
+		return dir
+	}
+
+	It("still errors without a terminal", func() {
+		out, err := runErr("--dir", threeTodos(), "todo")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("3 kind:todo entries found; pass an id"))
+		Expect(out).NotTo(ContainSubstring("TODOS"))
+	})
+
+	It("still errors under --no-pager", func() {
+		_, err := runErr("--dir", threeTodos(), "todo", "--no-pager")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("3 kind:todo entries found; pass an id"))
+	})
+
+	It("still errors under --json", func() {
+		_, err := runErr("--dir", threeTodos(), "--json", "todo")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("3 kind:todo entries found"))
+	})
+
+	It("still errors for show and fmt", func() {
+		dir := threeTodos()
+		_, err := runErr("--dir", dir, "todo", "show")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("3 kind:todo entries found; pass an id"))
+
+		_, err = runErr("--dir", dir, "todo", "fmt")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("3 kind:todo entries found; pass an id"))
+	})
+
+	It("lints every todo rather than asking which one", func() {
+		out, err := runErr("--dir", threeTodos(), "todo", "lint")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring("todo: ok"))
+	})
+
+	It("builds a candidate row per todo, carrying the counts", func() {
+		s, err := store.Open(threeTodos())
+		Expect(err).NotTo(HaveOccurred())
+		defer s.Close()
+		cands, err := todoCandidates(s, "geometric")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cands).To(HaveLen(3))
+		for _, c := range cands {
+			Expect(c.Title).To(Equal("T"))
+			Expect(c.Line).To(ContainSubstring(render.ShortID(c.ID)))
+			Expect(c.Line).To(ContainSubstring("1")) // one open item
+		}
 	})
 })
