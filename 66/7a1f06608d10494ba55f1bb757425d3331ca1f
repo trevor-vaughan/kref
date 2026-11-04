@@ -1,0 +1,23 @@
+internal/store/store.go
+  s_4dcaf710f1cc52::t_145bea4abde675 93-94,104,167-168,181,195-196,206
+  s_4dcaf710f1cc52::t_4374a49dc9baa3 55-76
+internal/store/store_test.go
+  s_4dcaf710f1cc52::t_d0256850d50203 795-814,816-824
+  s_4dcaf710f1cc52::t_d05fef63072085 815
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "667a1f06608d10494ba55f1bb757425d3331ca1f",
+  "prompts": {},
+  "sessions": {
+    "s_4dcaf710f1cc52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c7ee871-7069-4e47-ac9f-692beee5fe11",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
