@@ -1,0 +1,25 @@
+docs/dev/README.md
+  s_4dcaf710f1cc52::t_c25fd636df7c23 58-59,72-113
+  s_4dcaf710f1cc52::t_21838ff20b4d49 114
+CONTRIBUTING.md
+  s_4dcaf710f1cc52::t_c25fd636df7c23 74-78
+docs/usage.md
+  s_4dcaf710f1cc52::t_c25fd636df7c23 33,1251-1257
+  s_4dcaf710f1cc52::t_9470aa677d88e6 1258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cabf3528f62a546c4577a3ec8d6ee63bdfc8a681",
+  "prompts": {},
+  "sessions": {
+    "s_4dcaf710f1cc52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c7ee871-7069-4e47-ac9f-692beee5fe11",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
