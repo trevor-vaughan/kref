@@ -49,7 +49,7 @@ jobs:
       # pin back to a composite tag (e.g. 0.6.0-ml10.0.0) to bisect a run.
       # Full tree on main and the weekly schedule; PR diff otherwise.
       - id: megalint
-        uses: trevor-vaughan/megalint-config@v0.6.0 # zizmor: ignore[unpinned-uses]
+        uses: trevor-vaughan/megalint-config@v0.7.0 # zizmor: ignore[unpinned-uses]
         with:
           megalinter-image: ghcr.io/trevor-vaughan/megalinter-custom-flavor:latest
           validate-all-codebase: ${{ github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
