@@ -1,0 +1,30 @@
+go.mod
+  s_4dcaf710f1cc52::t_da437729f1aa6a 13
+  s_4dcaf710f1cc52::t_2009308cad3b1c 130
+  s_4dcaf710f1cc52::t_737a9ec5ccd217 134
+  s_4dcaf710f1cc52::t_4e6c1535050b8b 131-133
+internal/store/store.go
+  s_4dcaf710f1cc52::t_da437729f1aa6a 17,19-21,81-117,128
+internal/store/signingrepo.go
+  s_4dcaf710f1cc52::t_da437729f1aa6a 87,276
+internal/store/store_test.go
+  s_4dcaf710f1cc52::t_298c7f3e4a63cb 825-857
+go.sum
+  s_4dcaf710f1cc52::t_be741c9f4d243d 272-273
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "05ee5c874c959e0e4dfac2d1fd416f2f7027f85f",
+  "prompts": {},
+  "sessions": {
+    "s_4dcaf710f1cc52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9c7ee871-7069-4e47-ac9f-692beee5fe11",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
