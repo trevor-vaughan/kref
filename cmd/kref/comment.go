@@ -52,7 +52,7 @@ func completeCommentIDs(dir *string) func(*cobra.Command, []string, string) ([]s
 			if !strings.HasPrefix(c.ID, toComplete) {
 				continue
 			}
-			desc := strings.SplitN(c.Body, "\n", 2)[0]
+			desc, _, _ := strings.Cut(c.Body, "\n")
 			out = append(out, c.ID+"\t"+desc)
 		}
 		return out, cobra.ShellCompDirectiveNoFileComp
@@ -117,8 +117,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 					return errors.New("edit body is empty (use -m or pipe stdin)")
 				}
 				unscanned, cErr := commentguard.Check(snap, body, false)
-				var refused *commentguard.RefusedError
-				if errors.As(cErr, &refused) {
+				if refused, ok := errors.AsType[*commentguard.RefusedError](cErr); ok {
 					return parkComment(cmd, s, force, refused.Findings,
 						fmt.Sprintf("edited %s (force-approved)", shortStr(target, 12)),
 						func(f []scan.Finding) (store.Parked, error) {
@@ -185,8 +184,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 
 				if strings.TrimSpace(note) != "" {
 					unscanned, cErr := commentguard.Check(snap, note, false)
-					var refused *commentguard.RefusedError
-					if errors.As(cErr, &refused) {
+					if refused, ok := errors.AsType[*commentguard.RefusedError](cErr); ok {
 						// The note is flagged: park the resolve-with-note; the
 						// question stays open until a human approves (or --force).
 						return parkComment(cmd, s, force, refused.Findings,
@@ -256,8 +254,7 @@ func newCommentCmd(dir *string) *cobra.Command {
 			// --force is the human's direct-write escape (approve-at-write); it
 			// skips the scan, so it never parks.
 			unscanned, cErr := commentguard.Check(snap, body, false)
-			var refused *commentguard.RefusedError
-			if errors.As(cErr, &refused) {
+			if refused, ok := errors.AsType[*commentguard.RefusedError](cErr); ok {
 				return parkComment(cmd, s, force, refused.Findings, "commented (force-approved)",
 					func(f []scan.Finding) (store.Parked, error) {
 						return s.QuarantineComment(id, body, question, parent, f, actor, actorKind)

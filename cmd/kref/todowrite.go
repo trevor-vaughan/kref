@@ -27,8 +27,7 @@ func guardKindToTodo(s *store.Store, id entity.Id) (*todoguard.RejectedError, er
 		return nil, err
 	}
 	_, gerr := todoguard.Guard(todoguard.TodoKind, snap.Body, todoguard.Options{})
-	var rej *todoguard.RejectedError
-	if errors.As(gerr, &rej) {
+	if rej, ok := errors.AsType[*todoguard.RejectedError](gerr); ok {
 		return rej, nil
 	}
 	return nil, gerr
@@ -50,8 +49,7 @@ func guardTodoWrite(cmd *cobra.Command, id entity.Id, kind, body string, noFmt, 
 		}
 	}
 	out, err := todoguard.Guard(kind, body, todoguard.Options{NoFmt: noFmt, NoLint: noLint})
-	var rej *todoguard.RejectedError
-	if errors.As(err, &rej) {
+	if rej, ok := errors.AsType[*todoguard.RejectedError](err); ok {
 		path, werr := todoguard.WriteRejected(id.String(), rej.Body)
 		if werr != nil {
 			return "", fmt.Errorf("%w (could not save recovery file: %w)", err, werr)

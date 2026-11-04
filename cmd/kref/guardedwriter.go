@@ -48,8 +48,7 @@ func (g *guardedWriter) check(id entity.Id, body string) (unscanned bool, findin
 		return false, nil, err
 	}
 	unscanned, err = commentguard.Check(snap, body, false)
-	var refused *commentguard.RefusedError
-	if errors.As(err, &refused) {
+	if refused, ok := errors.AsType[*commentguard.RefusedError](err); ok {
 		return false, refused.Findings, nil
 	}
 	if err != nil {
