@@ -1,0 +1,21 @@
+scripts/install-git-cliff.sh
+  s_f9cf0ab2e79ac8::t_3603e81ad8e66f 11-13,15,33
+scripts/release-tag.sh
+  s_f9cf0ab2e79ac8::t_3603e81ad8e66f 26-27,48-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e428f86461251fd49638be5bd9353777b876a6ef",
+  "prompts": {},
+  "sessions": {
+    "s_f9cf0ab2e79ac8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe74ddc0-9db1-417e-8128-f47aa3ce90f7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
