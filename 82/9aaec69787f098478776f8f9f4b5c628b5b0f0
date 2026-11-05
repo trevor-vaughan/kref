@@ -1,0 +1,27 @@
+docs/dev/README.md
+  s_1463ac7a881431::t_ac71971dfd64e9 278-286,289
+scripts/install-git-cliff.sh
+  s_1463ac7a881431::t_636d7353a48e33 49
+.github/workflows/release.yml
+  s_1463ac7a881431::t_ac71971dfd64e9 47-53,64
+.taskfiles/release.yml
+  s_1463ac7a881431::t_ac71971dfd64e9 33-41
+.goreleaser.yml
+  s_1463ac7a881431::t_ac71971dfd64e9 70-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "829aaec69787f098478776f8f9f4b5c628b5b0f0",
+  "prompts": {},
+  "sessions": {
+    "s_1463ac7a881431": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "689b8870-4ee0-47dc-b8b3-e4e4bded3204",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
