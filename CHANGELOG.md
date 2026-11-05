@@ -4,6 +4,46 @@ All notable changes to `kref` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-05
+
+### 🚀 Features
+
+- *(search)* Open an interactive cockpit for kref search on a TTY
+- *(signing)* Sign entry commits with git's own signing setup
+- *(todo)* Open a grouped picker when the todo target is ambiguous
+
+### 🐛 Bug Fixes
+
+- *(store)* Swap the pushed mirror against its current value
+- *(textdiff)* Trim the common head and tail before the LCS
+- *(entry)* Keep attestations out of Authors()
+- *(store)* Clear an identity pin from whatever layer set it
+- *(store)* Keep resign refusing an entry a peer has attested
+- *(store)* Make the identity clear refuse cleanly and prove it worked
+- *(deps)* Require Go 1.26.10 and x/net v0.60.0; bump govulncheck to v1.9.0
+- *(store)* Open the common git dir from a linked worktree
+- *(store)* Make relative worktrees work
+
+### 🚜 Refactor
+
+- Use errors.AsType and strings.Cut per golangci-lint modernize
+
+### 📚 Documentation
+
+- Describe the claim, the resign refusal and the identity clear as built
+- Describe worktree support and the temporary git-bug replace
+
+### 🧪 Testing
+
+- *(store)* Pin the relocated lamport-clock witnessing
+
+### ⚙️ Miscellaneous Tasks
+
+- *(lint)* Silence eight verified megalint false positives
+- *(megalint)* Bump megalint-config to v0.7.0
+- *(release)* Add git-cliff release tasks and publish its notes
+- *(release)* Add release:changelog and require it before tagging
+
 ## [0.1.0] - 2026-08-19
 
 First release. Everything below is new, so this entry describes what `kref`
