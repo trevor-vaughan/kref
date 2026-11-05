@@ -14,7 +14,11 @@ import (
 	"github.com/git-bug/git-bug/entity"
 	"github.com/git-bug/git-bug/entity/dag"
 	"github.com/git-bug/git-bug/repository"
+	"github.com/go-git/go-billy/v5/osfs"
 	gogit "github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 
 	"github.com/trevor-vaughan/kref/internal/config"
 	"github.com/trevor-vaughan/kref/internal/entry"
@@ -74,6 +78,43 @@ func repoGitDir(dir string) string {
 	return commonDir
 }
 
+// relativeWorktreesStorage hides extensions.relativeWorktrees from go-git v5,
+// which refuses every extension it doesn't know. Git sets it for
+// `git worktree add --relative-paths` and worktree.useRelativePaths; it only
+// changes how git writes the links between a linked worktree and the
+// repository, which kref never reads or writes.
+type relativeWorktreesStorage struct {
+	*filesystem.Storage
+}
+
+func (s relativeWorktreesStorage) Config() (*gitconfig.Config, error) {
+	cfg, err := s.Storage.Config()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Raw != nil && cfg.Raw.HasSection("extensions") {
+		cfg.Raw.Section("extensions").RemoveOption("relativeWorktrees")
+	}
+	return cfg, nil
+}
+
+// openGoGit opens the repository enclosing dir with go-git for reading objects,
+// where gogit.PlainOpenWithOptions would refuse extensions.relativeWorktrees.
+// It has no worktree. A dir outside any repository yields
+// gogit.ErrRepositoryNotExists.
+func openGoGit(dir string) (*gogit.Repository, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute",
+		"--git-common-dir").Output()
+	if err != nil {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, gogit.ErrRepositoryNotExists
+		}
+		return nil, err
+	}
+	storage := filesystem.NewStorage(osfs.New(strings.TrimSpace(string(out))), cache.NewObjectLRUDefault())
+	return gogit.Open(relativeWorktreesStorage{storage}, nil)
+}
+
 // Init bootstraps kref inside an EXISTING git repository at dir: it opens the
 // repo, creates an author identity, and persists it as the repo user. The
 // repository must already exist (run `git init` first) — kref stores its
@@ -84,7 +125,7 @@ func Init(dir, name, email string) (*Store, error) {
 	// Require an existing git repo. git-bug's OpenGoGitRepo searches upward for
 	// .git but reports "no repo" with a non-sentinel error, so pre-check with
 	// go-git's PlainOpenWithOptions (same upward search) for a reliable sentinel.
-	if _, err := gogit.PlainOpenWithOptions(clean, &gogit.PlainOpenOptions{DetectDotGit: true}); err != nil {
+	if _, err := openGoGit(clean); err != nil {
 		if errors.Is(err, gogit.ErrRepositoryNotExists) {
 			return nil, fmt.Errorf("%s is not a git repository — run `git init` first, then `kref init`", clean)
 		}

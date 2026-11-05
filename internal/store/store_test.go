@@ -822,3 +822,36 @@ var _ = Describe("Store in a linked worktree", func() {
 		Expect(git("config", "--get", "git-bug.identity")).NotTo(BeEmpty())
 	})
 })
+
+var _ = Describe("Store with relative worktrees", func() {
+	// `git worktree add --relative-paths` sets extensions.relativeWorktrees,
+	// which go-git v5 refuses; every go-git open in the store must tolerate it.
+	It("inits and opens from the main checkout and from the worktree, signing intact", func() {
+		main := gitRepo()
+		git := func(args ...string) string {
+			GinkgoHelper()
+			out, err := exec.Command("git", append([]string{"-C", main,
+				"-c", "user.name=T", "-c", "user.email=t@example.com"}, args...)...).CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), string(out))
+			return string(out)
+		}
+		git("commit", "--allow-empty", "-m", "init")
+		wt := filepath.Join(GinkgoT().TempDir(), "wt")
+		git("worktree", "add", "--relative-paths", wt)
+		Expect(git("config", "--get", "extensions.relativeworktrees")).To(ContainSubstring("true"))
+
+		s, err := Init(main, "Tester", "tester@example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Close()).To(Succeed())
+
+		for _, dir := range []string{main, wt} {
+			opened, err := Open(dir)
+			Expect(err).NotTo(HaveOccurred(), dir)
+			Expect(opened.sigUnavailable).To(BeEmpty(), dir)
+			name, _ := opened.Author()
+			Expect(name).To(Equal("Tester"), dir)
+			Expect(opened.Close()).To(Succeed())
+		}
+		Expect(git("config", "--get", "git-bug.identity")).NotTo(BeEmpty())
+	})
+})
