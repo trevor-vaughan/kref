@@ -14,7 +14,11 @@ import (
 	"github.com/git-bug/git-bug/entity"
 	"github.com/git-bug/git-bug/entity/dag"
 	"github.com/git-bug/git-bug/repository"
+	"github.com/go-git/go-billy/v5/osfs"
 	gogit "github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 
 	"github.com/trevor-vaughan/kref/internal/config"
 	"github.com/trevor-vaughan/kref/internal/entry"
@@ -52,6 +56,65 @@ type Store struct {
 	lockNotify io.Writer // where write-lock wait notices go; nil => os.Stderr (tests override)
 }
 
+// repoGitDir returns the directory git-bug must open for dir: the repository's
+// common git dir when dir is inside a linked worktree, else dir unchanged.
+//
+// git-bug follows a worktree's `.git` file to .git/worktrees/<name>, which holds
+// no refs or objects of its own. Read from there, the author identity looks
+// missing, and git-bug answers by deleting git-bug.identity from the config
+// every checkout shares. The common dir is where refs, objects and that config
+// live. If git can't resolve dir, it is returned as is so the open reports the
+// error.
+func repoGitDir(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute",
+		"--git-dir", "--git-common-dir").Output()
+	if err != nil {
+		return dir
+	}
+	gitDir, commonDir, ok := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if !ok || gitDir == commonDir {
+		return dir
+	}
+	return commonDir
+}
+
+// relativeWorktreesStorage hides extensions.relativeWorktrees from go-git v5,
+// which refuses every extension it doesn't know. Git sets it for
+// `git worktree add --relative-paths` and worktree.useRelativePaths; it only
+// changes how git writes the links between a linked worktree and the
+// repository, which kref never reads or writes.
+type relativeWorktreesStorage struct {
+	*filesystem.Storage
+}
+
+func (s relativeWorktreesStorage) Config() (*gitconfig.Config, error) {
+	cfg, err := s.Storage.Config()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Raw != nil && cfg.Raw.HasSection("extensions") {
+		cfg.Raw.Section("extensions").RemoveOption("relativeWorktrees")
+	}
+	return cfg, nil
+}
+
+// openGoGit opens the repository enclosing dir with go-git for reading objects,
+// where gogit.PlainOpenWithOptions would refuse extensions.relativeWorktrees.
+// It has no worktree. A dir outside any repository yields
+// gogit.ErrRepositoryNotExists.
+func openGoGit(dir string) (*gogit.Repository, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute",
+		"--git-common-dir").Output()
+	if err != nil {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, gogit.ErrRepositoryNotExists
+		}
+		return nil, err
+	}
+	storage := filesystem.NewStorage(osfs.New(strings.TrimSpace(string(out))), cache.NewObjectLRUDefault())
+	return gogit.Open(relativeWorktreesStorage{storage}, nil)
+}
+
 // Init bootstraps kref inside an EXISTING git repository at dir: it opens the
 // repo, creates an author identity, and persists it as the repo user. The
 // repository must already exist (run `git init` first) — kref stores its
@@ -62,13 +125,14 @@ func Init(dir, name, email string) (*Store, error) {
 	// Require an existing git repo. git-bug's OpenGoGitRepo searches upward for
 	// .git but reports "no repo" with a non-sentinel error, so pre-check with
 	// go-git's PlainOpenWithOptions (same upward search) for a reliable sentinel.
-	if _, err := gogit.PlainOpenWithOptions(clean, &gogit.PlainOpenOptions{DetectDotGit: true}); err != nil {
+	if _, err := openGoGit(clean); err != nil {
 		if errors.Is(err, gogit.ErrRepositoryNotExists) {
 			return nil, fmt.Errorf("%s is not a git repository — run `git init` first, then `kref init`", clean)
 		}
 		return nil, err
 	}
-	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
+	gitDir := repoGitDir(clean)
+	raw, err := repository.OpenGoGitRepo(gitDir, localStorageNamespace, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +142,7 @@ func Init(dir, name, email string) (*Store, error) {
 	}
 	// Wrap immediately: the identity is committed (and therefore signed) below,
 	// and everything that reads it back needs the signature-aware handle.
-	repo, sigWarn := newSigningRepo(raw, clean, gitcfg)
+	repo, sigWarn := newSigningRepo(raw, gitDir, gitcfg)
 	author, err := newAuthor(repo, gitcfg, name, email)
 	if err != nil {
 		return nil, err
@@ -141,7 +205,8 @@ func (s *Store) Author() (string, string) {
 // to Init for the canonical "not a git repository" message.
 func Initialized(dir string) (name, email string, ok bool, err error) {
 	clean := filepath.Clean(dir)
-	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
+	gitDir := repoGitDir(clean)
+	raw, err := repository.OpenGoGitRepo(gitDir, localStorageNamespace, nil)
 	if err != nil {
 		return "", "", false, nil
 	}
@@ -154,7 +219,7 @@ func Initialized(dir string) (name, email string, ok bool, err error) {
 	// handle cannot read at all.
 	// No warning to keep: this builds no Store, and the caller falls through to
 	// Init, which records it against a store that survives the call.
-	wrapped, _ := newSigningRepo(raw, clean, gitcfg)
+	wrapped, _ := newSigningRepo(raw, gitDir, gitcfg)
 	a, err := identity.GetUserIdentity(wrapped)
 	if errors.Is(err, identity.ErrNoIdentitySet) {
 		return "", "", false, nil
@@ -168,7 +233,8 @@ func Initialized(dir string) (name, email string, ok bool, err error) {
 // Open opens an existing store and loads the default author identity.
 func Open(dir string) (*Store, error) {
 	clean := filepath.Clean(dir)
-	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
+	gitDir := repoGitDir(clean)
+	raw, err := repository.OpenGoGitRepo(gitDir, localStorageNamespace, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +244,7 @@ func Open(dir string) (*Store, error) {
 	}
 	// Wrap before resolving the author: the identity itself may be stored in
 	// signed commits, so reading it needs the signature-aware handle.
-	repo, sigWarn := newSigningRepo(raw, clean, gitcfg)
+	repo, sigWarn := newSigningRepo(raw, gitDir, gitcfg)
 	author, err := resolveAuthor(repo, gitcfg)
 	if err != nil {
 		return nil, err

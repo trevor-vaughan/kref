@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/git-bug/git-bug v0.11.0
+	github.com/go-git/go-billy/v5 v5.9.1
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/gofrs/flock v0.13.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
@@ -73,7 +74,6 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
-	github.com/go-git/go-billy/v5 v5.9.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/godbus/dbus v0.0.0-20190726142602-4481cbc300e2 // indirect
@@ -127,3 +127,8 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
+
+// Temporary: git-bug v0.11.0 plus one commit that hides extensions.relativeWorktrees
+// from go-git v5 (git sets it for relative-path worktrees; go-git refuses it).
+// Drop this once a git-bug release carries the same fix.
+replace github.com/git-bug/git-bug => github.com/trevor-vaughan/git-bug v0.0.0-20261104204736-0e309404c0f3

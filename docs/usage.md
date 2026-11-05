@@ -30,6 +30,7 @@ tree and adds the prose that does not fit in `--help` output.
 - [Todos](#todos)
 - [Sync](#sync)
 - [Signing](#signing)
+- [Git worktrees](#git-worktrees)
 - [Identities](#identities)
 - [Hooks](#hooks)
 - [Configuration & favorites](#configuration--favorites)
@@ -1246,6 +1247,14 @@ combine: one of them is honoured and the other covers nothing extra. Re-attest
 after merging if you want a single vouch over the whole history.
 
 ______________________________________________________________________
+
+## Git worktrees
+
+kref runs from the main checkout and from any linked worktree
+(`git worktree add`), including worktrees created with `--relative-paths` or
+`worktree.useRelativePaths`. They all share one store, so an entry written in a
+worktree is visible everywhere, and signing, `sync`, `resign` and `attest` behave
+the same in each.
 
 ## Identities
 

@@ -71,7 +71,11 @@ boundary rules.
   Sync/distributed features must be tested with real multi-repo round-trips, not
   stubs.
 - **Don't fork git-bug.** Depend on its public packages; pin the version in
-  `go.mod`. If you need a capability it doesn't expose, prefer upstreaming.
+  `go.mod`. If you need a capability it doesn't expose, prefer upstreaming. The
+  one exception is the temporary `replace` in `go.mod`, a single commit on
+  `v0.11.0` that makes relative-path worktrees open; it goes as soon as a
+  git-bug release carries the same fix (see
+  [`docs/dev/README.md`](docs/dev/README.md#git-worktrees)).
 - **Match existing style.** Read the file before editing. Keep the
   `entry.AllTiers()`-driven generality (no code that assumes a fixed set of
   tiers or kinds).

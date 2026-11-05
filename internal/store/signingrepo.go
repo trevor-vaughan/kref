@@ -84,7 +84,7 @@ type signingRepo struct {
 // git-bug's own OpenGoGitRepo does the same open immediately before this, so in
 // practice reaching the warning takes a race with something removing .git.
 func newSigningRepo(repo repository.ClockedRepo, dir string, cfg *gitConfigSnapshot) (repository.ClockedRepo, string) {
-	gg, err := gogit.PlainOpenWithOptions(dir, &gogit.PlainOpenOptions{DetectDotGit: true})
+	gg, err := openGoGit(dir)
 	if err != nil {
 		return repo, fmt.Sprintf(
 			"signing and signature verification are unavailable: %s could not be reopened: %v", dir, err)
@@ -273,7 +273,7 @@ func (r *signingRepo) readCommitOnce(hash repository.Hash) (repository.Commit, s
 // reopen refreshes the go-git handle so it picks up objects written since it was
 // opened. It reports whether a fresh handle was installed.
 func (r *signingRepo) reopen() bool {
-	gg, err := gogit.PlainOpenWithOptions(r.dir, &gogit.PlainOpenOptions{DetectDotGit: true})
+	gg, err := openGoGit(r.dir)
 	if err != nil {
 		return false
 	}

@@ -792,3 +792,66 @@ var _ = Describe("Store.UnresolveComment", func() {
 		Expect(snap.Comments[0].Question).To(BeTrue())
 	})
 })
+
+var _ = Describe("Store in a linked worktree", func() {
+	// git-bug opens the gitdir it finds behind a worktree's `.git` file, which
+	// holds no refs of its own. It then reads the identity as missing and
+	// deletes git-bug.identity from the config every checkout shares.
+	It("opens the repository's store and keeps the shared identity pointer", func() {
+		main := gitRepo()
+		s, err := Init(main, "Tester", "tester@example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Close()).To(Succeed())
+
+		git := func(args ...string) string {
+			GinkgoHelper()
+			out, err := exec.Command("git", append([]string{"-C", main,
+				"-c", "user.name=T", "-c", "user.email=t@example.com"}, args...)...).CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), string(out))
+			return string(out)
+		}
+		git("commit", "--allow-empty", "-m", "init")
+		wt := filepath.Join(GinkgoT().TempDir(), "wt")
+		git("-c", "worktree.useRelativePaths=false", "worktree", "add", wt)
+
+		opened, err := Open(wt)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = opened.Close() })
+		name, _ := opened.Author()
+		Expect(name).To(Equal("Tester"))
+		Expect(git("config", "--get", "git-bug.identity")).NotTo(BeEmpty())
+	})
+})
+
+var _ = Describe("Store with relative worktrees", func() {
+	// `git worktree add --relative-paths` sets extensions.relativeWorktrees,
+	// which go-git v5 refuses; every go-git open in the store must tolerate it.
+	It("inits and opens from the main checkout and from the worktree, signing intact", func() {
+		main := gitRepo()
+		git := func(args ...string) string {
+			GinkgoHelper()
+			out, err := exec.Command("git", append([]string{"-C", main,
+				"-c", "user.name=T", "-c", "user.email=t@example.com"}, args...)...).CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), string(out))
+			return string(out)
+		}
+		git("commit", "--allow-empty", "-m", "init")
+		wt := filepath.Join(GinkgoT().TempDir(), "wt")
+		git("worktree", "add", "--relative-paths", wt)
+		Expect(git("config", "--get", "extensions.relativeworktrees")).To(ContainSubstring("true"))
+
+		s, err := Init(main, "Tester", "tester@example.com")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Close()).To(Succeed())
+
+		for _, dir := range []string{main, wt} {
+			opened, err := Open(dir)
+			Expect(err).NotTo(HaveOccurred(), dir)
+			Expect(opened.sigUnavailable).To(BeEmpty(), dir)
+			name, _ := opened.Author()
+			Expect(name).To(Equal("Tester"), dir)
+			Expect(opened.Close()).To(Succeed())
+		}
+		Expect(git("config", "--get", "git-bug.identity")).NotTo(BeEmpty())
+	})
+})
