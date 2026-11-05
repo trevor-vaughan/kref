@@ -1,0 +1,34 @@
+scripts/release-common.sh
+  s_a020c06c3d1774::t_2c75f3fe54d852 1
+  s_a020c06c3d1774::t_97c6bc4ca3bd37 2-45
+.taskfiles/release.yml
+  s_a020c06c3d1774::t_34ec006cc972b5 42-49
+docs/dev/README.md
+  s_a020c06c3d1774::t_d8bf4fae4bf90b 271-280
+  s_a020c06c3d1774::t_a9592e368e2c94 286
+scripts/release-changelog.sh
+  s_a020c06c3d1774::t_473d967bbbb69d 1-7,9-20
+  s_a020c06c3d1774::t_2c75f3fe54d852 8
+scripts/release-tag.sh
+  s_a020c06c3d1774::t_2c75f3fe54d852 7
+  s_a020c06c3d1774::t_382557992cd0e0 8,14-17
+cliff.toml
+  s_a020c06c3d1774::t_2b297359d1f40e 12-14,18-20
+  s_a020c06c3d1774::t_f3f7109982234c 4-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cede9258d7851cea43e09ecaad52745b6d406680",
+  "prompts": {},
+  "sessions": {
+    "s_a020c06c3d1774": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7906fa5b-972e-4e58-b6d9-6f64ae111dee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
