@@ -1,21 +1,23 @@
 # git-cliff ~ configuration file
 # https://git-cliff.org/docs/configuration
 #
-# Generates a release's notes from Conventional Commits for the annotated tag's message:
-# `task release:notes` previews them, `task release:tag` writes them into the tag
-# (.taskfiles/release.yml, scripts/release-tag.sh). Adapted from
+# Generates a release's notes from Conventional Commits: `task release:notes` previews them,
+# `task release:changelog` prepends them to CHANGELOG.md, and `task release:tag` writes them
+# into the annotated tag's message (.taskfiles/release.yml, scripts/release-*.sh). Adapted from
 # trevor-vaughan/lola-go. Only the settings that differ from `git-cliff --init`
 # carry comments below; everything else is the upstream default, kept verbatim so a future
 # git-cliff upgrade diffs cleanly against a freshly generated file.
 
 [changelog]
-# The tag message is rendered with --strip all, which drops this header; it only shows if
-# someone renders a full changelog.
+# Keep identical to CHANGELOG.md's opening lines: --prepend removes this exact text from the
+# file before writing it back above the new section, so any difference duplicates the
+# header. The tag message is rendered with --strip all, which drops it.
 header = """
 # Changelog
 
-Generated from [Conventional Commits](https://www.conventionalcommits.org) by
-[git-cliff](https://git-cliff.org).
+All notable changes to `kref` are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 """
 # A Tera template to be rendered for each release in the changelog.
 # See https://keats.github.io/tera/docs/#introduction

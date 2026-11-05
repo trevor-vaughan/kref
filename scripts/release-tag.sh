@@ -4,41 +4,17 @@
 # Never pushes: pushing the tag is what triggers .github/workflows/release.yml.
 # Usage: release-tag.sh <git-cliff> <X.Y.Z>
 set -euo pipefail
-
-# Keep identical to tag_pattern in cliff.toml.
-RELEASE_TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
+# shellcheck source=scripts/release-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/release-common.sh"
 
 cliff="${1:?usage: release-tag.sh <git-cliff> <X.Y.Z>}"
-version="${2:-}"
-
-die() {
-  echo "error: $1" >&2
-  shift
-  for hint in "$@"; do echo "  hint: $hint" >&2; done
-  exit 1
-}
-
-[[ -n "$version" ]] ||
-  die "release:tag needs the version" "task release:tag -- 0.2.0"
-version="${version#v}"
-[[ "v$version" =~ $RELEASE_TAG_RE ]] ||
-  die "version \"$version\" is not X.Y.Z" "task release:tag -- 0.2.0"
 dirty="$(git status --porcelain)"
 [[ -z "$dirty" ]] ||
   die "the work tree is not clean; the tag goes on the commit that passed the checks" "git status"
-! git rev-parse -q --verify "refs/tags/v$version" >/dev/null ||
-  die "tag v$version already exists" "git show v$version"
-
-last="$(git tag --merged HEAD --list 'v*' --sort=-v:refname | grep -E -m1 "$RELEASE_TAG_RE" || true)"
-if [[ -n "$last" ]]; then
-  newest="$(printf '%s\n%s\n' "${last#v}" "$version" | sort -V | tail -n1)"
-  [[ "$newest" == "$version" && "${last#v}" != "$version" ]] ||
-    die "v$version is not after the last release, $last"
-fi
-
-notes="$("$cliff" --config cliff.toml --unreleased --tag "v$version" --strip all | sed "/./,\$!d")"
-grep -q '^- ' <<<"$notes" ||
-  die "no Conventional Commit since ${last:-the start of the history}; there is nothing to release" "task release:notes"
+check_release_version release:tag "${2:-}"
+grep -qF "## [$version] - " CHANGELOG.md ||
+  die "CHANGELOG.md has no $version section" "task release:changelog -- $version, then commit and merge it"
+notes="$(release_notes "$cliff")"
 
 msg="$(mktemp)"
 trap 'rm -f "$msg"' EXIT

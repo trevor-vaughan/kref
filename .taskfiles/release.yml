@@ -39,6 +39,14 @@ tasks:
     deps: [tools]
     cmd: '"{{.GIT_CLIFF}}" --config cliff.toml --latest --strip all'
 
+  changelog:
+    desc: "Prepend the generated vX.Y.Z section to CHANGELOG.md; never commits. Usage: task release:changelog -- 0.2.0"
+    dir: '{{.ROOT_DIR}}'
+    deps: [tools]
+    vars:
+      ARGS: '{{.ARGS | default .CLI_ARGS}}'
+    cmd: bash "{{.ROOT_DIR}}/scripts/release-changelog.sh" "{{.GIT_CLIFF}}" {{.ARGS}}
+
   tag:
     desc: "Create the annotated release tag vX.Y.Z on HEAD with generated notes; never pushes. Usage: task release:tag -- 0.2.0"
     dir: '{{.ROOT_DIR}}'

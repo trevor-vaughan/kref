@@ -268,16 +268,22 @@ a leaked secret that was ever pushed must be rotated.
 
 1. Start from a clean `main` where `task check` is green.
 2. `task release:notes` previews the notes the tag will carry.
-3. `task release:tag -- X.Y.Z` creates the annotated tag `vX.Y.Z` on HEAD. It
-   refuses a malformed version, an existing tag, a version not after the last
-   release, a dirty tree, and a release with no Conventional Commit to list.
-4. Review with `git show vX.Y.Z`, then `git push origin vX.Y.Z`. The push is
+3. On a branch, `task release:changelog -- X.Y.Z` prepends the `X.Y.Z`
+   section to `CHANGELOG.md`. Edit it if needed, commit it as
+   `chore(release): prepare vX.Y.Z` (that prefix is kept out of the notes),
+   and merge it to `main`.
+4. On the merged `main`, `task release:tag -- X.Y.Z` creates the annotated tag
+   `vX.Y.Z` on HEAD. It refuses a malformed version, an existing tag, a version
+   not after the last release, a dirty tree, a release with no Conventional
+   Commit to list, and a version `CHANGELOG.md` has no section for.
+   `release:changelog` applies the same version checks.
+5. Review with `git show vX.Y.Z`, then `git push origin vX.Y.Z`. The push is
    what starts `.github/workflows/release.yml` (gate, GoReleaser, SBOM,
    signing, provenance); the tasks never push.
 
 [git-cliff](https://git-cliff.org) is the single source of release notes:
 `cliff.toml` groups the Conventional Commits since the last `vX.Y.Z` tag. The
-tag message carries them, and the release workflow renders them again
+`CHANGELOG.md` section and the tag message carry them, and the release workflow renders them again
 (`task release:latest`) and hands them to GoReleaser with `--release-notes`,
 which skips GoReleaser's own changelog. `--latest` follows `cliff.toml`'s
 `tag_pattern`, so push only plain `vX.Y.Z` tags: a pre-release tag such as
