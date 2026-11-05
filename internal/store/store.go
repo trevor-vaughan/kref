@@ -52,6 +52,28 @@ type Store struct {
 	lockNotify io.Writer // where write-lock wait notices go; nil => os.Stderr (tests override)
 }
 
+// repoGitDir returns the directory git-bug must open for dir: the repository's
+// common git dir when dir is inside a linked worktree, else dir unchanged.
+//
+// git-bug follows a worktree's `.git` file to .git/worktrees/<name>, which holds
+// no refs or objects of its own. Read from there, the author identity looks
+// missing, and git-bug answers by deleting git-bug.identity from the config
+// every checkout shares. The common dir is where refs, objects and that config
+// live. If git can't resolve dir, it is returned as is so the open reports the
+// error.
+func repoGitDir(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute",
+		"--git-dir", "--git-common-dir").Output()
+	if err != nil {
+		return dir
+	}
+	gitDir, commonDir, ok := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if !ok || gitDir == commonDir {
+		return dir
+	}
+	return commonDir
+}
+
 // Init bootstraps kref inside an EXISTING git repository at dir: it opens the
 // repo, creates an author identity, and persists it as the repo user. The
 // repository must already exist (run `git init` first) — kref stores its
@@ -68,7 +90,8 @@ func Init(dir, name, email string) (*Store, error) {
 		}
 		return nil, err
 	}
-	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
+	gitDir := repoGitDir(clean)
+	raw, err := repository.OpenGoGitRepo(gitDir, localStorageNamespace, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +101,7 @@ func Init(dir, name, email string) (*Store, error) {
 	}
 	// Wrap immediately: the identity is committed (and therefore signed) below,
 	// and everything that reads it back needs the signature-aware handle.
-	repo, sigWarn := newSigningRepo(raw, clean, gitcfg)
+	repo, sigWarn := newSigningRepo(raw, gitDir, gitcfg)
 	author, err := newAuthor(repo, gitcfg, name, email)
 	if err != nil {
 		return nil, err
@@ -141,7 +164,8 @@ func (s *Store) Author() (string, string) {
 // to Init for the canonical "not a git repository" message.
 func Initialized(dir string) (name, email string, ok bool, err error) {
 	clean := filepath.Clean(dir)
-	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
+	gitDir := repoGitDir(clean)
+	raw, err := repository.OpenGoGitRepo(gitDir, localStorageNamespace, nil)
 	if err != nil {
 		return "", "", false, nil
 	}
@@ -154,7 +178,7 @@ func Initialized(dir string) (name, email string, ok bool, err error) {
 	// handle cannot read at all.
 	// No warning to keep: this builds no Store, and the caller falls through to
 	// Init, which records it against a store that survives the call.
-	wrapped, _ := newSigningRepo(raw, clean, gitcfg)
+	wrapped, _ := newSigningRepo(raw, gitDir, gitcfg)
 	a, err := identity.GetUserIdentity(wrapped)
 	if errors.Is(err, identity.ErrNoIdentitySet) {
 		return "", "", false, nil
@@ -168,7 +192,8 @@ func Initialized(dir string) (name, email string, ok bool, err error) {
 // Open opens an existing store and loads the default author identity.
 func Open(dir string) (*Store, error) {
 	clean := filepath.Clean(dir)
-	raw, err := repository.OpenGoGitRepo(clean, localStorageNamespace, nil)
+	gitDir := repoGitDir(clean)
+	raw, err := repository.OpenGoGitRepo(gitDir, localStorageNamespace, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +203,7 @@ func Open(dir string) (*Store, error) {
 	}
 	// Wrap before resolving the author: the identity itself may be stored in
 	// signed commits, so reading it needs the signature-aware handle.
-	repo, sigWarn := newSigningRepo(raw, clean, gitcfg)
+	repo, sigWarn := newSigningRepo(raw, gitDir, gitcfg)
 	author, err := resolveAuthor(repo, gitcfg)
 	if err != nil {
 		return nil, err
