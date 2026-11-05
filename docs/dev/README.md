@@ -264,6 +264,30 @@ a leaked secret that was ever pushed must be rotated.
   origin proving identity propagation), not stubs.
 - Run via `task test` (it provisions a pinned betterleaks and wires `KREF_BETTERLEAKS`).
 
+## Releasing
+
+1. Start from a clean `main` where `task check` is green.
+2. `task release:notes` previews the notes the tag will carry.
+3. `task release:tag -- X.Y.Z` creates the annotated tag `vX.Y.Z` on HEAD. It
+   refuses a malformed version, an existing tag, a version not after the last
+   release, a dirty tree, and a release with no Conventional Commit to list.
+4. Review with `git show vX.Y.Z`, then `git push origin vX.Y.Z`. The push is
+   what starts `.github/workflows/release.yml` (gate, GoReleaser, SBOM,
+   signing, provenance); the tasks never push.
+
+[git-cliff](https://git-cliff.org) is the single source of release notes:
+`cliff.toml` groups the Conventional Commits since the last `vX.Y.Z` tag. The
+tag message carries them, and the release workflow renders them again
+(`task release:latest`) and hands them to GoReleaser with `--release-notes`,
+which skips GoReleaser's own changelog. `--latest` follows `cliff.toml`'s
+`tag_pattern`, so push only plain `vX.Y.Z` tags: a pre-release tag such as
+`v1.0.0-rc1` would publish the previous release's notes.
+
+The pinned git-cliff is installed into the gitignored `.tools/bin` by
+`task release:tools`, which checks the download's SHA-512. On a platform with
+no pinned download, run
+`cargo install --locked git-cliff --version 2.14.2 --root .tools`.
+
 ## Known limitations / deferred
 
 - **Signing is opt-in.** Entries are signed only when `commit.gpgsign` (or

@@ -67,46 +67,7 @@ signs:
     artifacts: checksum
     output: true
 
-# Release notes are grouped from Conventional Commit subjects. A commit lands in
-# the first group whose regexp matches, so the breaking-change group (the `!`
-# marker, any type) is ordered ahead of the per-type groups. Anything that
-# matches no group falls into "Other Changes" rather than being dropped.
-changelog:
-  sort: asc
-  abbrev: -1
-  filters:
-    # Scoped forms too (`docs(readme):`), which a bare "^docs:" would miss.
-    exclude:
-      - '^docs(\(.+\))?:'
-      - '^test(\(.+\))?:'
-      - '^chore(\(.+\))?:'
-      - '^style(\(.+\))?:'
-      - "Merge pull request"
-      - "Merge branch"
-  groups:
-    - title: Breaking Changes
-      regexp: '^[a-z]+(\(.+\))?!:'
-      order: 0
-    - title: Features
-      regexp: '^feat(\(.+\))?:'
-      order: 1
-    - title: Bug Fixes
-      regexp: '^fix(\(.+\))?:'
-      order: 2
-    - title: Performance
-      regexp: '^perf(\(.+\))?:'
-      order: 3
-    - title: Refactors
-      regexp: '^refactor(\(.+\))?:'
-      order: 4
-    - title: Dependencies
-      regexp: '^build\(deps\)?:'
-      order: 5
-    - title: Build & CI
-      regexp: '^(build|ci)(\(.+\))?:'
-      order: 6
-    - title: Other Changes
-      order: 999
-
+# Release notes come from git-cliff (cliff.toml), passed as --release-notes by
+# .github/workflows/release.yml; that flag skips GoReleaser's own changelog.
 release:
   draft: false

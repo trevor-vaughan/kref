@@ -12,6 +12,8 @@ includes:
       GOVULNCHECK_VERSION: "{{.GOVULNCHECK_VERSION}}"
   deps:
     taskfile: .taskfiles/deps.yml
+  release:
+    taskfile: .taskfiles/release.yml
 
 vars:
   BIN: kref
