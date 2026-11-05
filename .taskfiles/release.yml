@@ -1,0 +1,48 @@
+version: "3"
+
+vars:
+  # git-cliff is pinned by version and SHA-512 in scripts/install-git-cliff.sh and installed
+  # into this gitignored directory, so every maintainer renders notes with the same release.
+  TOOLS_DIR: '{{.ROOT_DIR}}/.tools/bin'
+  GIT_CLIFF: '{{.ROOT_DIR}}/.tools/bin/git-cliff'
+  GIT_CLIFF_VERSION: 2.14.2
+
+env:
+  # git-cliff warns on every run about commits skipped as non-conventional; that is by
+  # design (cliff.toml: filter_unconventional). Errors still print.
+  RUST_LOG: error
+
+tasks:
+  default:
+    silent: true
+    cmd: task release --list
+
+  tools:
+    desc: Install the pinned git-cliff into .tools/bin (checks its SHA-512)
+    dir: '{{.ROOT_DIR}}'
+    cmd: bash "{{.ROOT_DIR}}/scripts/install-git-cliff.sh" "{{.TOOLS_DIR}}"
+    status:
+      - '"{{.GIT_CLIFF}}" --version | grep -qx "git-cliff {{.GIT_CLIFF_VERSION}}"'
+
+  notes:
+    desc: Print the notes the next release's tag would carry (read-only)
+    dir: '{{.ROOT_DIR}}'
+    deps: [tools]
+    cmd: '"{{.GIT_CLIFF}}" --config cliff.toml --unreleased --strip all'
+
+  # Silent so stdout is only the notes: the release workflow redirects it into
+  # goreleaser's --release-notes file.
+  latest:
+    desc: Print the notes of the newest release tag (what the GitHub Release publishes)
+    silent: true
+    dir: '{{.ROOT_DIR}}'
+    deps: [tools]
+    cmd: '"{{.GIT_CLIFF}}" --config cliff.toml --latest --strip all'
+
+  tag:
+    desc: "Create the annotated release tag vX.Y.Z on HEAD with generated notes; never pushes. Usage: task release:tag -- 0.2.0"
+    dir: '{{.ROOT_DIR}}'
+    deps: [tools]
+    vars:
+      ARGS: '{{.ARGS | default .CLI_ARGS}}'
+    cmd: bash "{{.ROOT_DIR}}/scripts/release-tag.sh" "{{.GIT_CLIFF}}" {{.ARGS}}

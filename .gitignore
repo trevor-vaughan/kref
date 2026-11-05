@@ -34,3 +34,6 @@ docs/dev/specs/
 # here's code to maintain, it is reinstallable, and its own test fixtures carry
 # deliberately fake credentials that trip the repo's secret scanners.
 .lola/
+
+# git-cliff, installed by `task release:tools`.
+/.tools/
