@@ -55,7 +55,8 @@ kref show <id>                           # open it, then press / and type the se
 ## Substrate
 
 `kref` is a thin domain layer over git-bug's `entity/dag` framework
-(`github.com/git-bug/git-bug`, GPL-3.0, pinned at `v0.10.1`). git-bug gives us,
+(`github.com/git-bug/git-bug`, GPL-3.0, pinned at `v0.11.0` plus the temporary
+fork described under [Git worktrees](#git-worktrees)). git-bug gives us,
 for free:
 
 - entities stored as a Lamport-ordered DAG of operations under
@@ -67,6 +68,49 @@ We do **not** fork git-bug — we depend on its public `entity/dag`, `identity`,
 and `repository` packages. The single source of truth is the git-object op-DAG;
 any query surface (today an in-memory index; possibly SQLite later) is a
 derived, rebuildable projection. See [spec §4.1](#reading-the-spec-citations).
+
+## Git worktrees
+
+kref works from any linked worktree and from the main checkout, and the
+worktrees share one store: refs, objects and `git-bug.identity` live in the
+common git dir. Three things make that true; each guards a failure that looks
+unrelated to worktrees until you hit it.
+
+- **`repoGitDir`** (`internal/store/store.go`) resolves the common git dir with
+  `git rev-parse --git-common-dir` and hands it to git-bug and to the signing
+  repo. git-bug otherwise follows a worktree's `.git` file to
+  `.git/worktrees/<name>`, which holds no refs. The author identity then reads
+  as missing, and `identity.GetUserIdentity` answers by deleting
+  `git-bug.identity` from the config every checkout shares, so one command in a
+  worktree logs the whole repo out. The `Store in a linked worktree` spec pins
+  this. Any new code that opens a repository must go through it.
+- **`openGoGit`** (same file) opens kref's own go-git handles (the `Init`
+  pre-check and the signing repo). go-git v5 refuses every extension it doesn't
+  know, including `extensions.relativeWorktrees`, which git sets for
+  `git worktree add --relative-paths` and `worktree.useRelativePaths`. It opens
+  through a storer that hides that one extension and has no worktree, because
+  kref only reads objects. Don't call `gogit.PlainOpen*` directly.
+- **The `go.mod` `replace`** does the same for git-bug's own go-git open, which
+  kref can't intercept. It points at `trevor-vaughan/git-bug` (git-bug
+  `v0.11.0` plus one commit). The fork has no `v0.11.0` tag, so it is a
+  `v0.0.0-` pseudo-version.
+
+The relative-worktree support is temporary scaffolding. go-git fixed the
+extension on v6 only (go-git#2336), and git-bug is still on v5. Remove the
+`replace` and keep or drop `openGoGit` as follows:
+
+1. Upstream the one-line change to git-bug (add `relativeworktrees` to the list
+   in `gogitStorage.Config`). Trunk already filters other extensions there.
+2. Once a git-bug release has it, delete the `replace`.
+3. `openGoGit` can go when go-git v5 or v6 accepts the extension natively.
+
+Moving to git-bug trunk is not a bump. Since `v0.11.0` it removed
+`repository.ClockedRepo`, `LocalConfig`, `RefExist`, `dag.ClockLoader` and
+`identity.ReadAllLocal`, and added a `context.Context` to most `dag`,
+`identity` and ref calls. Probing found ~70 compile errors across 12 files in
+`internal/entry` and `internal/store`, with `signingRepo` (built on `ClockedRepo`) and the clock
+witnessing in `tiers.go` needing redesign rather than edits. Plan it as its own
+change, after git-bug tags a release.
 
 ## Layout
 
