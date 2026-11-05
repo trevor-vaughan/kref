@@ -1,0 +1,39 @@
+.taskfiles/release.yml
+  s_1463ac7a881431::t_ac71971dfd64e9 33-41
+  s_1463ac7a881431::t_a6493f72890543 18
+  s_1463ac7a881431::t_5da391692c268d 1-17,19-32,42-48
+.github/workflows/release.yml
+  s_1463ac7a881431::t_ac71971dfd64e9 47-53,64
+.gitignore
+  s_1463ac7a881431::t_a6493f72890543 37-39
+scripts/release-tag.sh
+  s_1463ac7a881431::t_5da391692c268d 1-49
+cliff.toml
+  s_1463ac7a881431::t_5da391692c268d 1-112
+Taskfile.yml
+  s_1463ac7a881431::t_a6493f72890543 15-16
+docs/dev/README.md
+  s_1463ac7a881431::t_bbdfde0b373c5b 267-277,287-288,290
+  s_1463ac7a881431::t_ac71971dfd64e9 278-286,289
+.goreleaser.yml
+  s_1463ac7a881431::t_ac71971dfd64e9 70-71
+scripts/install-git-cliff.sh
+  s_1463ac7a881431::t_636d7353a48e33 49
+  s_1463ac7a881431::t_5da391692c268d 1-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c7ccadd6dd4e97da5ed34bfdc0f9e816256b6890",
+  "prompts": {},
+  "sessions": {
+    "s_1463ac7a881431": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "689b8870-4ee0-47dc-b8b3-e4e4bded3204",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "LLM (riotbox) <llm@riotbox>"
+    }
+  }
+}
